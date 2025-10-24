@@ -42,6 +42,10 @@ main :: proc() {
 
     root, err_parse := parse(tokens)
 	ensure(err_parse == nil, fmt.tprint(err_parse))
-    defer free_node(root)
+    defer node_free(root)
+
     fmt.println(root)
+
+    sem_ctx := semantic_analyze(root)
+    defer semantic_free(&sem_ctx)
 }

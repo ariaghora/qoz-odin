@@ -1,5 +1,3 @@
-#+feature dynamic-literals
-
 package main
 
 import "core:fmt"
@@ -7,13 +5,13 @@ import "core:strings"
 import "core:unicode"
 
 Token_Kind :: enum {
-	Assign, Colon, Comma,
-	Plus, Minus, Star, Slash,
-	Left_Paren, Right_Paren,
-	Left_Brace, Right_Brace,
+    Assign, Colon, Comma,
+    Plus, Minus, Star, Slash,
+    Left_Paren, Right_Paren,
+    Left_Brace, Right_Brace,
     Lit_Number, Lit_String,
-	KW_Fn, KW_If, KW_Print, KW_Return,
-	KW_I32, KW_I64, KW_F32, KW_F64,
+    KW_Fn, KW_If, KW_Print, KW_Return,
+    KW_I32, KW_I64, KW_F32, KW_F64,
     Iden,
     EOF,
 }
@@ -23,82 +21,152 @@ Tokenize_Error :: union {
 }
 
 Token :: struct {
-	source: string,
-	kind:   Token_Kind,
+    source: string,
+    kind: Token_Kind,
+    line: int,
+    column: int,
 }
 
-make_id_or_kw :: proc(tokens: ^[dynamic]Token, offset: ^int, source: string) {
-	c := rune(source[offset^])
-	start, strlen := offset^, 0
-	for unicode.is_alpha(c) || unicode.is_digit(c) || c == '_' && offset^ < len(source) {
-		strlen += 1
-		offset^ += 1
-		c = rune(source[offset^])
-	}
-    tok_src := source[start:start+strlen]
-    tok_kind: Token_Kind
-    switch tok_src {
-    case "func"  : tok_kind = .KW_Fn
-    case "if"    : tok_kind = .KW_If
-    case "print" : tok_kind = .KW_Print
-    case "return": tok_kind = .KW_Return
-    case "i32"   : tok_kind = .KW_I32
-    case "i64"   : tok_kind = .KW_I64
-    case "f32"   : tok_kind = .KW_F32
-    case "f64"   : tok_kind = .KW_F64
-    // default to identifier
-    case         : tok_kind = .Iden
+Tokenizer :: struct {
+    source: string,
+    offset: int,
+    line: int,
+    column: int,
+    tokens: [dynamic]Token,
+}
+
+current_char :: proc(t: ^Tokenizer) -> rune {
+    if t.offset >= len(t.source) do return 0
+    return rune(t.source[t.offset])
+}
+
+tokenizer_advance :: proc(t: ^Tokenizer) {
+    if t.offset < len(t.source) {
+        if t.source[t.offset] == '\n' {
+            t.line += 1
+            t.column = 1
+        } else {
+            t.column += 1
+        }
+        t.offset += 1
     }
-
-	append(tokens, Token{tok_src, tok_kind})
 }
 
-make_number :: proc(tokens: ^[dynamic]Token, offset: ^int, source: string) {
-	c := rune(source[offset^])
-	start, strlen := offset^, 0
-	for unicode.is_number(c) && offset^ < len(source) {
-		strlen += 1
-		offset^ += 1
-		c = rune(source[offset^])
-	}
-	append(tokens, Token{source[start:start+strlen], .Lit_Number})
+skip_whitespace :: proc(t: ^Tokenizer) {
+    for strings.is_space(current_char(t)) {
+        tokenizer_advance(t)
+    }
 }
 
-make_tok :: proc(tokens: ^[dynamic]Token, tok: Token, offset: ^int, source_len: int) {
-	append(tokens, tok)
-	offset^ += source_len
+make_tok :: proc(t: ^Tokenizer, kind: Token_Kind, source: string) {
+    append(&t.tokens, Token{
+        source = source,
+        kind = kind,
+        line = t.line,
+        column = t.column,
+    })
+    for _ in 0..<len(source) {
+        tokenizer_advance(t)
+    }
+}
+
+make_id_or_kw :: proc(t: ^Tokenizer) {
+    start := t.offset
+    start_line := t.line
+    start_column := t.column
+    
+    c := current_char(t)
+    for unicode.is_alpha(c) || unicode.is_digit(c) || c == '_' {
+        tokenizer_advance(t)
+        c = current_char(t)
+    }
+    
+    tok_src := t.source[start:t.offset]
+    tok_kind: Token_Kind
+    
+    switch tok_src {
+    case "func":   tok_kind = .KW_Fn
+    case "if":     tok_kind = .KW_If
+    case "print":  tok_kind = .KW_Print
+    case "return": tok_kind = .KW_Return
+    case "i32":    tok_kind = .KW_I32
+    case "i64":    tok_kind = .KW_I64
+    case "f32":    tok_kind = .KW_F32
+    case "f64":    tok_kind = .KW_F64
+    case:          tok_kind = .Iden
+    }
+    
+    append(&t.tokens, Token{
+        source = tok_src,
+        kind = tok_kind,
+        line = start_line,
+        column = start_column,
+    })
+}
+
+make_number :: proc(t: ^Tokenizer) {
+    start := t.offset
+    start_line := t.line
+    start_column := t.column
+    
+    c := current_char(t)
+    for unicode.is_number(c) {
+        tokenizer_advance(t)
+        c = current_char(t)
+    }
+    
+    append(&t.tokens, Token{
+        source = t.source[start:t.offset],
+        kind = .Lit_Number,
+        line = start_line,
+        column = start_column,
+    })
 }
 
 tokenize :: proc(source: string, allocator := context.allocator) -> (tokens: [dynamic]Token, err: Tokenize_Error) {
-	i := 0
-	for i < len(source) {
-		c := rune(source[i])
-		for strings.is_space(c) && i < len(source) - 1 {
-			i += 1; c = rune(source[i])
-		}
-
-		switch c {
-		case ',': make_tok(&tokens, Token{",", .Comma}, &i, 1) 
-		case '=': make_tok(&tokens, Token{"=", .Assign}, &i, 1) 
-		case ':': make_tok(&tokens, Token{":", .Colon}, &i, 1) 
-		case '(': make_tok(&tokens, Token{"(", .Left_Paren}, &i, 1)
-		case ')': make_tok(&tokens, Token{")", .Right_Paren}, &i, 1)
-		case '{': make_tok(&tokens, Token{"{", .Left_Brace}, &i, 1)
-		case '}': make_tok(&tokens, Token{"}", .Right_Brace}, &i, 1)
-		case '+': make_tok(&tokens, Token{"+", .Plus}, &i, 1)
-		case '-': make_tok(&tokens, Token{"-", .Minus}, &i, 1)
-		case '*': make_tok(&tokens, Token{"*", .Star}, &i, 1)
-		case '/': make_tok(&tokens, Token{"/", .Slash}, &i, 1)
-		case:
-			if false {}
-            else if unicode.is_alpha(c) { make_id_or_kw(&tokens, &i, source) }
-			else if unicode.is_number(c) { make_number(&tokens, &i, source) }
-            else { return nil, fmt.tprintf("Unknown symbol `%v`", rune(c)) }
-		}
-
-        if i < len(source) do c = rune(source[i])
-	}
-	append(&tokens, Token{"", .EOF})
-
-    return tokens, nil
+    t := Tokenizer {
+        source = source,
+        offset = 0,
+        line = 1,
+        column = 1,
+        tokens = make([dynamic]Token, allocator),
+    }
+    
+    for t.offset < len(t.source) {
+        skip_whitespace(&t)
+        if t.offset >= len(t.source) do break
+        
+        c := current_char(&t)
+        
+        switch c {
+        case ',': make_tok(&t, .Comma, ",")
+        case '=': make_tok(&t, .Assign, "=")
+        case ':': make_tok(&t, .Colon, ":")
+        case '(': make_tok(&t, .Left_Paren, "(")
+        case ')': make_tok(&t, .Right_Paren, ")")
+        case '{': make_tok(&t, .Left_Brace, "{")
+        case '}': make_tok(&t, .Right_Brace, "}")
+        case '+': make_tok(&t, .Plus, "+")
+        case '-': make_tok(&t, .Minus, "-")
+        case '*': make_tok(&t, .Star, "*")
+        case '/': make_tok(&t, .Slash, "/")
+        case:
+            if unicode.is_alpha(c) {
+                make_id_or_kw(&t)
+            } else if unicode.is_number(c) {
+                make_number(&t)
+            } else {
+                return nil, fmt.tprintf("Unknown symbol `%v` at line %d, column %d", c, t.line, t.column)
+            }
+        }
+    }
+    
+    append(&t.tokens, Token{
+        source = "",
+        kind = .EOF,
+        line = t.line,
+        column = t.column,
+    })
+    
+    return t.tokens, nil
 }

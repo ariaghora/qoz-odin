@@ -64,23 +64,28 @@ current_span :: proc(ps: ^Parsing_State) -> Span {
     return Span{start = ps.idx, end = ps.idx}
 }
 
-expect :: proc(ps: ^Parsing_State, expected: Token_Kind) -> Parse_Error {
+parser_expect :: proc(ps: ^Parsing_State, expected: Token_Kind) -> Parse_Error {
     if ps.current_token.kind != expected {
-        return fmt.tprintf("Expected %v at position %d, got %v", expected, ps.idx, ps.current_token.kind)
+        return fmt.tprintf(
+            "[%d:%d] Expected %v, got %v", 
+            ps.current_token.line,
+            ps.current_token.column,
+            expected,
+            ps.current_token.kind)
     }
     return nil
 }
 
-advance :: proc(ps: ^Parsing_State) {
+parser_advance :: proc(ps: ^Parsing_State) {
     ps.idx += 1
     if ps.idx < len(ps.tokens) {
         ps.current_token = ps.tokens[ps.idx]
     }
 }
 
-consume :: proc(ps: ^Parsing_State, expected: Token_Kind) -> Parse_Error {
-    expect(ps, expected) or_return
-    advance(ps)
+parser_consume :: proc(ps: ^Parsing_State, expected: Token_Kind) -> Parse_Error {
+    parser_expect(ps, expected) or_return
+    parser_advance(ps)
     return nil
 }
 
@@ -120,8 +125,8 @@ parse_var_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
     span_start := ps.idx
     name_tok := ps.current_token
     
-    advance(ps)
-    consume(ps, .Assign) or_return
+    parser_advance(ps)
+    parser_consume(ps, .Assign) or_return
     
     var_node := new(Node, allocator)
     var_node.node_kind = .Var_Def
@@ -137,8 +142,8 @@ parse_var_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
 parse_print_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
     span_start := ps.idx
     
-    advance(ps)
-    consume(ps, .Left_Paren) or_return
+    parser_advance(ps)
+    parser_consume(ps, .Left_Paren) or_return
     
     print_node := new(Node, allocator)
     print_node.node_kind = .Print
@@ -148,7 +153,7 @@ parse_print_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := co
     content := parse_expression(ps, print_node, allocator) or_return
     print_node.payload = Node_Print{content = content}
     
-    consume(ps, .Right_Paren) or_return
+    parser_consume(ps, .Right_Paren) or_return
     
     return print_node, nil
 }
@@ -176,11 +181,12 @@ parse_term :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.alloc
     left := parse_factor(ps, parent, allocator) or_return
     for ps.current_token.kind == .Plus || ps.current_token.kind == .Minus {
         op := ps.current_token
-        advance(ps)
+        parser_advance(ps)
         right := parse_factor(ps, parent, allocator) or_return
         left = new_clone(Node {
             node_kind=.Bin_Op,
             parent=parent,
+            span=Span{start=left.span.start, end=right.span.end},
             payload=Node_Bin_Op {
                 left=left, right=right, op=op
             }
@@ -193,11 +199,12 @@ parse_factor :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.all
     left := parse_unary(ps, parent, allocator) or_return
     for ps.current_token.kind == .Star || ps.current_token.kind == .Slash {
         op := ps.current_token
-        advance(ps)
+        parser_advance(ps)
         right := parse_unary(ps, parent, allocator) or_return
         left = new_clone(Node {
             node_kind=.Bin_Op,
             parent=parent,
+            span=Span{start=left.span.start, end=right.span.end},
             payload=Node_Bin_Op {
                 left=left, right=right, op=op
             }
@@ -219,21 +226,24 @@ parse_fn_call :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
     // "do while `(` means function call chaining, e.g., f()()()
     // It is possible for a function to return another callable function
     for ps.current_token.kind == .Left_Paren {
-        advance(ps)
+        parser_advance(ps)
         fn_args := make([dynamic]^Node, allocator)
         for ps.current_token.kind != .Right_Paren {
             arg := parse_expression(ps, expr, allocator) or_return
             append(&fn_args, arg)
             if ps.current_token.kind == .Comma {
-                advance(ps)
+                parser_advance(ps)
             } else {
                 break
             }
         }
-        consume(ps, .Right_Paren) or_return
+        parser_consume(ps, .Right_Paren) or_return
 
         expr = new_clone(Node {
-            node_kind=.Call, parent=parent, payload=Node_Call {
+            node_kind=.Call,
+            parent=parent,
+            span=Span{start=expr.span.start, end=ps.idx-1},
+            payload=Node_Call {
                 callee=expr,
                 args=fn_args,
             }
@@ -255,60 +265,64 @@ parse_primary :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
 }
 
 parse_identifier :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
+    span_start := ps.idx
     name := ps.current_token.source
-    iden_node := new_clone(Node{
-        node_kind=.Identifier,
-        parent=parent,
-        payload=Node_Identifier{name=name}
-    }, allocator)
-    advance(ps)
-
+    
+    iden_node := new(Node, allocator)
+    iden_node.node_kind = .Identifier
+    iden_node.parent = parent
+    iden_node.payload = Node_Identifier{name = name}
+    
+    parser_advance(ps)
+    iden_node.span = Span{start = span_start, end = ps.idx - 1}
+    
     return iden_node, nil
 }
 
-parse_literal :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (^Node, Parse_Error) {
+parse_literal :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
     span_start := ps.idx
     tok := ps.current_token
     
     lit_node := new(Node, allocator)
     lit_node.node_kind = .Literal
     lit_node.parent = parent
-    lit_node.span = Span{start = span_start, end = ps.idx}
     lit_node.payload = Node_Literal{content = tok}
     
-    advance(ps)
+    parser_advance(ps)
+    lit_node.span = Span{start = span_start, end = ps.idx - 1}
+    
     return lit_node, nil
 }
 
 parse_fn_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
     span_start := ps.idx
     
-    advance(ps)
-    consume(ps, .Left_Paren) or_return
+    parser_advance(ps)
+    parser_consume(ps, .Left_Paren) or_return
 
     // Here we parse function parameters (or lack there of)
     param_list := make([dynamic]Fn_Param, allocator)
     if ps.current_token.kind == .Right_Paren {
         // Right paren
-        consume(ps, .Right_Paren) or_return
+        parser_consume(ps, .Right_Paren) or_return
     } else if ps.current_token.kind == .Iden {
         // Or param list
         for ps.current_token.kind == .Iden {
             param_name :=ps.current_token.source
-            advance(ps) 
-            consume(ps, .Colon) or_return
+            parser_advance(ps) 
+            parser_consume(ps, .Colon) or_return
 
             param_type := parse_type(ps) or_return
             append(&param_list, Fn_Param{name = param_name, type = param_type})
 
             if ps.current_token.kind == .Comma {
-                advance(ps)
+                parser_advance(ps)
             } else {
                 break
             }
         }
 
-        consume(ps, .Right_Paren) or_return
+        parser_consume(ps, .Right_Paren) or_return
     } else {
         return nil, fmt.tprintfln("Expected ')' or identifier for parameter(s), found %v", ps.current_token.source)
     }
@@ -316,13 +330,13 @@ parse_fn_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.all
     // Return type
     return_type := Type.Void
     if ps.current_token.kind == .Colon {
-        advance(ps)
+        parser_advance(ps)
         return_type = parse_type(ps) or_return
 
     }
 
     // beginning of fn body
-    consume(ps, .Left_Brace) or_return
+    parser_consume(ps, .Left_Brace) or_return
     
     fn_node := new(Node, allocator)
     fn_node.node_kind = .Fn_Def
@@ -339,14 +353,15 @@ parse_fn_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.all
     }
     
     fn_node.payload = Node_Fn_Def{params=param_list, body = stmts, return_type = return_type}
-    consume(ps, .Right_Brace) or_return
+    parser_consume(ps, .Right_Brace) or_return
+    fn_node.span.end = ps.idx - 1  
     
     return fn_node, nil
 }
 
 parse_return_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
     span_start := ps.idx
-    advance(ps)
+    parser_advance(ps)
     
     ret_node := new(Node, allocator)
     ret_node.node_kind = .Return
@@ -375,34 +390,34 @@ parse_type :: proc(ps: ^Parsing_State) -> (Type, Parse_Error) {
         return .I32, fmt.tprintf("Expected type at position %d, got %v", ps.idx, ps.current_token.kind)
     }
     
-    advance(ps)
+    parser_advance(ps)
     return type_result, nil
 }
 
-free_node :: proc(node: ^Node, allocator := context.allocator) {
+node_free :: proc(node: ^Node, allocator := context.allocator) {
     if node == nil do return
     
     #partial switch node.node_kind {
     case .Bin_Op:
-        free_node(node.payload.(Node_Bin_Op).left, allocator)
-        free_node(node.payload.(Node_Bin_Op).right, allocator)
+        node_free(node.payload.(Node_Bin_Op).left, allocator)
+        node_free(node.payload.(Node_Bin_Op).right, allocator)
     case .Statement_List, .Program:
         for n in node.payload.(Node_Statement_List).nodes {
-            free_node(n, allocator)
+            node_free(n, allocator)
         }
         delete(node.payload.(Node_Statement_List).nodes)
-    case .Var_Def: free_node(node.payload.(Node_Var_Def).content, allocator)
-    case .Print: free_node(node.payload.(Node_Print).content, allocator)
+    case .Var_Def: node_free(node.payload.(Node_Var_Def).content, allocator)
+    case .Print: node_free(node.payload.(Node_Print).content, allocator)
     case .Call:
-        for n in node.payload.(Node_Call).args do free_node(n, allocator)
+        for n in node.payload.(Node_Call).args do node_free(n, allocator)
         delete(node.payload.(Node_Call).args)
-        free_node(node.payload.(Node_Call).callee, allocator)
+        node_free(node.payload.(Node_Call).callee, allocator)
     case .Fn_Def:
-        for n in node.payload.(Node_Fn_Def).body do free_node(n, allocator)
+        for n in node.payload.(Node_Fn_Def).body do node_free(n, allocator)
         delete(node.payload.(Node_Fn_Def).params)
         delete(node.payload.(Node_Fn_Def).body)
     case .Literal: {/* Nothing to free */}
-    case .Return: free_node(node.payload.(Node_Return).value, allocator)
+    case .Return: node_free(node.payload.(Node_Return).value, allocator)
     }
     
     free(node, allocator)
