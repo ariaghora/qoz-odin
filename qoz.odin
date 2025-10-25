@@ -4,37 +4,6 @@ import "core:mem"
 import "core:fmt"
 import "core:os"
 
-print_tree :: proc(node: ^Node, indent: int = 0) {
-    if node == nil do return
-    
-    for _ in 0..<indent do fmt.print("  ")
-    fmt.printfln("%v", node.node_kind)
-    
-    #partial switch node.node_kind {
-    case .Program, .Statement_List:
-        for child in node.payload.(Node_Statement_List).nodes {
-            print_tree(child, indent + 1)
-        }
-    case .Var_Def:
-        print_tree(node.payload.(Node_Var_Def).content, indent + 1)
-    case .Fn_Def:
-        for stmt in node.payload.(Node_Fn_Def).body {
-            print_tree(stmt, indent + 1)
-        }
-    case .Print:
-        print_tree(node.payload.(Node_Print).content, indent + 1)
-    case .Fn_Call:
-        print_tree(node.payload.(Node_Call).callee, indent + 1)
-        for arg in node.payload.(Node_Call).args {
-            print_tree(arg, indent + 1)
-        }
-    case .Bin_Op:
-        print_tree(node.payload.(Node_Bin_Op).left, indent + 1)
-        print_tree(node.payload.(Node_Bin_Op).right, indent + 1)
-    }
-}
-
-
 main :: proc() {
 	when ODIN_DEBUG {
 		track: mem.Tracking_Allocator
@@ -74,10 +43,16 @@ main :: proc() {
 	ensure(err_parse == nil, fmt.tprint(err_parse))
     defer node_free(root)
 
-    fmt.println(root)
-
     sem_ctx := semantic_analyze(root)
-    fmt.println(sem_ctx.errors[:])
+	defer semantic_free(&sem_ctx)
 
-	print_tree(root)
+	if len(sem_ctx.errors) > 0 {
+		for err in sem_ctx.errors {
+			tok := tokens[err.span.start]
+			fmt.eprintfln("[%d:%d] %s", tok.line, tok.column, err.message)
+		}
+		os.exit(1)
+	}
+
+	fmt.println("Semantic analysis passed")
 }

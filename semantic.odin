@@ -142,9 +142,9 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
         if ret.value != nil { // Has return val. It is either Type_Info or Void
             semantic_analyze_node(ctx, ret.value)
             ret_type := semantic_infer_type(ctx, ret.value)
-            // if ret_type != ctx.current_function_return_type.? {
-            //     add_error(ctx, node.span, "Return type mismatch: expected %v, got %v", expected, ret_type)
-            // }
+            if !types_equal(ret_type, ctx.current_function_return_type.?) {
+                add_error(ctx, node.span, "Return type mismatch: expected %v, got %v", expected_ret_type, ret_type)
+            }
         } else { // If expected type is NOT Primitive_Type.Void, error.
             exp_prim_type, is_prim := expected_ret_type.(Primitive_Type)
             if !is_prim || exp_prim_type != .Void {
@@ -152,12 +152,7 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
             }
         }
 
-    case .Identifier:
-        iden := node.payload.(Node_Identifier)
-        if _, ok := semantic_lookup_symbol(ctx, iden.name); !ok {
-            add_error(ctx, node.span, "Undefined variable '%s'", iden.name)
-        }
-    case .Literal: 
+    case .Literal, .Identifier:
         // nothing happened. These are leaf nodes in expressions.
     case: fmt.panicf("Cannot analyze %v yet", node.node_kind)
     }
@@ -183,19 +178,12 @@ semantic_infer_type :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
         left_type := semantic_infer_type(ctx, binop.left)
         right_type := semantic_infer_type(ctx, binop.right)
         
-        left_prim, left_ok := left_type.(Primitive_Type)
-        right_prim, right_ok := right_type.(Primitive_Type)
-        
-        if !left_ok || !right_ok {
-            add_error(ctx, node.span, "Cannot apply binary operator to non-primitive types")
-            return Primitive_Type.I32
+        if !types_equal(left_type, right_type) {
+            add_error(ctx, node.span, "Type mismatch: %v vs %v", left_type, right_type)
         }
-        
-        if left_prim != right_prim {
-            add_error(ctx, node.span, "Type mismatch: %v vs %v", left_prim, right_prim)
-        }
-        
-        return left_prim
+
+        result_type := semantic_binop_type_resolve(left_type, right_type, binop.op, node.span, ctx)
+        return result_type
     
     // case .Un_Op:
     //     unop := node.payload.(Node_Un_Op)
@@ -241,5 +229,55 @@ semantic_infer_type :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
         return fn_type.return_type^
     case:
         return Primitive_Type.Void
+    }
+}
+
+types_equal :: proc(a, b: Type_Info) -> bool {
+    #partial switch a_val in a {
+    case Primitive_Type:
+        b_val, ok := b.(Primitive_Type)
+        return ok && a_val == b_val
+    case Function_Type:
+        fmt.println("TODO(Aria): types are uncomparable")
+        return false
+    }
+    return false
+}
+
+semantic_binop_type_resolve :: proc(t1, t2: Type_Info, op: Token, span: Span, ctx: ^Semantic_Context) -> Type_Info {
+    if !types_equal(t1, t2) {
+        add_error(ctx, span, "Type mismatch in binary operation")
+        return Primitive_Type.I32
+    }
+    
+    switch t in t1 {
+    case Primitive_Type:
+        return semantic_binop_primitive(t, op, span, ctx)
+    case Function_Type:
+        add_error(ctx, span, "Cannot use function in binary operation")
+        return Primitive_Type.I32
+    }
+    
+    return Primitive_Type.I32
+}
+
+semantic_binop_primitive :: proc(t: Primitive_Type, op: Token, span: Span, ctx: ^Semantic_Context) -> Type_Info {
+    #partial switch op.kind {
+    case .Plus, .Minus, .Star, .Slash:
+        // Arithmetic: numeric types only
+        if t == .Void {
+            add_error(ctx, span, "Cannot apply arithmetic to void")
+            return Primitive_Type.I32
+        }
+        return t
+    
+    // TODO(Aria): more ops
+    // case .Less, .Greater, .Less_Eq, .Greater_Eq:
+    //     if t == .Void { error }
+    //     return Primitive_Type.Bool
+    
+    case:
+        add_error(ctx, span, "Operator %v not defined for type %v", op.kind, t)
+        return t
     }
 }
