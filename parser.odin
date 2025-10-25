@@ -6,7 +6,7 @@ Parse_Error :: union { string }
 
 Node_Kind :: enum {
     Bin_Op,
-    Call,
+    Fn_Call,
     Fn_Def,
     Identifier,
     Literal,
@@ -18,7 +18,14 @@ Node_Kind :: enum {
     Var_Def,
 }
 
-Type :: enum { I32, I64, F32, F64, Void }
+Type_Info :: union { Primitive_Type, Function_Type }
+
+Primitive_Type :: enum { I32, I64, F32, F64, Void }
+
+Function_Type :: struct {
+    params: []Type_Info,
+    return_type: ^Type_Info,  
+}
 
 Span :: struct {
     start: int,
@@ -31,11 +38,11 @@ Parsing_State :: struct {
     idx: int,
 }
 
-Fn_Param :: struct {name: string, type: Type}
+Fn_Param :: struct { name: string, type: Type_Info, span: Span }
 
 Node_Bin_Op         :: struct { left, right: ^Node, op: Token }
 Node_Call           :: struct { callee: ^Node, args: [dynamic]^Node }
-Node_Fn_Def         :: struct { params: [dynamic]Fn_Param, body: [dynamic]^Node, return_type: Type }
+Node_Fn_Def         :: struct { params: [dynamic]Fn_Param, body: [dynamic]^Node, return_type: Type_Info }
 Node_Identifier     :: struct { name:string }
 Node_Literal        :: struct { content: Token }
 Node_Print          :: struct { content: ^Node }
@@ -64,6 +71,7 @@ current_span :: proc(ps: ^Parsing_State) -> Span {
     return Span{start = ps.idx, end = ps.idx}
 }
 
+@(require_results)
 parser_expect :: proc(ps: ^Parsing_State, expected: Token_Kind) -> Parse_Error {
     if ps.current_token.kind != expected {
         return fmt.tprintf(
@@ -240,7 +248,7 @@ parse_fn_call :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
         parser_consume(ps, .Right_Paren) or_return
 
         expr = new_clone(Node {
-            node_kind=.Call,
+            node_kind=.Fn_Call,
             parent=parent,
             span=Span{start=expr.span.start, end=ps.idx-1},
             payload=Node_Call {
@@ -308,12 +316,17 @@ parse_fn_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.all
     } else if ps.current_token.kind == .Iden {
         // Or param list
         for ps.current_token.kind == .Iden {
+            param_span_start := ps.idx
             param_name :=ps.current_token.source
             parser_advance(ps) 
             parser_consume(ps, .Colon) or_return
 
             param_type := parse_type(ps) or_return
-            append(&param_list, Fn_Param{name = param_name, type = param_type})
+            append(&param_list, Fn_Param{
+                name = param_name, 
+                type = param_type,
+                span = Span{start = param_span_start, end = ps.idx - 1},
+            })
 
             if ps.current_token.kind == .Comma {
                 parser_advance(ps)
@@ -328,7 +341,7 @@ parse_fn_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.all
     }
 
     // Return type
-    return_type := Type.Void
+    return_type: Type_Info
     if ps.current_token.kind == .Colon {
         parser_advance(ps)
         return_type = parse_type(ps) or_return
@@ -379,19 +392,21 @@ parse_return_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := c
     return ret_node, nil
 }
 
-parse_type :: proc(ps: ^Parsing_State) -> (Type, Parse_Error) {
-    type_result: Type
+parse_type :: proc(ps: ^Parsing_State) -> (Type_Info, Parse_Error) {
+    prim: Type_Info
     #partial switch ps.current_token.kind {
-    case .KW_I32: type_result = .I32
-    case .KW_I64: type_result = .I64
-    case .KW_F32: type_result = .F32
-    case .KW_F64: type_result = .F64
+    case .KW_I32: prim = .I32
+    case .KW_I64: prim = .I64
+    case .KW_F32: prim = .F32
+    case .KW_F64: prim = .F64
     case: 
-        return .I32, fmt.tprintf("Expected type at position %d, got %v", ps.idx, ps.current_token.kind)
+        return nil, fmt.tprintf("Expected type at position %d, got %v", ps.idx, ps.current_token.kind)
     }
-    
+    // TODO(Aria): function type and other types parsing
+
     parser_advance(ps)
-    return type_result, nil
+
+    return prim, nil
 }
 
 node_free :: proc(node: ^Node, allocator := context.allocator) {
@@ -408,7 +423,7 @@ node_free :: proc(node: ^Node, allocator := context.allocator) {
         delete(node.payload.(Node_Statement_List).nodes)
     case .Var_Def: node_free(node.payload.(Node_Var_Def).content, allocator)
     case .Print: node_free(node.payload.(Node_Print).content, allocator)
-    case .Call:
+    case .Fn_Call:
         for n in node.payload.(Node_Call).args do node_free(n, allocator)
         delete(node.payload.(Node_Call).args)
         node_free(node.payload.(Node_Call).callee, allocator)
