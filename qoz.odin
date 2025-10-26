@@ -1,10 +1,13 @@
 package main
 
 import "core:mem"
+import vmem "core:mem/virtual"
 import "core:fmt"
 import "core:os"
 
 main :: proc() {
+	// NOTE(Aria): in case of my potential fuckups for not specifying arena allocator
+	// for some sections and using default allocator instead
 	when ODIN_DEBUG {
 		track: mem.Tracking_Allocator
 		mem.tracking_allocator_init(&track, context.allocator)
@@ -27,24 +30,35 @@ main :: proc() {
 		}
 	}
 
+	alloc_lexer, alloc_parser, alloc_semantic: vmem.Arena
+
+	err_alloc_lexer := vmem.arena_init_growing(&alloc_lexer)
+	ensure(err_alloc_lexer == nil)
+	arena_lexer := vmem.arena_allocator(&alloc_lexer)
+
+	err_alloc_parser := vmem.arena_init_growing(&alloc_parser)
+	ensure(err_alloc_parser == nil)
+	arena_parser := vmem.arena_allocator(&alloc_parser)
+
+	err_alloc_semantic := vmem.arena_init_growing(&alloc_semantic)
+	ensure(err_alloc_semantic == nil)
+	arena_semantic := vmem.arena_allocator(&alloc_semantic)
+
+
 	ensure(len(os.args) == 2, "specify source name as the first positional argument")
 	file_name := os.args[1]
 
-	source_bytes, ok := os.read_entire_file(file_name)
+	source_bytes, ok := os.read_entire_file(file_name, context.temp_allocator)
 	ensure(ok, fmt.tprintfln("cannot open %s", file_name))
-    defer delete(source_bytes)
 	source := string(source_bytes)
 
-    tokens, err_tokenize := tokenize(source)
+    tokens, err_tokenize := tokenize(source, arena_lexer)
 	ensure(err_tokenize == nil, fmt.tprint(err_tokenize))
-    defer delete(tokens)
 
-    root, err_parse := parse(tokens)
+    root, err_parse := parse(tokens, arena_parser)
 	ensure(err_parse == nil, fmt.tprint(err_parse))
-    defer node_free(root)
 
-    sem_ctx := semantic_analyze(root)
-	defer semantic_free(&sem_ctx)
+    sem_ctx := semantic_analyze(root, arena_semantic)
 
 	if len(sem_ctx.errors) > 0 {
 		for err in sem_ctx.errors {

@@ -36,7 +36,6 @@ semantic_pop_scope :: proc(ctx: ^Semantic_Context) {
     old := ctx.current_scope
     ctx.current_scope = old.parent
     delete(old.symbols)
-    free(old, ctx.allocator)
 }
 
 semantic_define_symbol :: proc(ctx: ^Semantic_Context, name: string, type: Type_Info, span: Span) -> bool {
@@ -70,13 +69,6 @@ semantic_analyze :: proc(root: ^Node, allocator := context.allocator) -> Semanti
     semantic_analyze_node(&ctx, root)
 
     return ctx
-}
-
-semantic_free :: proc(ctx: ^Semantic_Context) {
-    for ctx.current_scope != nil {
-        semantic_pop_scope(ctx)
-    }
-    delete(ctx.errors)
 }
 
 @(private="file")

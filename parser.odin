@@ -272,7 +272,7 @@ parse_fn_call :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
                 callee=expr,
                 args=fn_args,
             }
-        })
+        }, allocator)
     }
 
     return expr, nil
@@ -424,35 +424,4 @@ parse_type :: proc(ps: ^Parsing_State) -> (Type_Info, Parse_Error) {
     parser_advance(ps)
 
     return prim, nil
-}
-
-node_free :: proc(node: ^Node, allocator := context.allocator) {
-    if node == nil do return
-    
-    #partial switch node.node_kind {
-    case .Bin_Op:
-        node_free(node.payload.(Node_Bin_Op).left, allocator)
-        node_free(node.payload.(Node_Bin_Op).right, allocator)
-    case .Un_Op:
-        node_free(node.payload.(Node_Un_Op).operand, allocator)
-    case .Statement_List, .Program:
-        for n in node.payload.(Node_Statement_List).nodes {
-            node_free(n, allocator)
-        }
-        delete(node.payload.(Node_Statement_List).nodes)
-    case .Var_Def: node_free(node.payload.(Node_Var_Def).content, allocator)
-    case .Print: node_free(node.payload.(Node_Print).content, allocator)
-    case .Fn_Call:
-        for n in node.payload.(Node_Call).args do node_free(n, allocator)
-        delete(node.payload.(Node_Call).args)
-        node_free(node.payload.(Node_Call).callee, allocator)
-    case .Fn_Def:
-        for n in node.payload.(Node_Fn_Def).body do node_free(n, allocator)
-        delete(node.payload.(Node_Fn_Def).params)
-        delete(node.payload.(Node_Fn_Def).body)
-    case .Literal: {/* Nothing to free */}
-    case .Return: node_free(node.payload.(Node_Return).value, allocator)
-    }
-    
-    free(node, allocator)
 }
