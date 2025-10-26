@@ -48,6 +48,7 @@ Node_Literal        :: struct { content: Token }
 Node_Print          :: struct { content: ^Node }
 Node_Return         :: struct { value: ^Node } 
 Node_Statement_List :: struct { nodes: [dynamic]^Node }
+Node_Un_Op          :: struct { operand: ^Node, op: Token }
 Node_Var_Def        :: struct { name: string, content: ^Node }
 
 Node :: struct {
@@ -64,6 +65,7 @@ Node :: struct {
         Node_Return,
         Node_Statement_List,
         Node_Var_Def,
+        Node_Un_Op,
     }
 }
 
@@ -222,8 +224,23 @@ parse_factor :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.all
 }
 
 parse_unary :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
-    // TODO: parse -x, +x
-    // if token is plus or minus
+    if ps.current_token.kind == .Minus || ps.current_token.kind == .Plus {
+        op_idx := ps.idx
+        op := ps.current_token
+        parser_advance(ps)
+        
+        operand := parse_unary(ps, parent, allocator) or_return
+        
+        unop_node := new(Node, allocator)
+        unop_node.node_kind = .Un_Op
+        unop_node.parent = parent
+        unop_node.span = Span{start = op_idx, end = operand.span.end}
+        unop_node.payload = Node_Un_Op{op = op, operand = operand}
+        
+        operand.parent = unop_node
+        
+        return unop_node, nil
+    }
 
     return parse_fn_call(ps, parent, allocator)
 }
@@ -416,6 +433,8 @@ node_free :: proc(node: ^Node, allocator := context.allocator) {
     case .Bin_Op:
         node_free(node.payload.(Node_Bin_Op).left, allocator)
         node_free(node.payload.(Node_Bin_Op).right, allocator)
+    case .Un_Op:
+        node_free(node.payload.(Node_Un_Op).operand, allocator)
     case .Statement_List, .Program:
         for n in node.payload.(Node_Statement_List).nodes {
             node_free(n, allocator)

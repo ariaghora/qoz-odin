@@ -152,6 +152,8 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
             }
         }
 
+    case .Un_Op:
+        semantic_analyze_node(ctx, node.payload.(Node_Un_Op).operand)
     case .Literal, .Identifier:
         // nothing happened. These are leaf nodes in expressions.
     case: fmt.panicf("Cannot analyze %v yet", node.node_kind)
@@ -185,9 +187,9 @@ semantic_infer_type :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
         result_type := semantic_binop_type_resolve(left_type, right_type, binop.op, node.span, ctx)
         return result_type
     
-    // case .Un_Op:
-    //     unop := node.payload.(Node_Un_Op)
-    //     return semantic_infer_type(ctx, unop.operand)
+    case .Un_Op:
+        unop := node.payload.(Node_Un_Op)
+        return semantic_infer_type(ctx, unop.operand)
     
     case .Fn_Def:
         fn_def := node.payload.(Node_Fn_Def)
