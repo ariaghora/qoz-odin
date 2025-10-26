@@ -358,7 +358,7 @@ parse_fn_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.all
     }
 
     // Return type
-    return_type: Type_Info
+    return_type: Type_Info = .Void
     if ps.current_token.kind == .Colon {
         parser_advance(ps)
         return_type = parse_type(ps) or_return

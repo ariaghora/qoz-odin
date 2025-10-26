@@ -110,15 +110,31 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
         ctx.current_function_return_type = fn_def.return_type
         
         semantic_push_scope(ctx)
-        for param in fn_def.params {
-            semantic_define_symbol(ctx, param.name, param.type, param.span)
-        }
+        {
+            for param in fn_def.params {
+                semantic_define_symbol(ctx, param.name, param.type, param.span)
+            }
 
-        for stmt in fn_def.body {
-            semantic_analyze_node(ctx, stmt)
+            for stmt in fn_def.body {
+                semantic_analyze_node(ctx, stmt)
+            }
+
+            requires_return := true
+            if ret_type_prim, ok := fn_def.return_type.(Primitive_Type); ok {
+                if ret_type_prim == .Void {
+                    requires_return = false
+                }
+            }
+
+            if requires_return {
+                if len(fn_def.body) == 0 || fn_def.body[len(fn_def.body)-1].node_kind != .Return {
+                    add_error(ctx, node.span, "Non-void function must end with return statement")
+                }
+            }
         }
         semantic_pop_scope(ctx)
         ctx.current_function_return_type = old_return_type
+
     case .Print:
         semantic_analyze_node(ctx, node.payload.(Node_Print).content)
         _ = semantic_infer_type(ctx, node.payload.(Node_Print).content)
