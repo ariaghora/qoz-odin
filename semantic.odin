@@ -181,7 +181,25 @@ semantic_infer_type :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
     
     case .Un_Op:
         unop := node.payload.(Node_Un_Op)
-        return semantic_infer_type(ctx, unop.operand)
+        operand_type := semantic_infer_type(ctx, unop.operand)
+        
+        prim, ok := operand_type.(Primitive_Type)
+        if !ok {
+            add_error(ctx, node.span, "Cannot apply unary operator to non-primitive type")
+            return Primitive_Type.I32
+        }
+        
+        #partial switch unop.op.kind {
+        case .Plus, .Minus:
+            if prim == .Void {
+                add_error(ctx, node.span, "Cannot apply unary operator to void")
+                return Primitive_Type.I32
+            }
+            return prim
+        case:
+            add_error(ctx, node.span, "Unary operator %v not defined", unop.op.kind)
+            return prim
+        }
     
     case .Fn_Def:
         fn_def := node.payload.(Node_Fn_Def)
