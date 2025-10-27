@@ -58,10 +58,10 @@ main :: proc() {
     root, err_parse := parse(tokens, arena_parser)
 	ensure(err_parse == nil, fmt.tprint(err_parse))
 
-    sem_ctx := semantic_analyze(root, arena_semantic)
+    ctx_sem := semantic_analyze(root, arena_semantic)
 
-	if len(sem_ctx.errors) > 0 {
-		for err in sem_ctx.errors {
+	if len(ctx_sem.errors) > 0 {
+		for err in ctx_sem.errors {
 			tok := tokens[err.span.start]
 			fmt.eprintfln("[%d:%d] %s", tok.line, tok.column, err.message)
 		}
@@ -69,4 +69,7 @@ main :: proc() {
 	}
 
 	fmt.println("Semantic analysis passed")
+
+	cg, _ := codegen(root, &ctx_sem, context.temp_allocator)
+	fmt.println(cg)
 }

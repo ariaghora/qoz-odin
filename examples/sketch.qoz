@@ -1,18 +1,18 @@
 import mem
 
-Person = struct {
+Person := struct {
     name: string,
     age: i32,
 }
 
-add = fn(a: i32, b: i32): i32 {
+add := fn(a: i32, b: i32): i32 {
     return a + b
 }
 
-main = fn() {
+main := fn() {
     //| Array, all items are of the same type with fixed length
     //+--------------------------------------------------------
-    numbers = arr<i32, 5> { 1, 2, 3, 4, 5 }
+    numbers := arr<i32, 5> { 1, 2, 3, 4, 5 }
 
     //| Allocator is explicitly specified everywhere and a central
     //| construct in Qoz memory management. There are multiple kinds
@@ -20,14 +20,14 @@ main = fn() {
     //+-----------------------------------------
     // allocator = mem.arena_allocator()
     // allocator = mem.tracking_allocator()
-    heap = mem.heap_allocator()
+    heap := mem.heap_allocator()
 
     //| Vector, all items are of the same type with dynamic length
     //+-----------------------------------------------------------
-    floats = vec<f32>(heap) { 1.0, 2.0, 3.0, 4.0, 5.0 }
+    floats := vec<f32>(heap) { 1.0, 2.0, 3.0, 4.0, 5.0 }
     defer free(floats)
 
-    a_map = map<string, i32>(heap) {
+    a_map := map<string, i32>(heap) {
         "one"   = 1,
         "two"   = 2,
         "three" = 3,

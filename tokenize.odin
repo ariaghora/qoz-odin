@@ -5,7 +5,7 @@ import "core:strings"
 import "core:unicode"
 
 Token_Kind :: enum {
-    Assign, Colon, Comma,
+    Eq, Assign, Colon, Comma,
     Plus, Minus, Star, Slash,
     Left_Paren, Right_Paren,
     Left_Brace, Right_Brace,
@@ -68,6 +68,11 @@ make_tok :: proc(t: ^Tokenizer, kind: Token_Kind, source: string) {
     for _ in 0..<len(source) {
         tokenizer_advance(t)
     }
+}
+
+peek :: proc(t: ^Tokenizer, source: string) -> Maybe(rune) {
+    if t.offset > len(source)-1 do return nil
+    return rune(source[t.offset+1])
 }
 
 make_id_or_kw :: proc(t: ^Tokenizer) {
@@ -140,8 +145,7 @@ tokenize :: proc(source: string, allocator := context.allocator) -> (tokens: [dy
         
         switch c {
         case ',': make_tok(&t, .Comma, ",")
-        case '=': make_tok(&t, .Assign, "=")
-        case ':': make_tok(&t, .Colon, ":")
+        case '=': make_tok(&t, .Eq, "=")
         case '(': make_tok(&t, .Left_Paren, "(")
         case ')': make_tok(&t, .Right_Paren, ")")
         case '{': make_tok(&t, .Left_Brace, "{")
@@ -150,6 +154,12 @@ tokenize :: proc(source: string, allocator := context.allocator) -> (tokens: [dy
         case '-': make_tok(&t, .Minus, "-")
         case '*': make_tok(&t, .Star, "*")
         case '/': make_tok(&t, .Slash, "/")
+        case ':': 
+            if peek(&t, source) == '=' {
+                make_tok(&t, .Assign, ":=")
+            } else {
+                make_tok(&t, .Colon, ":")
+            }
         case:
             if unicode.is_alpha(c) {
                 make_id_or_kw(&t)

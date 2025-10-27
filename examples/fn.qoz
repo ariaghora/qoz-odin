@@ -1,10 +1,10 @@
-add = func(a: i32, b: i32): i32 {
+add := func(a: i32, b: i32): i32 {
     return a + b
 }
 
-main = func() {
+main := func() {
     print(42)
 
-    x = add(10, 32)
+    x := add(10, 32)
     print(x)
 }

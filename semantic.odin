@@ -95,6 +95,7 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
     case .Var_Def:
         var_def := node.payload.(Node_Var_Def)
         inferred_type := semantic_infer_type(ctx, var_def.content)
+        node.inferred_type = inferred_type
         semantic_define_symbol(ctx, var_def.name, inferred_type, var_def.content.span)
         semantic_analyze_node(ctx, var_def.content)  
     case .Fn_Call:

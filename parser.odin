@@ -55,6 +55,7 @@ Node :: struct {
     node_kind: Node_Kind,
     parent: ^Node,
     span: Span,
+    inferred_type: Maybe(Type_Info),
     payload: union {
         Node_Bin_Op,
         Node_Call,
