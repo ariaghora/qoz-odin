@@ -79,7 +79,26 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
 
     case .Print:
         print := node.payload.(Node_Print)
-        strings.write_string(&ctx_cg.output_buf, "printf(") 
+        
+        // Get type of expression being printed
+        expr_type := print.content.inferred_type.? or_else panic("Type not annotated")
+        
+        // Determine format specifier
+        format_spec := ""
+        switch t in expr_type {
+        case Primitive_Type:
+            switch t {
+            case .I32, .I64: format_spec = "%d"
+            case .F32, .F64: format_spec = "%f"
+            case .Void: panic("Cannot print void")
+            }
+        case Function_Type:
+            panic("Cannot print function")
+        }
+        
+        strings.write_string(&ctx_cg.output_buf, "printf(\"")
+        strings.write_string(&ctx_cg.output_buf, format_spec)
+        strings.write_string(&ctx_cg.output_buf, "\\n\", ")
         codegen_node(ctx_cg, print.content)
         strings.write_string(&ctx_cg.output_buf, ")")
 

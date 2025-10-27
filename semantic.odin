@@ -95,7 +95,7 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
     case .Var_Def:
         var_def := node.payload.(Node_Var_Def)
         inferred_type := semantic_infer_type(ctx, var_def.content)
-        node.inferred_type = inferred_type
+        node.inferred_type = inferred_type // NOTE(Aria): somehow this is needed
         semantic_define_symbol(ctx, var_def.name, inferred_type, var_def.content.span)
         semantic_analyze_node(ctx, var_def.content)  
     case .Fn_Call:
@@ -138,7 +138,9 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
 
     case .Print:
         semantic_analyze_node(ctx, node.payload.(Node_Print).content)
-        _ = semantic_infer_type(ctx, node.payload.(Node_Print).content)
+        infered_type := semantic_infer_type(ctx, node.payload.(Node_Print).content)
+        // node.inferred_type = infered_type
+
     case .Return:
         // TODO(Aria): analyze multi-codepath return type
         ret := node.payload.(Node_Return)
@@ -174,15 +176,21 @@ semantic_infer_type :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
     
     #partial switch node.node_kind {
     case .Literal:
-        return Primitive_Type.I32
+        type := Primitive_Type.I32
+        node.inferred_type = type
+        return type
     
     case .Identifier:
         iden := node.payload.(Node_Identifier)
         if sym, ok := semantic_lookup_symbol(ctx, iden.name); ok {
-            return sym.type
+            type := sym.type
+            node.inferred_type = type
+            return type
         }
         add_error(ctx, node.span, "Undefined variable '%s'", iden.name)
-        return Primitive_Type.I32
+        type := Primitive_Type.I32
+        node.inferred_type = type
+        return type
     
     case .Bin_Op:
         binop := node.payload.(Node_Bin_Op)
@@ -194,6 +202,7 @@ semantic_infer_type :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
         }
 
         result_type := semantic_binop_type_resolve(left_type, right_type, binop.op, node.span, ctx)
+        node.inferred_type = result_type
         return result_type
     
     case .Un_Op:
@@ -203,18 +212,26 @@ semantic_infer_type :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
         prim, ok := operand_type.(Primitive_Type)
         if !ok {
             add_error(ctx, node.span, "Cannot apply unary operator to non-primitive type")
-            return Primitive_Type.I32
+            type := Primitive_Type.I32
+            node.inferred_type = type
+            return type
         }
         
         #partial switch unop.op.kind {
         case .Plus, .Minus:
             if prim == .Void {
                 add_error(ctx, node.span, "Cannot apply unary operator to void")
-                return Primitive_Type.I32
+                type := Primitive_Type.I32
+                node.inferred_type = type
+                return type
             }
+            type := prim
+            node.inferred_type = type
             return prim
         case:
             add_error(ctx, node.span, "Unary operator %v not defined", unop.op.kind)
+            type := prim
+            node.inferred_type = type
             return prim
         }
     
@@ -224,10 +241,12 @@ semantic_infer_type :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
         for param, i in fn_def.params {
             param_types[i] = param.type
         }
-        return Function_Type{
+        type := Function_Type{
             params = param_types,
             return_type = new_clone(fn_def.return_type, ctx.allocator),
         }
+        node.inferred_type = type
+        return type
     
     case .Fn_Call:
         call := node.payload.(Node_Call)
@@ -236,6 +255,7 @@ semantic_infer_type :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
         fn_type, ok := callee_type.(Function_Type)
         if !ok {
             add_error(ctx, node.span, "Cannot call non-function")
+            node.inferred_type = Primitive_Type.Void
             return Primitive_Type.Void
         }
         
@@ -255,9 +275,13 @@ semantic_infer_type :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
                 add_error(ctx, arg.span, "Argument %d: expected %v, got %v", i, exp_prim, arg_prim)
             }
         }
-        return fn_type.return_type^
+        type := fn_type.return_type^
+        node.inferred_type = type
+        return type
     case:
-        return Primitive_Type.Void
+        type := Primitive_Type.Void
+        node.inferred_type = type
+        return type
     }
 }
 
