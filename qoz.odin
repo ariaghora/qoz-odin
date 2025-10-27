@@ -1,5 +1,6 @@
 package main
 
+import "core:os/os2"
 import "core:mem"
 import vmem "core:mem/virtual"
 import "core:fmt"
@@ -70,6 +71,30 @@ main :: proc() {
 
 	fmt.println("Semantic analysis passed")
 
-	cg, _ := codegen(root, &ctx_sem, context.temp_allocator)
-	fmt.println(cg)
+	c_code, _ := codegen(root, &ctx_sem, context.temp_allocator)
+	
+	output_file := "output.c"
+	os.write_entire_file(output_file, transmute([]byte)c_code) 
+	defer os.remove(output_file)
+	fmt.printfln("Generated C code written to %s", output_file)
+
+	state, stdout, stderr, err := os2.process_exec({
+		command = []string{"clang", "-std=c11", "-O3", "-o", "output", output_file},
+	}, context.allocator)
+
+	if err != nil {
+		fmt.eprintfln("Compilation failed: %v", err)
+		os.exit(1)
+	}
+
+	if state.exit_code == 0 {
+		fmt.println("Compilation successful")
+		fmt.println("Run: ./output")
+	} else {
+		fmt.eprintfln("Compilation failed with exit code %d", state.exit_code)
+		if len(stderr) > 0 {
+			fmt.eprintfln("Error output:\n%s", string(stderr))
+		}
+		os.exit(1)
+	}
 }
