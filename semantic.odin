@@ -105,6 +105,7 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
         for arg in call.args {
             semantic_analyze_node(ctx, arg)
         }
+
     case .Fn_Def:
         fn_def := node.payload.(Node_Fn_Def)
         old_return_type := ctx.current_function_return_type
@@ -136,10 +137,31 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
         semantic_pop_scope(ctx)
         ctx.current_function_return_type = old_return_type
 
+    case .If:
+        if_stmt := node.payload.(Node_If)
+
+        // Analyze condition
+        semantic_analyze_node(ctx, if_stmt.condition)
+        cond_type := semantic_infer_type(ctx, if_stmt.condition)
+        
+        // Check condition is bool
+        if cond_prim, ok := cond_type.(Primitive_Type); !ok || cond_prim != .Bool {
+            add_error(ctx, if_stmt.condition.span, "If condition must be bool")
+        }
+        
+        // Analyze if body
+        for stmt in if_stmt.if_body {
+            semantic_analyze_node(ctx, stmt)
+        }
+        
+        // Analyze else body
+        for stmt in if_stmt.else_body {
+            semantic_analyze_node(ctx, stmt)
+        }
+
     case .Print:
         semantic_analyze_node(ctx, node.payload.(Node_Print).content)
         infered_type := semantic_infer_type(ctx, node.payload.(Node_Print).content)
-        // node.inferred_type = infered_type
 
     case .Return:
         // TODO(Aria): analyze multi-codepath return type
@@ -317,17 +339,25 @@ semantic_binop_type_resolve :: proc(t1, t2: Type_Info, op: Token, span: Span, ct
 semantic_binop_primitive :: proc(t: Primitive_Type, op: Token, span: Span, ctx: ^Semantic_Context) -> Type_Info {
     #partial switch op.kind {
     case .Plus, .Minus, .Star, .Slash:
-        // Arithmetic: numeric types only
-        if t == .Void {
-            add_error(ctx, span, "Cannot apply arithmetic to void")
+        if t == .Void || t == .Bool {
+            add_error(ctx, span, "Cannot apply arithmetic to %v", t)
             return Primitive_Type.I32
         }
-        return t
+        return t  // Numeric type stays numeric
     
-    // TODO(Aria): more ops
-    // case .Less, .Greater, .Less_Eq, .Greater_Eq:
-    //     if t == .Void { error }
-    //     return Primitive_Type.Bool
+    case .Lt, .Gt, .Lt_Eq, .Gt_Eq:
+        if t == .Void || t == .Bool {
+            add_error(ctx, span, "Cannot compare %v", t)
+            return Primitive_Type.Bool
+        }
+        return Primitive_Type.Bool  // Comparison returns bool
+    
+    case .Eq_Eq, .Not_Eq:
+        if t == .Void {
+            add_error(ctx, span, "Cannot compare void")
+            return Primitive_Type.Bool
+        }
+        return Primitive_Type.Bool  // Equality returns bool
     
     case:
         add_error(ctx, span, "Operator %v not defined for type %v", op.kind, t)

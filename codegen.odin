@@ -90,6 +90,7 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
             switch t {
             case .I32, .I64: format_spec = "%d"
             case .F32, .F64: format_spec = "%f"
+            case .Bool: format_spec = "%d"
             case .Void: panic("Cannot print void")
             }
         case Function_Type:

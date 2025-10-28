@@ -9,6 +9,7 @@ Node_Kind :: enum {
     Fn_Call,
     Fn_Def,
     Identifier,
+    If,
     Literal,
     Print,
     Program,
@@ -20,7 +21,7 @@ Node_Kind :: enum {
 
 Type_Info :: union { Primitive_Type, Function_Type }
 
-Primitive_Type :: enum { I32, I64, F32, F64, Void }
+Primitive_Type :: enum { I32, I64, F32, F64, Bool, Void }
 
 Function_Type :: struct {
     params: []Type_Info,
@@ -44,6 +45,7 @@ Node_Bin_Op         :: struct { left, right: ^Node, op: Token }
 Node_Call           :: struct { callee: ^Node, args: [dynamic]^Node }
 Node_Fn_Def         :: struct { params: [dynamic]Fn_Param, body: [dynamic]^Node, return_type: Type_Info }
 Node_Identifier     :: struct { name:string }
+Node_If             :: struct { condition: ^Node, if_body: [dynamic]^Node, else_body: [dynamic]^Node }
 Node_Literal        :: struct { content: Token }
 Node_Print          :: struct { content: ^Node }
 Node_Return         :: struct { value: ^Node } 
@@ -61,6 +63,7 @@ Node :: struct {
         Node_Call,
         Node_Fn_Def,
         Node_Identifier,
+        Node_If,
         Node_Literal,
         Node_Print,
         Node_Return,
@@ -125,6 +128,7 @@ parse :: proc(tokens: [dynamic]Token, allocator := context.allocator) -> (res: ^
 parse_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
     #partial switch ps.current_token.kind {
     case .Iden: return parse_var_def(ps, parent, allocator)
+    case .KW_If: return parse_if_statement(ps, parent, allocator)
     case .KW_Print: return parse_print_statement(ps, parent, allocator)
     case .KW_Return: return parse_return_statement(ps, parent, allocator)
     case:
@@ -148,6 +152,66 @@ parse_var_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
     var_node.payload = Node_Var_Def{name = name_tok.source, content = expr}
     
     return var_node, nil
+}
+
+parse_if_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
+    span_start := ps.idx
+    
+    parser_advance(ps) // eat 'if'
+    
+    cond := parse_expression(ps, parent, allocator) or_return
+    
+    parser_consume(ps, .Left_Brace) or_return
+    
+    // Parse if body
+    if_body := make([dynamic]^Node, allocator)
+    for ps.current_token.kind != .Right_Brace {
+        if ps.current_token.kind == .EOF {
+            return nil, "Unexpected EOF in if statement"
+        }
+        stmt := parse_statement(ps, parent, allocator) or_return
+        append(&if_body, stmt)
+    }
+    
+    parser_consume(ps, .Right_Brace) or_return
+    
+    else_body: [dynamic]^Node
+    if ps.current_token.kind == .KW_Else {
+        parser_advance(ps)
+
+        // Check for else if
+        if ps.current_token.kind == .KW_If {
+            else_if_stmt := parse_if_statement(ps, parent, allocator) or_return
+            else_body = make([dynamic]^Node, allocator)
+            append(&else_body, else_if_stmt)
+        } else {
+            // Regular else block
+            parser_consume(ps, .Left_Brace) or_return
+            
+            else_body = make([dynamic]^Node, allocator)
+            for ps.current_token.kind != .Right_Brace {
+                if ps.current_token.kind == .EOF {
+                    return nil, "Unexpected EOF in else statement"
+                }
+                stmt := parse_statement(ps, parent, allocator) or_return
+                append(&else_body, stmt)
+            }
+            
+            parser_consume(ps, .Right_Brace) or_return
+        }
+    }
+    
+    if_node := new(Node, allocator)
+    if_node.node_kind = .If
+    if_node.parent = parent
+    if_node.span = Span{start = span_start, end = ps.idx - 1}
+    if_node.payload = Node_If{
+        condition = cond,
+        if_body = if_body,
+        else_body = else_body,
+    }
+    
+    return if_node, nil
 }
 
 parse_print_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
@@ -180,6 +244,21 @@ parse_logical :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
 
 parse_equality :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
     left := parse_comparison(ps, parent, allocator) or_return
+
+    for ps.current_token.kind == .Eq_Eq || ps.current_token.kind == .Not_Eq {
+        op_idx := ps.idx
+        op := ps.current_token
+        parser_advance(ps)
+        right := parse_comparison(ps, parent, allocator) or_return
+        
+        left = new_clone(Node {
+            node_kind = .Bin_Op,
+            parent = parent,
+            span = Span{start = left.span.start, end = right.span.end},
+            payload = Node_Bin_Op{left = left, right = right, op = op}
+        }, allocator)
+    }
+
     return left, nil
 }
 

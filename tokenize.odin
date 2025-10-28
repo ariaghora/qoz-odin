@@ -5,12 +5,13 @@ import "core:strings"
 import "core:unicode"
 
 Token_Kind :: enum {
-    Eq, Assign, Colon, Comma,
+    Eq, Eq_Eq, Not_Eq, Assign, Colon, Comma,
+    Lt, Gt, Lt_Eq, Gt_Eq,
     Plus, Minus, Star, Slash,
     Left_Paren, Right_Paren,
     Left_Brace, Right_Brace,
     Lit_Number, Lit_String,
-    KW_Fn, KW_If, KW_Print, KW_Return,
+    KW_Fn, KW_If, KW_Else, KW_Print, KW_Return,
     KW_I32, KW_I64, KW_F32, KW_F64,
     Iden,
     EOF,
@@ -92,6 +93,7 @@ make_id_or_kw :: proc(t: ^Tokenizer) {
     switch tok_src {
     case "func":   tok_kind = .KW_Fn
     case "if":     tok_kind = .KW_If
+    case "else":   tok_kind = .KW_Else
     case "print":  tok_kind = .KW_Print
     case "return": tok_kind = .KW_Return
     case "i32":    tok_kind = .KW_I32
@@ -145,7 +147,6 @@ tokenize :: proc(source: string, allocator := context.allocator) -> (tokens: [dy
         
         switch c {
         case ',': make_tok(&t, .Comma, ",")
-        case '=': make_tok(&t, .Eq, "=")
         case '(': make_tok(&t, .Left_Paren, "(")
         case ')': make_tok(&t, .Right_Paren, ")")
         case '{': make_tok(&t, .Left_Brace, "{")
@@ -159,6 +160,12 @@ tokenize :: proc(source: string, allocator := context.allocator) -> (tokens: [dy
                 make_tok(&t, .Assign, ":=")
             } else {
                 make_tok(&t, .Colon, ":")
+            }
+        case '=': 
+            if peek(&t, source) == '=' {
+                make_tok(&t, .Eq_Eq, "==")
+            } else {
+                make_tok(&t, .Eq, "=")
             }
         case:
             if unicode.is_alpha(c) {
