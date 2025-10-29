@@ -129,8 +129,8 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
             }
 
             if requires_return {
-                if len(fn_def.body) == 0 || fn_def.body[len(fn_def.body)-1].node_kind != .Return {
-                    add_error(ctx, node.span, "Non-void function must end with return statement")
+                if !block_returns(fn_def.body) {
+                    add_error(ctx, node.span, "Non-void function must return on all code paths")
                 }
             }
         }
@@ -363,4 +363,26 @@ semantic_binop_primitive :: proc(t: Primitive_Type, op: Token, span: Span, ctx: 
         add_error(ctx, span, "Operator %v not defined for type %v", op.kind, t)
         return t
     }
+}
+
+@(private="file")
+block_returns :: proc(stmts: [dynamic]^Node) -> bool {
+    if len(stmts) == 0 do return false
+    
+    last := stmts[len(stmts) - 1]
+    
+    #partial switch last.node_kind {
+    case .Return:
+        return true
+    case .If:
+        if_node := last.payload.(Node_If)
+        // Must have else clause
+        if len(if_node.else_body) == 0 do return false
+        // Both branches must return
+        if_returns := block_returns(if_node.if_body)
+        else_returns := block_returns(if_node.else_body)
+        return if_returns && else_returns
+    }
+    
+    return false
 }

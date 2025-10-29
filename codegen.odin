@@ -49,6 +49,13 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         codegen_node(ctx_cg, binop.right)
         strings.write_string(&ctx_cg.output_buf, ")")
 
+    case .Un_Op:
+        binop := node.payload.(Node_Un_Op)
+        strings.write_string(&ctx_cg.output_buf, binop.op.source)
+        strings.write_string(&ctx_cg.output_buf, "(")
+        codegen_node(ctx_cg, binop.operand)
+        strings.write_string(&ctx_cg.output_buf, ")")
+
     case .Fn_Def:
         fn_def := node.payload.(Node_Fn_Def)
 

@@ -1,0 +1,18 @@
+guess := func(number: i32): i32 {
+    if number < 0 {
+        return -1
+    } else if number == 0 {
+        return 0
+    } else {
+        return 1
+    }
+    return 1
+}
+
+main := func(): i32 {
+   print(guess(10))
+   print(guess(0))
+   print(guess(-10))
+
+   return 0
+}

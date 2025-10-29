@@ -161,6 +161,18 @@ tokenize :: proc(source: string, allocator := context.allocator) -> (tokens: [dy
             } else {
                 make_tok(&t, .Colon, ":")
             }
+        case '>': 
+            if peek(&t, source) == '=' {
+                make_tok(&t, .Gt_Eq, ">=")
+            } else {
+                make_tok(&t, .Gt, ">")
+            }
+        case '<': 
+            if peek(&t, source) == '=' {
+                make_tok(&t, .Lt_Eq, "<=")
+            } else {
+                make_tok(&t, .Lt, "<")
+            }
         case '=': 
             if peek(&t, source) == '=' {
                 make_tok(&t, .Eq_Eq, "==")

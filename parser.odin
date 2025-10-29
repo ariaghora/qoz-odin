@@ -264,6 +264,19 @@ parse_equality :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.a
 
 parse_comparison :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
     left := parse_term(ps, parent, allocator) or_return
+    for ps.current_token.kind == .Gt || ps.current_token.kind == .Gt_Eq || ps.current_token.kind == .Lt || ps.current_token.kind == .Lt_Eq {
+        op_idx := ps.idx
+        op := ps.current_token
+        parser_advance(ps)
+        right := parse_term(ps, parent, allocator) or_return
+        
+        left = new_clone(Node {
+            node_kind = .Bin_Op,
+            parent = parent,
+            span = Span{start = left.span.start, end = right.span.end},
+            payload = Node_Bin_Op{left = left, right = right, op = op}
+        }, allocator)
+    }
     return left, nil
 }
 
