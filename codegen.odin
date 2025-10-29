@@ -63,6 +63,41 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         
         strings.write_string(&ctx_cg.output_buf, ")")
 
+    case .If: 
+        if_node := node.payload.(Node_If)
+
+        strings.write_string(&ctx_cg.output_buf, "if (")
+        codegen_node(ctx_cg, if_node.condition)
+        strings.write_string(&ctx_cg.output_buf, ") {\n")
+
+        ctx_cg.indent_level += 1
+        for stmt in if_node.if_body {
+            codegen_indent(ctx_cg, ctx_cg.indent_level) 
+            codegen_node(ctx_cg, stmt)
+        }
+        ctx_cg.indent_level -= 1
+
+        codegen_indent(ctx_cg, ctx_cg.indent_level)
+        strings.write_string(&ctx_cg.output_buf, "}")
+
+        if len(if_node.else_body) > 0 {
+            if len(if_node.else_body) == 1 && if_node.else_body[0].node_kind == .If {
+                strings.write_string(&ctx_cg.output_buf, " else ")
+                codegen_node(ctx_cg, if_node.else_body[0]) 
+            } else {
+                strings.write_string(&ctx_cg.output_buf, " else {\n")
+                ctx_cg.indent_level += 1
+                for stmt in if_node.else_body {
+                    codegen_indent(ctx_cg, ctx_cg.indent_level)
+                    codegen_node(ctx_cg, stmt)
+                }
+                ctx_cg.indent_level -= 1
+                codegen_indent(ctx_cg, ctx_cg.indent_level)
+                strings.write_string(&ctx_cg.output_buf, "}\n")
+            }
+        } else {
+            strings.write_string(&ctx_cg.output_buf, "\n")
+        }
     case .Identifier:
         iden := node.payload.(Node_Identifier)
         strings.write_string(&ctx_cg.output_buf, iden.name)
@@ -76,6 +111,7 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         ret := node.payload.(Node_Return)
         strings.write_string(&ctx_cg.output_buf, "return ")
         codegen_node(ctx_cg, ret.value)
+        strings.write_string(&ctx_cg.output_buf, ";\n")
 
     case .Print:
         print := node.payload.(Node_Print)
@@ -101,7 +137,7 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         strings.write_string(&ctx_cg.output_buf, format_spec)
         strings.write_string(&ctx_cg.output_buf, "\\n\", ")
         codegen_node(ctx_cg, print.content)
-        strings.write_string(&ctx_cg.output_buf, ")")
+        strings.write_string(&ctx_cg.output_buf, ");\n")
 
     case .Var_Def:
         var_def := node.payload.(Node_Var_Def)
@@ -122,7 +158,6 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
             for stmt in fn_def.body {
                 codegen_indent(ctx_cg, ctx_cg.indent_level)
                 codegen_node(ctx_cg, stmt)
-                strings.write_string(&ctx_cg.output_buf, ";\n")
             }
             strings.write_string(&ctx_cg.output_buf, "}\n\n")
             ctx_cg.func_nesting_depth -= 1
@@ -135,6 +170,7 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
             strings.write_string(&ctx_cg.output_buf, var_def.name)
             strings.write_string(&ctx_cg.output_buf, " = ")
             codegen_node(ctx_cg, var_def.content)
+            strings.write_string(&ctx_cg.output_buf, ";\n")
         }
     case: fmt.panicf("Internal error: cannot generate code for node %v", node.node_kind)
     }

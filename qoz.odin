@@ -72,6 +72,8 @@ main :: proc() {
 	fmt.println("Semantic analysis passed")
 
 	c_code, _ := codegen(root, &ctx_sem, context.temp_allocator)
+
+	fmt.println(c_code)
 	
 	output_file := "output.c"
 	os.write_entire_file(output_file, transmute([]byte)c_code) 
@@ -80,7 +82,7 @@ main :: proc() {
 
 	state, stdout, stderr, err := os2.process_exec({
 		command = []string{"clang", "-std=c11", "-O3", "-o", "output", output_file},
-	}, context.allocator)
+	}, context.temp_allocator)
 
 	if err != nil {
 		fmt.eprintfln("Compilation failed: %v", err)
