@@ -15,10 +15,10 @@
 
 ## High Priority (Core Language Features)
 - [ ] **Control Flow Bundle**
-  - [ ] Bool primitive type
-  - [ ] Comparison operators (<, >, <=, >=, ==, !=)
-  - [ ] if/else statements
-  - [ ] while loops
+  - [x] Bool primitive type
+  - [x] Comparison operators (<, >, <=, >=, ==, !=)
+  - [x] if/else statements
+  - [ ] for loops
   - [ ] Update semantic analysis for control flow
   - [ ] Update codegen for control flow
 

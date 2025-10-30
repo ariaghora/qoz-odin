@@ -1,5 +1,6 @@
 package main
 
+import "core:strconv"
 import "core:fmt"
 
 Parse_Error :: union { string }
@@ -11,7 +12,8 @@ Node_Kind :: enum {
     Fn_Def,
     Identifier,
     If,
-    Literal,
+    Literal_Arr,
+    Literal_Number,
     Print,
     Program,
     Return,
@@ -20,13 +22,18 @@ Node_Kind :: enum {
     Var_Def,
 }
 
-Type_Info :: union { Primitive_Type, Function_Type }
+Type_Info :: union { Primitive_Type, Array_Type, Function_Type }
 
 Primitive_Type :: enum { I32, I64, F32, F64, Bool, Void }
 
 Function_Type :: struct {
     params: []Type_Info,
     return_type: ^Type_Info,  
+}
+
+Array_Type :: struct {
+    element_type: ^Type_Info,
+    size: int,
 }
 
 Span :: struct {
@@ -42,6 +49,7 @@ Parsing_State :: struct {
 
 Fn_Param :: struct { name: string, type: Type_Info, span: Span }
 
+Node_Array_Literal  :: struct { element_type: Type_Info, size: int, elements: [dynamic]^Node }
 Node_Assign         :: struct { target: string, value: ^Node }
 Node_Bin_Op         :: struct { left, right: ^Node, op: Token }
 Node_Call           :: struct { callee: ^Node, args: [dynamic]^Node }
@@ -61,6 +69,7 @@ Node :: struct {
     span: Span,
     inferred_type: Maybe(Type_Info),
     payload: union {
+        Node_Array_Literal,
         Node_Assign,
         Node_Bin_Op,
         Node_Call,
@@ -406,7 +415,8 @@ parse_primary :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
     #partial switch ps.current_token.kind {
     case .Iden: return parse_identifier(ps, parent, allocator)
     case .KW_Fn: return parse_fn_def(ps, parent, allocator)
-    case .Lit_Number: return parse_literal(ps, parent, allocator)
+    case .Lit_Number: return parse_literal_number(ps, parent, allocator)
+    case .KW_Arr: return parse_literal_array(ps, parent, allocator)
     case:
         fmt.println(ps.current_token)
         return nil, fmt.tprintf("Expected expression at position %d, got %v", ps.idx, ps.current_token.kind)
@@ -428,12 +438,12 @@ parse_identifier :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context
     return iden_node, nil
 }
 
-parse_literal :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
+parse_literal_number :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
     span_start := ps.idx
     tok := ps.current_token
     
     lit_node := new(Node, allocator)
-    lit_node.node_kind = .Literal
+    lit_node.node_kind = .Literal_Number
     lit_node.parent = parent
     lit_node.payload = Node_Literal{content = tok}
     
@@ -531,6 +541,56 @@ parse_return_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := c
     ret_node.payload = Node_Return{value = expr}
     
     return ret_node, nil
+}
+
+parse_literal_array :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res:^Node, err:Parse_Error) {
+    span_start := ps.idx
+    
+    parser_advance(ps) // eat 'arr'
+    parser_consume(ps, .Lt) or_return
+    
+    // Parse element type
+    elem_type := parse_type(ps) or_return
+    
+    parser_consume(ps, .Comma) or_return
+    
+    // Parse size (must be literal number)
+    if ps.current_token.kind != .Lit_Number {
+        return nil, "Array size must be a number literal"
+    }
+    size_str := ps.current_token.source
+    size := strconv.atoi(size_str)  // You'll need core:strconv
+    parser_advance(ps)
+    
+    parser_consume(ps, .Gt) or_return
+    parser_consume(ps, .Left_Brace) or_return
+    
+    // Parse elements
+    elements := make([dynamic]^Node, allocator)
+    for ps.current_token.kind != .Right_Brace {
+        elem := parse_expression(ps, parent, allocator) or_return
+        append(&elements, elem)
+        
+        if ps.current_token.kind == .Comma {
+            parser_advance(ps)
+        } else if ps.current_token.kind != .Right_Brace {
+            return nil, "Expected ',' or '}' in array literal"
+        }
+    }
+    
+    parser_consume(ps, .Right_Brace) or_return
+    
+    arr_node := new(Node, allocator)
+    arr_node.node_kind = .Literal_Arr
+    arr_node.parent = parent
+    arr_node.span = Span{start = span_start, end = ps.idx - 1}
+    arr_node.payload = Node_Array_Literal{
+        element_type = elem_type,
+        size = size,
+        elements = elements,
+    }
+    
+    return arr_node, nil
 }
 
 parse_type :: proc(ps: ^Parsing_State) -> (Type_Info, Parse_Error) {

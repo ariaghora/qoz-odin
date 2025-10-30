@@ -15,8 +15,9 @@ codegen :: proc(root: ^Node, ctx_sem: ^Semantic_Context, allocator := context.al
     sb := strings.builder_make(allocator) or_return
     ctx_cg := Codegen_Context { output_buf=sb, indent_level=0, ctx_sem=ctx_sem }
 
-    // Source header
-    strings.write_string(&ctx_cg.output_buf, "#include <stdint.h>\n#include <stdio.h>\n\n")
+    strings.write_string(&ctx_cg.output_buf, "#include <stdio.h>\n")
+    strings.write_string(&ctx_cg.output_buf, "#include <stdint.h>\n\n")
+
     // Pass 1: forward declaration
     codegen_forward_decl(&ctx_cg, root)
     strings.write_string(&ctx_cg.output_buf, "\n")
@@ -116,11 +117,22 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         iden := node.payload.(Node_Identifier)
         strings.write_string(&ctx_cg.output_buf, iden.name)
     
-    case .Literal:
+    case .Literal_Arr:
+        arr_lit := node.payload.(Node_Array_Literal)
+        strings.write_string(&ctx_cg.output_buf, "{")
+        for elem, i in arr_lit.elements {
+            codegen_node(ctx_cg, elem)
+            if i < len(arr_lit.elements) - 1 {
+                strings.write_string(&ctx_cg.output_buf, ", ")
+            }
+        }
+        strings.write_string(&ctx_cg.output_buf, "}")
+
+    case .Literal_Number:
         lit := node.payload.(Node_Literal)
         src := lit.content.source
         strings.write_string(&ctx_cg.output_buf, src)
-
+    
     case .Return:
         ret := node.payload.(Node_Return)
         strings.write_string(&ctx_cg.output_buf, "return ")
@@ -145,6 +157,8 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
             }
         case Function_Type:
             panic("Cannot print function")
+        case Array_Type:
+            panic("Cannot print array")
         }
         
         strings.write_string(&ctx_cg.output_buf, "printf(\"")
@@ -185,9 +199,19 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         } else {
             //| Regular case
             //+-------------
+            var_type := node.inferred_type.(Type_Info)
+
             codegen_type(ctx_cg, node.inferred_type.(Type_Info))
             strings.write_string(&ctx_cg.output_buf, " ")
             strings.write_string(&ctx_cg.output_buf, var_def.name)
+
+            // If array, add size to declarator
+            if arr_type, is_arr := var_type.(Array_Type); is_arr {
+                strings.write_string(&ctx_cg.output_buf, "[")
+                fmt.sbprintf(&ctx_cg.output_buf, "%d", arr_type.size)
+                strings.write_string(&ctx_cg.output_buf, "]")
+            }
+
             strings.write_string(&ctx_cg.output_buf, " = ")
             codegen_node(ctx_cg, var_def.content)
             strings.write_string(&ctx_cg.output_buf, ";\n")
@@ -206,6 +230,8 @@ codegen_type :: proc(ctx_cg: ^Codegen_Context, type: Type_Info) {
         case .Void: strings.write_string(&ctx_cg.output_buf, "void")
         case: fmt.panicf("Internal error: cannot generate code for type %v", t)
         }
+    case Array_Type:
+        codegen_type(ctx_cg, t.element_type^)
     }
     
 }

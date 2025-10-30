@@ -13,6 +13,7 @@ Token_Kind :: enum {
     Lit_Number, Lit_String,
     KW_Fn, KW_If, KW_Else, KW_Print, KW_Return,
     KW_I32, KW_I64, KW_F32, KW_F64, KW_Void,
+    KW_Arr, KW_Map,
     Iden,
     EOF,
 }
@@ -101,6 +102,7 @@ make_id_or_kw :: proc(t: ^Tokenizer) {
     case "f32":    tok_kind = .KW_F32
     case "f64":    tok_kind = .KW_F64
     case "void":   tok_kind = .KW_Void
+    case "arr":    tok_kind = .KW_Arr
     case:          tok_kind = .Iden
     }
     

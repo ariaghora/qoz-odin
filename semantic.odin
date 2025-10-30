@@ -225,6 +225,35 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
         for stmt in if_stmt.else_body {
             semantic_analyze_node(ctx, stmt)
         }
+    case .Literal_Arr:
+        arr_lit := node.payload.(Node_Array_Literal)
+        
+        // Analyze all elements
+        for elem in arr_lit.elements {
+            semantic_analyze_node(ctx, elem)
+        }
+        
+        // Validate element count matches size
+        if len(arr_lit.elements) != arr_lit.size {
+            add_error(ctx, node.span, "Array literal has %d elements but size is %d", 
+                len(arr_lit.elements), arr_lit.size)
+        }
+        
+        // Validate all elements match declared type
+        for elem, i in arr_lit.elements {
+            elem_type := semantic_infer_type(ctx, elem)
+            if !types_equal(elem_type, arr_lit.element_type) {
+                add_error(ctx, elem.span, "Array element %d: expected %v, got %v", 
+                    i, arr_lit.element_type, elem_type)
+            }
+        }
+        
+        // Infer array type
+        array_type := Array_Type{
+            element_type = new_clone(arr_lit.element_type, ctx.allocator),
+            size = arr_lit.size,
+        }
+        node.inferred_type = array_type
 
     case .Print:
         semantic_analyze_node(ctx, node.payload.(Node_Print).content)
@@ -254,7 +283,7 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
 
     case .Un_Op:
         semantic_analyze_node(ctx, node.payload.(Node_Un_Op).operand)
-    case .Literal, .Identifier:
+    case .Literal_Number, .Identifier:
         // nothing happened. These are leaf nodes in expressions.
     case: fmt.panicf("Cannot analyze %v yet", node.node_kind)
     }
@@ -264,7 +293,13 @@ semantic_infer_type :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
     if node == nil do return Primitive_Type.Void
     
     #partial switch node.node_kind {
-    case .Literal:
+    case .Literal_Arr:
+        arr_lit := node.payload.(Node_Array_Literal)
+        return Array_Type{
+            element_type = new_clone(arr_lit.element_type, ctx.allocator),
+            size = arr_lit.size,
+        }
+    case .Literal_Number:
         type := Primitive_Type.I32
         node.inferred_type = type
         return type
@@ -382,6 +417,10 @@ types_equal :: proc(a, b: Type_Info) -> bool {
     case Function_Type:
         fmt.println("TODO(Aria): types are uncomparable")
         return false
+    case Array_Type:
+        b_val, ok := b.(Array_Type)
+        if !ok do return false
+        return b_val.size == a_val.size && types_equal(a_val.element_type^, b_val.element_type^)
     }
     return false
 }
@@ -392,11 +431,11 @@ semantic_binop_type_resolve :: proc(t1, t2: Type_Info, op: Token, span: Span, ct
         return Primitive_Type.I32
     }
     
-    switch t in t1 {
+    #partial switch t in t1 {
     case Primitive_Type:
         return semantic_binop_primitive(t, op, span, ctx)
-    case Function_Type:
-        add_error(ctx, span, "Cannot use function in binary operation")
+    case:
+        add_error(ctx, span, fmt.tprintf("Cannot use %v in binary operation", t))
         return Primitive_Type.I32
     }
     
