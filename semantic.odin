@@ -171,7 +171,7 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
         // Check iterable is an array
         arr_type, is_array := iterable_type.(Array_Type)
         if !is_array {
-            add_error(ctx, for_in.iterable.span, "Cannot iterate over non-array type %v", iterable_type)
+            add_error(ctx, for_in.iterable.span, "Cannot iterate over non-iterable type %v", iterable_type)
             return
         }
         
