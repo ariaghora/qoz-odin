@@ -300,7 +300,7 @@ parse_term :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.alloc
 
 parse_factor :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
     left := parse_unary(ps, parent, allocator) or_return
-    for ps.current_token.kind == .Star || ps.current_token.kind == .Slash {
+    for ps.current_token.kind == .Star || ps.current_token.kind == .Slash || ps.current_token.kind == .Percent {
         op := ps.current_token
         parser_advance(ps)
         right := parse_unary(ps, parent, allocator) or_return

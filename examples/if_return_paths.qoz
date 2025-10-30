@@ -1,3 +1,11 @@
+gcd := func(a: i32, b: i32): i32 {
+    if b == 0 {
+        return a
+    } else {
+        return gcd(b, a % b)
+    }
+}
+
 guess := func(number: i32): i32 {
     if number < 0 {
         return -1
@@ -13,6 +21,8 @@ main := func(): i32 {
    print(guess(10))
    print(guess(0))
    print(guess(-10))
+
+   print(gcd(48, 18))
 
    return 0
 }

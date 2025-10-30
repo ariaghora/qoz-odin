@@ -352,6 +352,10 @@ semantic_binop_primitive :: proc(t: Primitive_Type, op: Token, span: Span, ctx: 
         }
         return Primitive_Type.Bool  // Comparison returns bool
     
+    case .Percent:
+        if t == .I32 || t == .I64 do return t
+        return .I32
+
     case .Eq_Eq, .Not_Eq:
         if t == .Void {
             add_error(ctx, span, "Cannot compare void")

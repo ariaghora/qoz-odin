@@ -7,7 +7,7 @@ import "core:unicode"
 Token_Kind :: enum {
     Eq, Eq_Eq, Not_Eq, Assign, Colon, Comma,
     Lt, Gt, Lt_Eq, Gt_Eq,
-    Plus, Minus, Star, Slash,
+    Plus, Minus, Star, Slash, Percent,
     Left_Paren, Right_Paren,
     Left_Brace, Right_Brace,
     Lit_Number, Lit_String,
@@ -155,6 +155,7 @@ tokenize :: proc(source: string, allocator := context.allocator) -> (tokens: [dy
         case '-': make_tok(&t, .Minus, "-")
         case '*': make_tok(&t, .Star, "*")
         case '/': make_tok(&t, .Slash, "/")
+        case '%': make_tok(&t, .Percent, "%")
         case ':': 
             if peek(&t, source) == '=' {
                 make_tok(&t, .Assign, ":=")
