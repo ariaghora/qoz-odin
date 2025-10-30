@@ -1,4 +1,10 @@
 main := func() {
     numbers := arr<i32, 5>{1, 2, 3, 4, 5}
+    
     sum := 0
+    for n in numbers {
+        sum = sum + n
+    }
+
+    print(sum)
 }

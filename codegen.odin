@@ -9,6 +9,7 @@ Codegen_Context :: struct {
     indent_level: int,
     ctx_sem: ^Semantic_Context,
     func_nesting_depth: int, // TODO(Aria): track depth for lambda lifting
+    loop_counter: int,
 }
 
 codegen :: proc(root: ^Node, ctx_sem: ^Semantic_Context, allocator := context.allocator) -> (res: string, err: mem.Allocator_Error) {
@@ -77,6 +78,47 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         }
         
         strings.write_string(&ctx_cg.output_buf, ")")
+    
+    case .For_In:
+        for_in := node.payload.(Node_For_In)
+        
+        iterable_type := for_in.iterable.inferred_type.? or_else panic("Type not annotated")
+        arr_type := iterable_type.(Array_Type)
+        
+        // Generate unique index variable
+        loop_idx := ctx_cg.loop_counter
+        ctx_cg.loop_counter += 1
+        
+        strings.write_string(&ctx_cg.output_buf, "for (int32_t __i")
+        fmt.sbprintf(&ctx_cg.output_buf, "%d", loop_idx)
+        strings.write_string(&ctx_cg.output_buf, " = 0; __i")
+        fmt.sbprintf(&ctx_cg.output_buf, "%d", loop_idx)
+        strings.write_string(&ctx_cg.output_buf, " < ")
+        fmt.sbprintf(&ctx_cg.output_buf, "%d", arr_type.size)
+        strings.write_string(&ctx_cg.output_buf, "; __i")
+        fmt.sbprintf(&ctx_cg.output_buf, "%d", loop_idx)
+        strings.write_string(&ctx_cg.output_buf, "++) {\n")
+        
+        ctx_cg.indent_level += 1
+        
+        codegen_indent(ctx_cg, ctx_cg.indent_level)
+        codegen_type(ctx_cg, arr_type.element_type^)
+        strings.write_string(&ctx_cg.output_buf, " ")
+        strings.write_string(&ctx_cg.output_buf, for_in.iterator)
+        strings.write_string(&ctx_cg.output_buf, " = ")
+        codegen_node(ctx_cg, for_in.iterable)
+        strings.write_string(&ctx_cg.output_buf, "[__i")
+        fmt.sbprintf(&ctx_cg.output_buf, "%d", loop_idx)
+        strings.write_string(&ctx_cg.output_buf, "];\n")
+        
+        for stmt in for_in.body {
+            codegen_indent(ctx_cg, ctx_cg.indent_level)
+            codegen_node(ctx_cg, stmt)
+        }
+        
+        ctx_cg.indent_level -= 1
+        codegen_indent(ctx_cg, ctx_cg.indent_level)
+        strings.write_string(&ctx_cg.output_buf, "}\n")
 
     case .If: 
         if_node := node.payload.(Node_If)

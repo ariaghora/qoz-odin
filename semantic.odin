@@ -130,6 +130,11 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
     if node == nil do return 
 
     #partial switch node.node_kind {
+    case .Program: 
+        for stmt in node.payload.(Node_Statement_List).nodes {
+            semantic_analyze_node(ctx, stmt)
+        }
+
     case .Assignment:
         assign := node.payload.(Node_Assign)
         
@@ -155,16 +160,35 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
         binop := node.payload.(Node_Bin_Op)
         semantic_analyze_node(ctx, binop.left)
         semantic_analyze_node(ctx, binop.right)
-    case .Program: 
-        for stmt in node.payload.(Node_Statement_List).nodes {
-            semantic_analyze_node(ctx, stmt)
+
+    case .For_In:
+        for_in := node.payload.(Node_For_In)
+        
+        // Analyze iterable expression
+        semantic_analyze_node(ctx, for_in.iterable)
+        iterable_type := semantic_infer_type(ctx, for_in.iterable)
+        
+        // Check iterable is an array
+        arr_type, is_array := iterable_type.(Array_Type)
+        if !is_array {
+            add_error(ctx, for_in.iterable.span, "Cannot iterate over non-array type %v", iterable_type)
+            return
         }
+        
+        // For loop body will have its own scope, so let's create it
+        semantic_push_scope(ctx)
+        // Define iterator variable with element type
+        semantic_define_symbol(ctx, for_in.iterator, arr_type.element_type^, node.span)
+        for stmt in for_in.body do semantic_analyze_node(ctx, stmt)
+        semantic_pop_scope(ctx)
+
     case .Var_Def:
         var_def := node.payload.(Node_Var_Def)
         inferred_type := semantic_infer_type(ctx, var_def.content)
         node.inferred_type = inferred_type // NOTE(Aria): somehow this is needed
         semantic_define_symbol(ctx, var_def.name, inferred_type, var_def.content.span)
         semantic_analyze_node(ctx, var_def.content)  
+    
     case .Fn_Call:
         call := node.payload.(Node_Call)
         semantic_analyze_node(ctx, call.callee)

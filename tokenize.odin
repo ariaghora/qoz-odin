@@ -13,9 +13,8 @@ Token_Kind :: enum {
     Lit_Number, Lit_String,
     KW_Fn, KW_If, KW_Else, KW_Print, KW_Return,
     KW_I32, KW_I64, KW_F32, KW_F64, KW_Void,
-    KW_Arr, KW_Map,
-    Iden,
-    EOF,
+    KW_Arr, KW_Map, KW_For, KW_In,
+    Iden, EOF,
 }
 
 Tokenize_Error :: union {
@@ -93,6 +92,8 @@ make_id_or_kw :: proc(t: ^Tokenizer) {
     
     switch tok_src {
     case "func":   tok_kind = .KW_Fn
+    case "for":    tok_kind = .KW_For
+    case "in":     tok_kind = .KW_In
     case "if":     tok_kind = .KW_If
     case "else":   tok_kind = .KW_Else
     case "print":  tok_kind = .KW_Print

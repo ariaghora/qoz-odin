@@ -10,6 +10,8 @@ Node_Kind :: enum {
     Bin_Op,
     Fn_Call,
     Fn_Def,
+    For_In,
+    For_C,
     Identifier,
     If,
     Literal_Arr,
@@ -54,6 +56,7 @@ Node_Assign         :: struct { target: string, value: ^Node }
 Node_Bin_Op         :: struct { left, right: ^Node, op: Token }
 Node_Call           :: struct { callee: ^Node, args: [dynamic]^Node }
 Node_Fn_Def         :: struct { params: [dynamic]Fn_Param, body: [dynamic]^Node, return_type: Type_Info }
+Node_For_In         :: struct { iterator: string, iterable: ^Node, body: [dynamic]^Node }
 Node_Identifier     :: struct { name:string }
 Node_If             :: struct { condition: ^Node, if_body: [dynamic]^Node, else_body: [dynamic]^Node }
 Node_Literal        :: struct { content: Token }
@@ -74,6 +77,7 @@ Node :: struct {
         Node_Bin_Op,
         Node_Call,
         Node_Fn_Def,
+        Node_For_In,
         Node_Identifier,
         Node_If,
         Node_Literal,
@@ -147,6 +151,7 @@ parse_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.
         } else {
             return nil, "Expected := or = after identifier"
         }
+    case .KW_For: return parse_for_in_statement(ps, parent, allocator)
     case .KW_If: return parse_if_statement(ps, parent, allocator)
     case .KW_Print: return parse_print_statement(ps, parent, allocator)
     case .KW_Return: return parse_return_statement(ps, parent, allocator)
@@ -591,6 +596,50 @@ parse_literal_array :: proc(ps: ^Parsing_State, parent: ^Node, allocator := cont
     }
     
     return arr_node, nil
+}
+
+parse_for_in_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res:^Node, err:Parse_Error) {
+    span_start := ps.idx
+    parser_advance(ps) // eat 'for'
+    
+    // Parse iterator variable
+    if ps.current_token.kind != .Iden {
+        return nil, "Expected identifier after 'for'"
+    }
+    iterator := ps.current_token.source
+    parser_advance(ps)
+    
+    // Expect 'in'
+    parser_consume(ps, .KW_In) or_return
+    
+    // Parse iterable expression
+    iterable := parse_expression(ps, parent, allocator) or_return
+    
+    // Parse body
+    parser_consume(ps, .Left_Brace) or_return
+    
+    body := make([dynamic]^Node, allocator)
+    for ps.current_token.kind != .Right_Brace {
+        if ps.current_token.kind == .EOF {
+            return nil, "Unexpected EOF in for statement"
+        }
+        stmt := parse_statement(ps, parent, allocator) or_return
+        append(&body, stmt)
+    }
+    
+    parser_consume(ps, .Right_Brace) or_return
+    
+    for_node := new(Node, allocator)
+    for_node.node_kind = .For_In
+    for_node.parent = parent
+    for_node.span = Span{start = span_start, end = ps.idx - 1}
+    for_node.payload = Node_For_In{
+        iterator = iterator,
+        iterable = iterable,
+        body = body,
+    }
+    
+    return for_node, nil
 }
 
 parse_type :: proc(ps: ^Parsing_State) -> (Type_Info, Parse_Error) {
