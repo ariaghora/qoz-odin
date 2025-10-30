@@ -2,12 +2,11 @@ add := func(a: i32, b: i32): i32 {
     return a + b
 }
 
-main := func(): i32 {
+main := func() {
     print(42)
 
     x := add(2, 10)
     x = x * 2
+    
     print(x)
-
-    return 0
 }

@@ -68,6 +68,52 @@ semantic_analyze :: proc(root: ^Node, allocator := context.allocator) -> Semanti
     semantic_push_scope(&ctx) // global
     semantic_analyze_node(&ctx, root)
 
+    // Validate main function exists
+    main_span := Span{start = 0, end = 0}
+    main_sym, has_main := ctx.current_scope.symbols["main"]
+
+    // Find main's definition span
+    if root.node_kind == .Program {
+        for stmt in root.payload.(Node_Statement_List).nodes {
+            if stmt.node_kind == .Var_Def {
+                var_def := stmt.payload.(Node_Var_Def)
+                if var_def.name == "main" {
+                    main_span = stmt.span
+                    break
+                }
+            }
+        }
+    }
+
+    if !has_main {
+        append(&ctx.errors, Semantic_Error{
+            message = "Program must define a 'main' function",
+            span = Span{start = 0, end = 0},  
+        })
+    } else {
+        fn_type, is_fn := main_sym.type.(Function_Type)
+        if !is_fn {
+            append(&ctx.errors, Semantic_Error{
+                message = "'main' must be a function",
+                span = main_span,  
+            })
+        } else {
+            if len(fn_type.params) != 0 {
+                append(&ctx.errors, Semantic_Error{
+                    message = "'main' must take no parameters",
+                    span = main_span,
+                })
+            }
+            ret_type, is_void := fn_type.return_type^.(Primitive_Type)
+            if !is_void || ret_type != .Void {
+                append(&ctx.errors, Semantic_Error{
+                    message = "'main' must return void",
+                    span = main_span,
+                })
+            }
+        }
+    }
+
     return ctx
 }
 

@@ -536,6 +536,7 @@ parse_return_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := c
 parse_type :: proc(ps: ^Parsing_State) -> (Type_Info, Parse_Error) {
     prim: Type_Info
     #partial switch ps.current_token.kind {
+    case .KW_Void: prim = .Void
     case .KW_I32: prim = .I32
     case .KW_I64: prim = .I64
     case .KW_F32: prim = .F32

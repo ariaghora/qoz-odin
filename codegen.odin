@@ -173,6 +173,12 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
                 codegen_indent(ctx_cg, ctx_cg.indent_level)
                 codegen_node(ctx_cg, stmt)
             }
+            // Special case: add return 0 to main 
+            if var_def.name == "main" {
+                codegen_indent(ctx_cg, ctx_cg.indent_level)
+                strings.write_string(&ctx_cg.output_buf, "return 0;\n")
+            }
+
             strings.write_string(&ctx_cg.output_buf, "}\n\n")
             ctx_cg.func_nesting_depth -= 1
             ctx_cg.indent_level -= 1
@@ -220,10 +226,13 @@ codegen_forward_decl :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
     }
 }
 
-codegen_fn_def :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
-}
-
 codegen_func_signature :: proc(ctx_cg: ^Codegen_Context, fn_name: string, node: Node_Fn_Def) {
+    // Special case for main, we alter the signature to match strict C main requirement
+    if fn_name == "main" {
+        strings.write_string(&ctx_cg.output_buf, "int32_t main(void)")
+        return
+    }
+
     codegen_type(ctx_cg, node.return_type)
     strings.write_string(&ctx_cg.output_buf, " ")
     strings.write_string(&ctx_cg.output_buf, fn_name)
