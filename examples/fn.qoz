@@ -6,6 +6,7 @@ main := func(): i32 {
     print(42)
 
     x := add(2, 10)
+    x = x * 2
     print(x)
 
     return 0

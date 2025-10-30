@@ -28,9 +28,9 @@ main := fn() {
     defer free(floats)
 
     a_map := map<string, i32>(heap) {
-        "one"   = 1,
-        "two"   = 2,
-        "three" = 3,
+        "one"   : 1,
+        "two"   : 2,
+        "three" : 3,
     }
 
     print(42)

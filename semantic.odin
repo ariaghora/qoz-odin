@@ -84,6 +84,27 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
     if node == nil do return 
 
     #partial switch node.node_kind {
+    case .Assignment:
+        assign := node.payload.(Node_Assign)
+        
+        // Check variable exists
+        sym, ok := semantic_lookup_symbol(ctx, assign.target)
+        if !ok {
+            add_error(ctx, node.span, "Undefined variable '%s'", assign.target)
+            return
+        }
+        
+        // Analyze and infer type of value
+        semantic_analyze_node(ctx, assign.value)
+        value_type := semantic_infer_type(ctx, assign.value)
+        
+        // Check types match
+        if !types_equal(sym.type, value_type) {
+            add_error(ctx, node.span, "Cannot assign %v to variable '%s' of type %v", 
+                value_type, assign.target, sym.type)
+        }
+        
+        node.inferred_type = sym.type
     case .Bin_Op:
         binop := node.payload.(Node_Bin_Op)
         semantic_analyze_node(ctx, binop.left)

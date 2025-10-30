@@ -5,6 +5,7 @@ import "core:fmt"
 Parse_Error :: union { string }
 
 Node_Kind :: enum {
+    Assignment,
     Bin_Op,
     Fn_Call,
     Fn_Def,
@@ -41,6 +42,7 @@ Parsing_State :: struct {
 
 Fn_Param :: struct { name: string, type: Type_Info, span: Span }
 
+Node_Assign         :: struct { target: string, value: ^Node }
 Node_Bin_Op         :: struct { left, right: ^Node, op: Token }
 Node_Call           :: struct { callee: ^Node, args: [dynamic]^Node }
 Node_Fn_Def         :: struct { params: [dynamic]Fn_Param, body: [dynamic]^Node, return_type: Type_Info }
@@ -59,6 +61,7 @@ Node :: struct {
     span: Span,
     inferred_type: Maybe(Type_Info),
     payload: union {
+        Node_Assign,
         Node_Bin_Op,
         Node_Call,
         Node_Fn_Def,
@@ -127,7 +130,14 @@ parse :: proc(tokens: [dynamic]Token, allocator := context.allocator) -> (res: ^
 
 parse_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
     #partial switch ps.current_token.kind {
-    case .Iden: return parse_var_def(ps, parent, allocator)
+    case .Iden: 
+        if ps.tokens[ps.idx + 1].kind == .Assign {
+            return parse_var_def(ps, parent, allocator)
+        } else if ps.tokens[ps.idx + 1].kind == .Eq {
+            return parse_assignment(ps, parent, allocator)
+        } else {
+            return nil, "Expected := or = after identifier"
+        }
     case .KW_If: return parse_if_statement(ps, parent, allocator)
     case .KW_Print: return parse_print_statement(ps, parent, allocator)
     case .KW_Return: return parse_return_statement(ps, parent, allocator)
@@ -136,12 +146,33 @@ parse_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.
     }
 }
 
+parse_assignment :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
+    span_start := ps.idx
+    name := ps.current_token.source
+    
+    parser_advance(ps)
+    parser_consume(ps, .Eq) or_return
+    
+    assign_node := new(Node, allocator)
+    assign_node.node_kind = .Assignment
+    assign_node.parent = parent
+    
+    value := parse_expression(ps, assign_node, allocator) or_return
+    assign_node.span = Span{start = span_start, end = ps.idx - 1}
+    assign_node.payload = Node_Assign{target = name, value = value}
+    
+    return assign_node, nil
+}
+
 parse_var_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
     span_start := ps.idx
     name_tok := ps.current_token
     
     parser_advance(ps)
-    parser_consume(ps, .Assign) or_return
+    if !(ps.current_token.kind == .Assign || ps.current_token.kind == .Eq) {
+        return nil, fmt.tprintf("Expected (re)assignment, got %v", ps.current_token.kind)
+    }
+    parser_advance(ps)
     
     var_node := new(Node, allocator)
     var_node.node_kind = .Var_Def
