@@ -11,7 +11,7 @@ Token_Kind :: enum {
     Left_Paren, Right_Paren,
     Left_Brace, Right_Brace,
     Lit_Number, Lit_String,
-    KW_Fn, KW_If, KW_Else, KW_Print, KW_Return,
+    KW_Fn, KW_External, KW_If, KW_Else, KW_Print, KW_Return,
     KW_I32, KW_I64, KW_F32, KW_F64, KW_Void,
     KW_Arr, KW_Map, KW_For, KW_In,
     Iden, EOF,
@@ -91,20 +91,21 @@ make_id_or_kw :: proc(t: ^Tokenizer) {
     tok_kind: Token_Kind
     
     switch tok_src {
-    case "func":   tok_kind = .KW_Fn
-    case "for":    tok_kind = .KW_For
-    case "in":     tok_kind = .KW_In
-    case "if":     tok_kind = .KW_If
-    case "else":   tok_kind = .KW_Else
-    case "print":  tok_kind = .KW_Print
-    case "return": tok_kind = .KW_Return
-    case "i32":    tok_kind = .KW_I32
-    case "i64":    tok_kind = .KW_I64
-    case "f32":    tok_kind = .KW_F32
-    case "f64":    tok_kind = .KW_F64
-    case "void":   tok_kind = .KW_Void
-    case "arr":    tok_kind = .KW_Arr
-    case:          tok_kind = .Iden
+    case "func":     tok_kind = .KW_Fn
+    case "external": tok_kind = .KW_External
+    case "for":      tok_kind = .KW_For
+    case "in":       tok_kind = .KW_In
+    case "if":       tok_kind = .KW_If
+    case "else":     tok_kind = .KW_Else
+    case "print":    tok_kind = .KW_Print
+    case "return":   tok_kind = .KW_Return
+    case "i32":      tok_kind = .KW_I32
+    case "i64":      tok_kind = .KW_I64
+    case "f32":      tok_kind = .KW_F32
+    case "f64":      tok_kind = .KW_F64
+    case "void":     tok_kind = .KW_Void
+    case "arr":      tok_kind = .KW_Arr
+    case:            tok_kind = .Iden
     }
     
     append(&t.tokens, Token{

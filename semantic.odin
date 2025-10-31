@@ -134,6 +134,9 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
         for stmt in node.payload.(Node_Statement_List).nodes {
             semantic_analyze_node(ctx, stmt)
         }
+    
+    case .Expr_Statement:
+        semantic_analyze_node(ctx, node.payload.(Node_Expr_Statement).expr)
 
     case .Assignment:
         assign := node.payload.(Node_Assign)
@@ -212,6 +215,8 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
 
     case .Fn_Def:
         fn_def := node.payload.(Node_Fn_Def)
+        if fn_def.is_external do return 
+
         old_return_type := ctx.current_function_return_type
         ctx.current_function_return_type = fn_def.return_type
         
@@ -314,6 +319,7 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
 
     case .Un_Op:
         semantic_analyze_node(ctx, node.payload.(Node_Un_Op).operand)
+    
     case .Literal_Number, .Identifier:
         // nothing happened. These are leaf nodes in expressions.
     case: fmt.panicf("Cannot analyze %v yet", node.node_kind)
@@ -466,6 +472,10 @@ types_equal :: proc(a, b: Type_Info) -> bool {
         b_val, ok := b.(Array_Type)
         if !ok do return false
         return b_val.size == a_val.size && types_equal(a_val.element_type^, b_val.element_type^)
+    case Pointer_Type:
+        b_val, ok := b.(Pointer_Type)
+        if !ok do return false
+        return types_equal(a_val.pointee^, b_val.pointee^)
     }
     return false
 }

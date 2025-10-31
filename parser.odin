@@ -9,6 +9,7 @@ Parse_Error :: union { string }
 Node_Kind :: enum {
     Assignment,
     Bin_Op,
+    Expr_Statement,
     Fn_Call,
     Fn_Def,
     For_In,
@@ -60,7 +61,7 @@ Node_Array_Literal  :: struct { element_type: Type_Info, size: int, elements: [d
 Node_Assign         :: struct { target: string, value: ^Node }
 Node_Bin_Op         :: struct { left, right: ^Node, op: Token }
 Node_Call           :: struct { callee: ^Node, args: [dynamic]^Node }
-Node_Fn_Def         :: struct { params: [dynamic]Fn_Param, body: [dynamic]^Node, return_type: Type_Info }
+Node_Fn_Def         :: struct { params: [dynamic]Fn_Param, body: [dynamic]^Node, return_type: Type_Info, is_external: bool}
 Node_For_In         :: struct { iterator: string, iterable: ^Node, body: [dynamic]^Node }
 Node_Identifier     :: struct { name:string }
 Node_If             :: struct { condition: ^Node, if_body: [dynamic]^Node, else_body: [dynamic]^Node }
@@ -70,6 +71,7 @@ Node_Return         :: struct { value: ^Node }
 Node_Statement_List :: struct { nodes: [dynamic]^Node }
 Node_Un_Op          :: struct { operand: ^Node, op: Token }
 Node_Var_Def        :: struct { name: string, content: ^Node, explicit_type: Maybe(Type_Info) }
+Node_Expr_Statement :: struct { expr: ^Node }
 
 Node :: struct {
     node_kind: Node_Kind,
@@ -81,6 +83,7 @@ Node :: struct {
         Node_Assign,
         Node_Bin_Op,
         Node_Call,
+        Node_Expr_Statement,
         Node_Fn_Def,
         Node_For_In,
         Node_Identifier,
@@ -156,6 +159,14 @@ parse_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.
         } else if next_tok == .Eq {
             // x = val
             return parse_assignment(ps, parent, allocator)
+        } else if next_tok == .Left_Paren {
+            // Expression statement (function call)
+            expr := parse_expression(ps, parent, allocator) or_return
+            
+            expr_stmt := new(Node, allocator)
+            expr_stmt.node_kind = .Expr_Statement
+            expr_stmt.payload = Node_Expr_Statement{expr = expr}
+            return expr_stmt, nil
         } else {
             return nil, "Expected :=, :, or = after identifier in statement"
         }
@@ -203,11 +214,6 @@ parse_var_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
     }
 
     expr := parse_expression(ps, parent, allocator) or_return
-
-    // if !(ps.current_token.kind == .Assign || ps.current_token.kind == .Eq) {
-    //     return nil, fmt.tprintf("Expected (re)assignment, got %v", ps.current_token.kind)
-    // }
-    // parser_advance(ps)
     
     var_node := new(Node, allocator)
     var_node.node_kind = .Var_Def
@@ -524,25 +530,31 @@ parse_fn_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.all
 
     }
 
-    // beginning of fn body
-    parser_consume(ps, .Left_Brace) or_return
-    
+    is_external := false
+    if ps.current_token.kind == .KW_External {
+        is_external = true
+        parser_advance(ps)
+    }
+
     fn_node := new(Node, allocator)
+    stmts := make([dynamic]^Node, allocator)
+
+    if !is_external {
+        parser_consume(ps, .Left_Brace) or_return
+        for ps.current_token.kind != .Right_Brace {
+            if ps.current_token.kind == .EOF {
+                return nil, fmt.tprintf("Unexpected EOF in function body starting at position %d", span_start)
+            }
+            stmt := parse_statement(ps, fn_node, allocator) or_return
+            append(&stmts, stmt)
+        }
+        parser_consume(ps, .Right_Brace) or_return
+    }
+    
     fn_node.node_kind = .Fn_Def
     fn_node.parent = parent
     fn_node.span = Span{start = span_start, end = ps.idx}
-    
-    stmts := make([dynamic]^Node, allocator)
-    for ps.current_token.kind != .Right_Brace {
-        if ps.current_token.kind == .EOF {
-            return nil, fmt.tprintf("Unexpected EOF in function body starting at position %d", span_start)
-        }
-        stmt := parse_statement(ps, fn_node, allocator) or_return
-        append(&stmts, stmt)
-    }
-    
-    fn_node.payload = Node_Fn_Def{params=param_list, body = stmts, return_type = return_type}
-    parser_consume(ps, .Right_Brace) or_return
+    fn_node.payload = Node_Fn_Def{params=param_list, body=stmts, return_type=return_type, is_external=is_external}
     fn_node.span.end = ps.idx - 1  
     
     return fn_node, nil

@@ -43,6 +43,10 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
             codegen_node(ctx_cg, stmt)
         }
 
+    case .Expr_Statement:
+        codegen_node(ctx_cg, node.payload.(Node_Expr_Statement).expr)
+        strings.write_string(&ctx_cg.output_buf, ";\n")
+
     case .Assignment:
         assign := node.payload.(Node_Assign)
         strings.write_string(&ctx_cg.output_buf, assign.target)
@@ -223,6 +227,8 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
 
             fn_def := var_def.content.payload.(Node_Fn_Def)
 
+            if fn_def.is_external do return
+
             ctx_cg.func_nesting_depth += 1
             ctx_cg.indent_level += 1
             codegen_func_signature(ctx_cg, var_def.name, fn_def)
@@ -270,7 +276,9 @@ codegen_type :: proc(ctx_cg: ^Codegen_Context, type: Type_Info) {
     case Primitive_Type:
         #partial switch t {
         case .I32: strings.write_string(&ctx_cg.output_buf, "int32_t")
+        case .I64: strings.write_string(&ctx_cg.output_buf, "int64_t")
         case .F32: strings.write_string(&ctx_cg.output_buf, "float")
+        case .F64: strings.write_string(&ctx_cg.output_buf, "double")
         case .Void: strings.write_string(&ctx_cg.output_buf, "void")
         case: fmt.panicf("Internal error: cannot generate code for type %v", t)
         }
@@ -314,7 +322,7 @@ codegen_func_signature :: proc(ctx_cg: ^Codegen_Context, fn_name: string, node: 
         strings.write_string(&ctx_cg.output_buf, "void")
     } else {
         for param, i in node.params {
-            codegen_type(ctx_cg, node.return_type)
+            codegen_type(ctx_cg, param.type)
             strings.write_string(&ctx_cg.output_buf, " ")
             strings.write_string(&ctx_cg.output_buf, param.name)
             if i < len(node.params)-1 do strings.write_string(&ctx_cg.output_buf, ", ")
