@@ -22,7 +22,10 @@ Semantic_Context :: struct {
     current_scope: ^Scope,
     errors: [dynamic]Semantic_Error,
     allocator: mem.Allocator,
-    current_function_return_type: Maybe(Type_Info)
+    current_function_return_type: Maybe(Type_Info),
+    // This is to track the current struct's name while analyzing
+    // recursively within it
+    current_struct_name: Maybe(string), 
 }
 
 semantic_push_scope :: proc(ctx: ^Semantic_Context) {
@@ -191,6 +194,12 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
 
     case .Var_Def:
         var_def := node.payload.(Node_Var_Def)
+
+        // If defining a struct, track the name
+        if var_def.content.node_kind == .Type_Expr {
+            ctx.current_struct_name = var_def.name
+        }
+
         value_type := semantic_infer_type(ctx, var_def.content)
 
         // Override the inferenced type if explicit type is defined
@@ -208,6 +217,13 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
         node.inferred_type = actual_type
         semantic_define_symbol(ctx, var_def.name, actual_type, var_def.content.span)
         semantic_analyze_node(ctx, var_def.content)  
+
+        // Reset the current struct name since we're done with the business here
+        // in this struct
+        if var_def.content.node_kind == .Type_Expr {
+            ctx.current_struct_name = nil
+        }
+
     
     case .Fn_Call:
         call := node.payload.(Node_Call)
@@ -365,6 +381,7 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
         }
     case .Type_Expr:
         type_expr := node.payload.(Node_Type_Expr)
+
         // Validate struct fields if it's a struct type
         if struct_type, is_struct := type_expr.type_info.(Struct_Type); is_struct {
             field_names := make(map[string]bool, context.temp_allocator)
@@ -374,6 +391,17 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
                     add_error(ctx, node.span, "Duplicate field name '%s' in struct", field.name)
                 }
                 field_names[field.name] = true
+            }
+
+            // Check for infinite size (direct recursion without pointer)
+            // We need the struct name, that we can get from parent, i.e., Var_Def
+            if struct_name, has_name := ctx.current_struct_name.?; has_name {
+                for field in struct_type.fields {
+                    if check_infinite_size(ctx, struct_name, field.type, node.span) {
+                        add_error(ctx, node.span, "Struct '%s' has infinite size (field '%s' creates direct recursion). You may want to use indirection for this field's type, such as *%s.", 
+                            struct_name, field.name, struct_name)
+                    }
+                }
             }
         }
 
@@ -689,6 +717,53 @@ block_returns :: proc(stmts: [dynamic]^Node) -> bool {
         if_returns := block_returns(if_node.if_body)
         else_returns := block_returns(if_node.else_body)
         return if_returns && else_returns
+    }
+    
+    return false
+}
+@(private="file")
+check_infinite_size :: proc(ctx: ^Semantic_Context, struct_name: string, field_type: Type_Info, span: Span) -> bool {
+    seen := make(map[string]bool, context.temp_allocator)
+    return check_infinite_size_impl(ctx, struct_name, field_type, &seen)
+}
+
+@(private="file")
+check_infinite_size_impl :: proc(ctx: ^Semantic_Context, struct_name: string, field_type: Type_Info, seen: ^map[string]bool) -> bool {
+    #partial switch t in field_type {
+    case Named_Type:
+        // Direct reference to self without pointer
+        if t.name == struct_name {
+            return true
+        }
+        
+        // Avoid infinite loop in mutual recursion
+        if t.name in seen {
+            return false
+        }
+        seen[t.name] = true
+        
+        // Resolve and check recursively
+        sym, ok := semantic_lookup_symbol(ctx, t.name)
+        if !ok do return false
+        
+        return check_infinite_size_impl(ctx, struct_name, sym.type, seen)
+    
+    case Pointer_Type:
+        // Pointer breaks recursion - fixed size
+        return false
+    
+    case Array_Type:
+        // Check element type
+        return check_infinite_size_impl(ctx, struct_name, t.element_type^, seen)
+    
+    case Struct_Type:
+        // Check all fields
+        for field in t.fields {
+            if check_infinite_size_impl(ctx, struct_name, field.type, seen) {
+                return true
+            }
+        }
+        return false
     }
     
     return false

@@ -5,6 +5,14 @@ Vec2D := struct {
     y: i32,
 }
 
+Foo := struct {
+    position: Foo,
+}
+
+Bar := struct {
+    position: Bar,
+}
+
 Node := struct {
     value: Vec2D,
 }
