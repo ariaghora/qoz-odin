@@ -22,6 +22,7 @@ Node_Kind :: enum {
     Print,
     Program,
     Return,
+    Size_Of,
     Statement_List,
     Struct_Literal,
     Type_Expr,
@@ -87,6 +88,7 @@ Node_Un_Op          :: struct { operand: ^Node, op: Token }
 Node_Var_Def        :: struct { name: string, content: ^Node, explicit_type: Maybe(Type_Info) }
 Node_Expr_Statement :: struct { expr: ^Node }
 Node_Type_Expr      :: struct { type_info: Type_Info, }
+Node_Size_Of        :: struct { type: ^Node }
 Node_Struct_Literal :: struct { type_name: string, field_inits: [dynamic]Struct_Field_Init }
 
 
@@ -109,6 +111,7 @@ Node :: struct {
         Node_Literal,
         Node_Print,
         Node_Return,
+        Node_Size_Of,
         Node_Statement_List,
         Node_Struct_Literal,
         Node_Type_Expr,
@@ -425,6 +428,22 @@ parse_unary :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allo
         operand.parent = unop_node
         
         return unop_node, nil
+    } else if ps.current_token.kind == .KW_Size_Of {
+        op_idx := ps.idx
+        op := ps.current_token
+        parser_advance(ps)
+        parser_consume(ps, .Left_Paren)
+        type_node := parse_expression(ps, parent, allocator) or_return
+        parser_consume(ps, .Right_Paren)
+
+        size_of_node := new_clone(Node {
+            node_kind=.Size_Of,
+            parent=parent,
+            span=Span{start = op_idx, end = type_node.span.end},
+            payload=Node_Size_Of {type=type_node}
+        }, allocator)
+
+        return size_of_node, nil
     }
 
     return parse_postfix(ps, parent, allocator)
@@ -436,36 +455,30 @@ parse_postfix :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
     for {
         #partial switch ps.current_token.kind {
         case .Left_Paren:
-            expr := parse_primary(ps, parent, allocator) or_return
-            // "do while `(` means function call chaining, e.g., f()()()
-            // It is possible for a function to return another callable function
-            for ps.current_token.kind == .Left_Paren {
-                parser_advance(ps)
-                fn_args := make([dynamic]^Node, allocator)
-                for ps.current_token.kind != .Right_Paren {
-                    arg := parse_expression(ps, expr, allocator) or_return
-                    append(&fn_args, arg)
-                    if ps.current_token.kind == .Comma {
-                        parser_advance(ps)
-                    } else {
-                        break
-                    }
+            // Function call
+            parser_advance(ps) // eat '('
+            fn_args := make([dynamic]^Node, allocator)
+            for ps.current_token.kind != .Right_Paren {
+                arg := parse_expression(ps, left, allocator) or_return
+                append(&fn_args, arg)
+                if ps.current_token.kind == .Comma {
+                    parser_advance(ps)
+                } else {
+                    break
                 }
-                parser_consume(ps, .Right_Paren) or_return
-
-                expr = new_clone(Node {
-                    node_kind=.Fn_Call,
-                    parent=parent,
-                    span=Span{start=expr.span.start, end=ps.idx-1},
-                    payload=Node_Call {
-                        callee=expr,
-                        args=fn_args,
-                    }
-                }, allocator)
             }
+            parser_consume(ps, .Right_Paren) or_return
 
-            return expr, nil
-            
+            left = new_clone(Node {
+                node_kind=.Fn_Call,
+                parent=parent,
+                span=Span{start=left.span.start, end=ps.idx-1},
+                payload=Node_Call {
+                    callee=left,
+                    args=fn_args,
+                }
+            }, allocator)
+
         case .Dot:
             // Field access
             parser_advance(ps) // eat '.'

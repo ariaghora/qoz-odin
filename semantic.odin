@@ -205,7 +205,7 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
         // Override the inferenced type if explicit type is defined
         actual_type: Type_Info
         if explicit, has_explicit := var_def.explicit_type.?; has_explicit {
-            if !types_equal(explicit, value_type) {
+            if !types_compatible(explicit, value_type) {
                 add_error(ctx, node.span, "Type mismatch: declared as %v but initialized with %v", 
                     explicit, value_type)
             }
@@ -336,7 +336,16 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
                 add_error(ctx, node.span, "Function expects return value")
             }
         }
-
+    
+    case .Size_Of:
+        sizeof_op := node.payload.(Node_Size_Of)
+        // Validate the type is valid
+        _ = semantic_infer_type(ctx, sizeof_op.type)
+        
+        // sizeof always returns i64 (or i32 if you prefer)
+        result := Primitive_Type.I64
+        node.inferred_type = result
+        return 
     
     case .Struct_Literal:
         struct_lit := node.payload.(Node_Struct_Literal)
@@ -374,7 +383,7 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
             }
             
             value_type := semantic_infer_type(ctx, value_node)
-            if !types_equal(value_type, field.type) {
+            if !types_compatible(value_type, field.type) {
                 add_error(ctx, value_node.span, "Field '%s': expected %v, got %v", 
                     field.name, field.type, value_type)
             }
@@ -470,6 +479,22 @@ semantic_infer_type :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
                 return result
             }
             actual_type = sym.type
+        }
+
+        // Unwrap pointer if accessing through pointer
+        if ptr_type, is_ptr := actual_type.(Pointer_Type); is_ptr {
+            actual_type = ptr_type.pointee^
+            // Resolve Named_Type again if the pointee is named
+            if named, is_named := actual_type.(Named_Type); is_named {
+                sym, ok := semantic_lookup_symbol(ctx, named.name)
+                if !ok {
+                    add_error(ctx, node.span, "Undefined type '%s'", named.name)
+                    result := Primitive_Type.Void
+                    node.inferred_type = result
+                    return result
+                }
+                actual_type = sym.type
+            }
         }
         
         // Gotta ensure that that named type is a struct. Cannot access field
@@ -585,6 +610,16 @@ semantic_infer_type :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
         node.inferred_type = type
         return type
 
+    case .Size_Of:
+        sizeof_op := node.payload.(Node_Size_Of)
+        // Validate the type is valid
+        _ = semantic_infer_type(ctx, sizeof_op.type)
+        
+        // sizeof always returns i64 (or i32 if you prefer)
+        result := Primitive_Type.I64
+        node.inferred_type = result
+        return result
+        
     case .Type_Expr:  
         type_expr := node.payload.(Node_Type_Expr)
         node.inferred_type = type_expr.type_info
@@ -647,6 +682,29 @@ types_equal :: proc(a, b: Type_Info) -> bool {
         b_val, ok := b.(Named_Type)
         return ok && a_val.name==b_val.name
     }
+    return false
+}
+
+// In general, we are striving for strict type checking. Type compatibility is 
+// limited for *void type as our escape hatch into unsafety.
+types_compatible :: proc(target: Type_Info, source: Type_Info) -> bool {
+    if types_equal(target, source) do return true
+    
+    // void* is compatible with any pointer
+    target_ptr, target_is_ptr := target.(Pointer_Type)
+    source_ptr, source_is_ptr := source.(Pointer_Type)
+    if target_is_ptr && source_is_ptr {
+        if prim, ok := target_ptr.pointee.(Primitive_Type); ok && prim == .Void {
+            return true
+        }
+        if prim, ok := source_ptr.pointee.(Primitive_Type); ok && prim == .Void {
+            return true
+        }
+    }
+
+    // TODO(Aria): check other type compatibility
+    // ...
+    
     return false
 }
 

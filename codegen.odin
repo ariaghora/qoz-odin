@@ -234,6 +234,12 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         codegen_node(ctx_cg, print.content)
         strings.write_string(&ctx_cg.output_buf, ");\n")
 
+    case .Size_Of:
+        sizeof_op := node.payload.(Node_Size_Of)
+        strings.write_string(&ctx_cg.output_buf, "sizeof(")
+        codegen_node(ctx_cg, sizeof_op.type)
+        strings.write_string(&ctx_cg.output_buf, ")")
+
     case .Struct_Literal:
         struct_lit := node.payload.(Node_Struct_Literal)
         // C99 designated initializers: {.field = value, ...}

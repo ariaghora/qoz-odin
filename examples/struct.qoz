@@ -1,31 +1,33 @@
-malloc := func(size: i32): *void external
+malloc := func(size: i64): *void external
 
 Vec2D := struct {
     x: i32,
     y: i32,
 }
 
-Foo := struct {
-    position: Foo,
-}
-
-Bar := struct {
-    position: Bar,
-}
-
 Node := struct {
     value: Vec2D,
+    left:  *Node,
+    right: *Node,
 }
 
-main := func() {
-    pos := Vec2D { 
+get_pos := func(): Vec2D {
+    pos := Vec2D {
         x: 10,
         y: 20,
     }
+    return pos
+}
+
+main := func() {
+    pos := get_pos()
 
     root := Node {
         value: pos,
+        left:  &root,
+        right: malloc(size_of(Node)),
     }
 
     print(root.value.x)
+    print(root.left.value.y)
 }
