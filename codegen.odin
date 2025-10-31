@@ -201,12 +201,11 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
             case .Bool: format_spec = "%d"
             case .Void: panic("Cannot print void")
             }
-        case Function_Type:
-            panic("Cannot print function")
-        case Array_Type:
-            panic("Cannot print array")
-        case Pointer_Type:
-            panic("Cannot print array")
+        case Function_Type: panic("Cannot print function")
+        case Array_Type: panic("Cannot print array")
+        case Pointer_Type: panic("Cannot print pointer")
+        case Struct_Type: panic("Cannot print pointer")
+        case Named_Type: panic("Cannot print named type")
         }
         
         strings.write_string(&ctx_cg.output_buf, "printf(\"")
@@ -214,6 +213,21 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         strings.write_string(&ctx_cg.output_buf, "\\n\", ")
         codegen_node(ctx_cg, print.content)
         strings.write_string(&ctx_cg.output_buf, ");\n")
+
+    case .Struct_Literal:
+        struct_lit := node.payload.(Node_Struct_Literal)
+        // C99 designated initializers: {.field = value, ...}
+        strings.write_string(&ctx_cg.output_buf, "{")
+        for field_init, i in struct_lit.field_inits {
+            strings.write_string(&ctx_cg.output_buf, ".")
+            strings.write_string(&ctx_cg.output_buf, field_init.name)
+            strings.write_string(&ctx_cg.output_buf, " = ")
+            codegen_node(ctx_cg, field_init.value)
+            if i < len(struct_lit.field_inits) - 1 {
+                strings.write_string(&ctx_cg.output_buf, ", ")
+            }
+        }
+        strings.write_string(&ctx_cg.output_buf, "}")
 
     case .Var_Def:
         var_def := node.payload.(Node_Var_Def)
@@ -246,6 +260,29 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
             strings.write_string(&ctx_cg.output_buf, "}\n\n")
             ctx_cg.func_nesting_depth -= 1
             ctx_cg.indent_level -= 1
+        } else if var_def.content.node_kind == .Type_Expr {
+            // Struct typedef
+            type_expr := var_def.content.payload.(Node_Type_Expr)
+                
+            if struct_type, is_struct := type_expr.type_info.(Struct_Type); is_struct {
+                strings.write_string(&ctx_cg.output_buf, "typedef struct ")
+                strings.write_string(&ctx_cg.output_buf, var_def.name)  // Add tag here
+                strings.write_string(&ctx_cg.output_buf, " {\n")
+                ctx_cg.indent_level += 1
+                
+                for field in struct_type.fields {
+                    codegen_indent(ctx_cg, ctx_cg.indent_level)
+                    codegen_type(ctx_cg, field.type)
+                    strings.write_string(&ctx_cg.output_buf, " ")
+                    strings.write_string(&ctx_cg.output_buf, field.name)
+                    strings.write_string(&ctx_cg.output_buf, ";\n")
+                }
+                
+                ctx_cg.indent_level -= 1
+                strings.write_string(&ctx_cg.output_buf, "} ")
+                strings.write_string(&ctx_cg.output_buf, var_def.name)
+                strings.write_string(&ctx_cg.output_buf, ";\n\n")
+            }
         } else {
             //| Regular case
             //+-------------
@@ -271,7 +308,7 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
 }
 
 codegen_type :: proc(ctx_cg: ^Codegen_Context, type: Type_Info) {
-    switch t in type {
+    #partial switch t in type {
     case Function_Type:
     case Primitive_Type:
         #partial switch t {
@@ -287,6 +324,11 @@ codegen_type :: proc(ctx_cg: ^Codegen_Context, type: Type_Info) {
     case Pointer_Type:
         codegen_type(ctx_cg, t.pointee^)
         strings.write_string(&ctx_cg.output_buf, "*")
+    case Struct_Type:
+        panic("Internal error: FIXME(Aria): Cannot inline anonymous struct type")
+    case Named_Type:
+        strings.write_string(&ctx_cg.output_buf, t.name)
+    case: fmt.panicf("Internal error: cannot generate code for type %v", t)
     }
     
 }
@@ -301,6 +343,18 @@ codegen_forward_decl :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
                     // type func_name(..params)
                     codegen_func_signature(ctx_cg, var_def.name, var_def.content.payload.(Node_Fn_Def))
                     strings.write_string(&ctx_cg.output_buf, ";\n")
+                }
+
+                // Forward declare structs
+                if var_def.content.node_kind == .Type_Expr {
+                    type_expr := var_def.content.payload.(Node_Type_Expr)
+                    if _, is_struct := type_expr.type_info.(Struct_Type); is_struct {
+                        strings.write_string(&ctx_cg.output_buf, "typedef struct ")
+                        strings.write_string(&ctx_cg.output_buf, var_def.name)
+                        strings.write_string(&ctx_cg.output_buf, " ")
+                        strings.write_string(&ctx_cg.output_buf, var_def.name)
+                        strings.write_string(&ctx_cg.output_buf, ";\n")
+                    }
                 }
             }
         }

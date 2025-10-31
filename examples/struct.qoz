@@ -1,0 +1,22 @@
+malloc := func(size: i32): *void external
+
+Vec2D := struct {
+    x: i32,
+    y: i32,
+}
+
+Node := struct {
+    value: Vec2D,
+}
+
+main := func() {
+    pos := Vec2D { 
+        x: 10,
+        y: 20,
+    }
+
+    root := Node {
+        value: pos,
+    }
+
+}

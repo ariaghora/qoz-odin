@@ -317,6 +317,62 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
             }
         }
 
+    
+    case .Struct_Literal:
+        struct_lit := node.payload.(Node_Struct_Literal)
+        
+        // Lookup the struct type by name
+        sym, ok := semantic_lookup_symbol(ctx, struct_lit.type_name)
+        if !ok {
+            add_error(ctx, node.span, "Undefined type '%s'", struct_lit.type_name)
+            node.inferred_type = Primitive_Type.Void
+            return
+        }
+        
+        struct_type, is_struct := sym.type.(Struct_Type)
+        if !is_struct {
+            add_error(ctx, node.span, "'%s' is not a struct type", struct_lit.type_name)
+            return
+        }
+        
+        // Analyze all field values
+        for field_init in struct_lit.field_inits {
+            semantic_analyze_node(ctx, field_init.value)
+        }
+        
+        // Validate all fields are present and types match
+        field_map := make(map[string]^Node, context.temp_allocator)
+        for field_init in struct_lit.field_inits {
+            field_map[field_init.name] = field_init.value
+        }
+        
+        for field in struct_type.fields {
+            value_node, has_field := field_map[field.name]
+            if !has_field {
+                add_error(ctx, node.span, "Missing field '%s' in struct literal", field.name)
+                continue
+            }
+            
+            value_type := semantic_infer_type(ctx, value_node)
+            if !types_equal(value_type, field.type) {
+                add_error(ctx, value_node.span, "Field '%s': expected %v, got %v", 
+                    field.name, field.type, value_type)
+            }
+        }
+    case .Type_Expr:
+        type_expr := node.payload.(Node_Type_Expr)
+        // Validate struct fields if it's a struct type
+        if struct_type, is_struct := type_expr.type_info.(Struct_Type); is_struct {
+            field_names := make(map[string]bool, context.temp_allocator)
+            for field in struct_type.fields {
+                _, field_exists := field_names[field.name]
+                if field_exists {
+                    add_error(ctx, node.span, "Duplicate field name '%s' in struct", field.name)
+                }
+                field_names[field.name] = true
+            }
+        }
+
     case .Un_Op:
         semantic_analyze_node(ctx, node.payload.(Node_Un_Op).operand)
     
@@ -453,6 +509,32 @@ semantic_infer_type :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
         type := fn_type.return_type^
         node.inferred_type = type
         return type
+
+    case .Type_Expr:  
+        type_expr := node.payload.(Node_Type_Expr)
+        node.inferred_type = type_expr.type_info
+        return type_expr.type_info
+
+    case .Struct_Literal:
+        struct_lit := node.payload.(Node_Struct_Literal)
+        
+        sym, ok := semantic_lookup_symbol(ctx, struct_lit.type_name)
+        if !ok {
+            add_error(ctx, node.span, "Undefined type '%s'", struct_lit.type_name)
+            result := Primitive_Type.Void
+            node.inferred_type = result
+            return result
+        }
+
+         // Validate it's a struct (using resolved type)
+        _, is_struct := sym.type.(Struct_Type)
+        if !is_struct {
+            add_error(ctx, node.span, "'%s' is not a struct type", struct_lit.type_name)
+        }
+        
+        result := Named_Type{name = struct_lit.type_name}
+        node.inferred_type = result
+        return result
     case:
         type := Primitive_Type.Void
         node.inferred_type = type
@@ -476,6 +558,19 @@ types_equal :: proc(a, b: Type_Info) -> bool {
         b_val, ok := b.(Pointer_Type)
         if !ok do return false
         return types_equal(a_val.pointee^, b_val.pointee^)
+    case Struct_Type:
+        b_val, ok := b.(Struct_Type)
+        if !ok do return false
+        if len(a_val.fields) != len(b_val.fields) do return false
+        for field_a, i in a_val.fields {
+            field_b := b_val.fields[i]
+            if field_a.name != field_b.name do return false
+            if !types_equal(field_a.type, field_b.type) do return false
+        }
+        return true
+    case Named_Type:
+        b_val, ok := b.(Named_Type)
+        return ok && a_val.name==b_val.name
     }
     return false
 }

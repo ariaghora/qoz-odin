@@ -22,11 +22,13 @@ Node_Kind :: enum {
     Program,
     Return,
     Statement_List,
+    Struct_Literal,
+    Type_Expr,
     Un_Op,
     Var_Def,
 }
 
-Type_Info :: union { Primitive_Type, Array_Type, Function_Type, Pointer_Type }
+Type_Info :: union { Primitive_Type, Array_Type, Function_Type, Pointer_Type, Struct_Type, Named_Type }
 
 Primitive_Type :: enum { I32, I64, F32, F64, Bool, Void }
 
@@ -44,6 +46,15 @@ Pointer_Type :: struct {
     pointee: ^Type_Info,
 }
 
+Struct_Field :: struct { name: string, type: Type_Info }
+Struct_Type :: struct {
+    fields: [dynamic]Struct_Field,
+}
+
+Named_Type :: struct {
+    name: string,
+}
+
 Span :: struct {
     start: int,
     end: int,
@@ -56,6 +67,7 @@ Parsing_State :: struct {
 }
 
 Fn_Param :: struct { name: string, type: Type_Info, span: Span }
+Struct_Field_Init :: struct { name: string, value: ^Node }
 
 Node_Array_Literal  :: struct { element_type: Type_Info, size: int, elements: [dynamic]^Node }
 Node_Assign         :: struct { target: string, value: ^Node }
@@ -72,6 +84,9 @@ Node_Statement_List :: struct { nodes: [dynamic]^Node }
 Node_Un_Op          :: struct { operand: ^Node, op: Token }
 Node_Var_Def        :: struct { name: string, content: ^Node, explicit_type: Maybe(Type_Info) }
 Node_Expr_Statement :: struct { expr: ^Node }
+Node_Type_Expr      :: struct { type_info: Type_Info, }
+Node_Struct_Literal :: struct { type_name: string, field_inits: [dynamic]Struct_Field_Init }
+
 
 Node :: struct {
     node_kind: Node_Kind,
@@ -92,6 +107,8 @@ Node :: struct {
         Node_Print,
         Node_Return,
         Node_Statement_List,
+        Node_Struct_Literal,
+        Node_Type_Expr,
         Node_Var_Def,
         Node_Un_Op,
     }
@@ -175,6 +192,7 @@ parse_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.
     case .KW_Print: return parse_print_statement(ps, parent, allocator)
     case .KW_Return: return parse_return_statement(ps, parent, allocator)
     case:
+        fmt.println(ps.current_token)
         return nil, fmt.tprintf("Cannot parse statement starting with %v at position %d", ps.current_token.kind, ps.idx)
     }
 }
@@ -443,9 +461,18 @@ parse_fn_call :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
 }
 
 parse_primary :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
+    span_start := ps.idx        
     #partial switch ps.current_token.kind {
     case .Iden: return parse_identifier(ps, parent, allocator)
     case .KW_Fn: return parse_fn_def(ps, parent, allocator)
+    case .KW_Struct: 
+        struct_type := parse_type(ps, allocator) or_return
+        type_node := new(Node, allocator)
+        type_node.node_kind = .Type_Expr
+        type_node.parent = parent
+        type_node.span = Span{start = span_start, end = ps.idx - 1}
+        type_node.payload = Node_Type_Expr{type_info = struct_type}
+        return type_node, nil
     case .Lit_Number: return parse_literal_number(ps, parent, allocator)
     case .KW_Arr: return parse_literal_array(ps, parent, allocator)
     case:
@@ -458,15 +485,62 @@ parse_identifier :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context
     span_start := ps.idx
     name := ps.current_token.source
     
+    parser_advance(ps)
+
+    // Check if it's a struct literal: TypeName{ ... }
+    if ps.current_token.kind == .Left_Brace {
+        return parse_struct_literal(ps, name, parent, allocator)
+    }
+
     iden_node := new(Node, allocator)
     iden_node.node_kind = .Identifier
     iden_node.parent = parent
     iden_node.payload = Node_Identifier{name = name}
-    
-    parser_advance(ps)
     iden_node.span = Span{start = span_start, end = ps.idx - 1}
     
     return iden_node, nil
+}
+
+parse_struct_literal :: proc(ps: ^Parsing_State, type_name: string, parent: ^Node, allocator := context.allocator) -> (res:^Node, err:Parse_Error) {
+    span_start := ps.idx - 1
+    parser_consume(ps, .Left_Brace) or_return
+    
+    field_inits := make([dynamic]Struct_Field_Init, allocator)
+    
+    for ps.current_token.kind != .Right_Brace {
+        if ps.current_token.kind == .EOF {
+            return nil, "Unexpected EOF in struct literal"
+        }
+        
+        if ps.current_token.kind != .Iden do return nil, "Expected field name"
+        
+        field_name := ps.current_token.source
+        parser_advance(ps)
+        parser_consume(ps, .Colon) or_return
+        
+        // Parse field value
+        field_value := parse_expression(ps, parent, allocator) or_return
+        append(&field_inits, Struct_Field_Init{name = field_name, value = field_value})
+        
+        if ps.current_token.kind == .Comma {
+            parser_advance(ps)
+        } else if ps.current_token.kind != .Right_Brace {
+            return nil, "Expected ',' or '}' in struct literal"
+        }
+    }
+    
+    parser_consume(ps, .Right_Brace) or_return
+    
+    struct_node := new(Node, allocator)
+    struct_node.node_kind = .Struct_Literal
+    struct_node.parent = parent
+    struct_node.span = Span{start = span_start, end = ps.idx - 1}
+    struct_node.payload = Node_Struct_Literal{
+        type_name = type_name,
+        field_inits = field_inits,
+    }
+    
+    return struct_node, nil
 }
 
 parse_literal_number :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
@@ -706,6 +780,48 @@ parse_type :: proc(ps: ^Parsing_State, allocator: mem.Allocator) -> (res:Type_In
             element_type = new_clone(elem_type, allocator),
             size = size,
         }, nil
+    }
+
+    if ps.current_token.kind == .KW_Struct {
+        parser_advance(ps)
+        parser_consume(ps, .Left_Brace) or_return
+        fields := make([dynamic]Struct_Field, allocator)
+        
+        for ps.current_token.kind != .Right_Brace {
+            if ps.current_token.kind == .EOF {
+                return nil, "Unexpected EOF in struct definition"
+            }
+            
+            // Parse field name
+            if ps.current_token.kind != .Iden {
+                return nil, "Expected field name"
+            }
+            field_name := ps.current_token.source
+            parser_advance(ps)
+            
+            parser_consume(ps, .Colon) or_return
+            
+            // Parse field type
+            field_type := parse_type(ps, allocator) or_return
+            
+            append(&fields, Struct_Field{name = field_name, type = field_type})
+            
+            // Optional comma
+            if ps.current_token.kind == .Comma {
+                parser_advance(ps)
+            }
+        }
+        
+        parser_consume(ps, .Right_Brace) or_return
+        
+        return Struct_Type{fields = fields}, nil
+    }
+
+    // User-defined type name (identifier)
+    if ps.current_token.kind == .Iden {
+        type_name := ps.current_token.source
+        parser_advance(ps)
+        return Named_Type{name = type_name}, nil
     }
 
     prim: Type_Info
