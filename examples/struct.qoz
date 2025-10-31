@@ -19,4 +19,5 @@ main := func() {
         value: pos,
     }
 
+    print(root.value.x)
 }

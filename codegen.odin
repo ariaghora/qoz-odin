@@ -69,6 +69,26 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         codegen_node(ctx_cg, binop.operand)
         strings.write_string(&ctx_cg.output_buf, ")")
 
+    case .Field_Access:
+        field_access := node.payload.(Node_Field_Access)
+        object_type := field_access.object.inferred_type.? or_else panic("Internal error: type not annotated")
+
+        // Resolve Named_Type if needed
+        actual_type := object_type
+        if named, is_named := object_type.(Named_Type); is_named {
+            sym, _ := semantic_lookup_symbol(ctx_cg.ctx_sem, named.name)
+            actual_type = sym.type
+        }
+
+        codegen_node(ctx_cg, field_access.object)
+        if _, is_ptr := actual_type.(Pointer_Type); is_ptr {
+            strings.write_string(&ctx_cg.output_buf, "->")
+        } else {
+            strings.write_string(&ctx_cg.output_buf, ".")
+        }
+
+        strings.write_string(&ctx_cg.output_buf, field_access.field_name)
+
     case .Fn_Def:
         fn_def := node.payload.(Node_Fn_Def)
 

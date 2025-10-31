@@ -10,6 +10,7 @@ Node_Kind :: enum {
     Assignment,
     Bin_Op,
     Expr_Statement,
+    Field_Access,
     Fn_Call,
     Fn_Def,
     For_In,
@@ -73,6 +74,7 @@ Node_Array_Literal  :: struct { element_type: Type_Info, size: int, elements: [d
 Node_Assign         :: struct { target: string, value: ^Node }
 Node_Bin_Op         :: struct { left, right: ^Node, op: Token }
 Node_Call           :: struct { callee: ^Node, args: [dynamic]^Node }
+Node_Field_Access   :: struct { object: ^Node, field_name: string }
 Node_Fn_Def         :: struct { params: [dynamic]Fn_Param, body: [dynamic]^Node, return_type: Type_Info, is_external: bool}
 Node_For_In         :: struct { iterator: string, iterable: ^Node, body: [dynamic]^Node }
 Node_Identifier     :: struct { name:string }
@@ -99,6 +101,7 @@ Node :: struct {
         Node_Bin_Op,
         Node_Call,
         Node_Expr_Statement,
+        Node_Field_Access,
         Node_Fn_Def,
         Node_For_In,
         Node_Identifier,
@@ -424,40 +427,72 @@ parse_unary :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allo
         return unop_node, nil
     }
 
-    return parse_fn_call(ps, parent, allocator)
+    return parse_postfix(ps, parent, allocator)
 }
 
-parse_fn_call :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
-    expr := parse_primary(ps, parent, allocator) or_return
-
-    // "do while `(` means function call chaining, e.g., f()()()
-    // It is possible for a function to return another callable function
-    for ps.current_token.kind == .Left_Paren {
-        parser_advance(ps)
-        fn_args := make([dynamic]^Node, allocator)
-        for ps.current_token.kind != .Right_Paren {
-            arg := parse_expression(ps, expr, allocator) or_return
-            append(&fn_args, arg)
-            if ps.current_token.kind == .Comma {
+parse_postfix :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res:^Node, err:Parse_Error) {
+    left := parse_primary(ps, parent, allocator) or_return
+    
+    for {
+        #partial switch ps.current_token.kind {
+        case .Left_Paren:
+            expr := parse_primary(ps, parent, allocator) or_return
+            // "do while `(` means function call chaining, e.g., f()()()
+            // It is possible for a function to return another callable function
+            for ps.current_token.kind == .Left_Paren {
                 parser_advance(ps)
-            } else {
-                break
+                fn_args := make([dynamic]^Node, allocator)
+                for ps.current_token.kind != .Right_Paren {
+                    arg := parse_expression(ps, expr, allocator) or_return
+                    append(&fn_args, arg)
+                    if ps.current_token.kind == .Comma {
+                        parser_advance(ps)
+                    } else {
+                        break
+                    }
+                }
+                parser_consume(ps, .Right_Paren) or_return
+
+                expr = new_clone(Node {
+                    node_kind=.Fn_Call,
+                    parent=parent,
+                    span=Span{start=expr.span.start, end=ps.idx-1},
+                    payload=Node_Call {
+                        callee=expr,
+                        args=fn_args,
+                    }
+                }, allocator)
             }
+
+            return expr, nil
+            
+        case .Dot:
+            // Field access
+            parser_advance(ps) // eat '.'
+            
+            if ps.current_token.kind != .Iden {
+                return nil, "Expected field name after '.'"
+            }
+            
+            field_name := ps.current_token.source
+            parser_advance(ps)
+            
+            field_node := new(Node, allocator)
+            field_node.node_kind = .Field_Access
+            field_node.parent = parent
+            field_node.span = Span{start = left.span.start, end = ps.idx - 1}
+            field_node.payload = Node_Field_Access{
+                object = left,
+                field_name = field_name,
+            }
+            
+            left.parent = field_node
+            left = field_node
+            
+        case:
+            return left, nil
         }
-        parser_consume(ps, .Right_Paren) or_return
-
-        expr = new_clone(Node {
-            node_kind=.Fn_Call,
-            parent=parent,
-            span=Span{start=expr.span.start, end=ps.idx-1},
-            payload=Node_Call {
-                callee=expr,
-                args=fn_args,
-            }
-        }, allocator)
     }
-
-    return expr, nil
 }
 
 parse_primary :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {

@@ -164,6 +164,10 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
         semantic_analyze_node(ctx, binop.left)
         semantic_analyze_node(ctx, binop.right)
 
+    case .Field_Access:
+        field_access := node.payload.(Node_Field_Access)
+        semantic_analyze_node(ctx, field_access.object)
+
     case .For_In:
         for_in := node.payload.(Node_For_In)
         
@@ -422,6 +426,49 @@ semantic_infer_type :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
         node.inferred_type = result_type
         return result_type
     
+    case .Field_Access:
+        field_access := node.payload.(Node_Field_Access)
+        object_type := semantic_infer_type(ctx, field_access.object)
+        
+        // Most of cases, the accessed object is a Named_Type (user-defined struct).
+        // In this case, we need to resolve it to actual type.
+        actual_type := object_type
+        if named, is_named := object_type.(Named_Type); is_named {
+            sym, ok := semantic_lookup_symbol(ctx, named.name)
+            if !ok {
+                add_error(ctx, node.span, "Undefined type '%s'", named.name)
+                result := Primitive_Type.Void
+                node.inferred_type = result
+                return result
+            }
+            actual_type = sym.type
+        }
+        
+        // Gotta ensure that that named type is a struct. Cannot access field
+        // from anything other than struct.
+        struct_type, is_struct := actual_type.(Struct_Type)
+        if !is_struct {
+            add_error(ctx, node.span, "Cannot access field of non-struct type")
+            result := Primitive_Type.Void
+            node.inferred_type = result
+            return result
+        }
+        
+        // Find the field
+        // NOTE(Aria): be patient with linear search, we're preserving the order
+        // of the fields.
+        for field in struct_type.fields {
+            if field.name == field_access.field_name {
+                node.inferred_type = field.type
+                return field.type
+            }
+        }
+        
+        add_error(ctx, node.span, "Struct has no field '%s'", field_access.field_name)
+        result := Primitive_Type.Void
+        node.inferred_type = result
+        return result
+
     case .Un_Op:
         unop := node.payload.(Node_Un_Op)
         operand_type := semantic_infer_type(ctx, unop.operand)
