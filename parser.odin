@@ -1,5 +1,6 @@
 package main
 
+import "core:mem"
 import "core:strconv"
 import "core:fmt"
 
@@ -24,7 +25,7 @@ Node_Kind :: enum {
     Var_Def,
 }
 
-Type_Info :: union { Primitive_Type, Array_Type, Function_Type }
+Type_Info :: union { Primitive_Type, Array_Type, Function_Type, Pointer_Type }
 
 Primitive_Type :: enum { I32, I64, F32, F64, Bool, Void }
 
@@ -36,6 +37,10 @@ Function_Type :: struct {
 Array_Type :: struct {
     element_type: ^Type_Info,
     size: int,
+}
+
+Pointer_Type :: struct {
+    pointee: ^Type_Info,
 }
 
 Span :: struct {
@@ -64,7 +69,7 @@ Node_Print          :: struct { content: ^Node }
 Node_Return         :: struct { value: ^Node } 
 Node_Statement_List :: struct { nodes: [dynamic]^Node }
 Node_Un_Op          :: struct { operand: ^Node, op: Token }
-Node_Var_Def        :: struct { name: string, content: ^Node }
+Node_Var_Def        :: struct { name: string, content: ^Node, explicit_type: Maybe(Type_Info) }
 
 Node :: struct {
     node_kind: Node_Kind,
@@ -144,12 +149,15 @@ parse :: proc(tokens: [dynamic]Token, allocator := context.allocator) -> (res: ^
 parse_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
     #partial switch ps.current_token.kind {
     case .Iden: 
-        if ps.tokens[ps.idx + 1].kind == .Assign {
+        next_tok := ps.tokens[ps.idx + 1].kind
+        if next_tok == .Assign || next_tok == .Colon {
+            // x := val  or  x: type = val
             return parse_var_def(ps, parent, allocator)
-        } else if ps.tokens[ps.idx + 1].kind == .Eq {
+        } else if next_tok == .Eq {
+            // x = val
             return parse_assignment(ps, parent, allocator)
         } else {
-            return nil, "Expected := or = after identifier"
+            return nil, "Expected :=, :, or = after identifier in statement"
         }
     case .KW_For: return parse_for_in_statement(ps, parent, allocator)
     case .KW_If: return parse_if_statement(ps, parent, allocator)
@@ -181,20 +189,32 @@ parse_assignment :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context
 parse_var_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
     span_start := ps.idx
     name_tok := ps.current_token
-    
     parser_advance(ps)
-    if !(ps.current_token.kind == .Assign || ps.current_token.kind == .Eq) {
-        return nil, fmt.tprintf("Expected (re)assignment, got %v", ps.current_token.kind)
+
+    explicit_type: Maybe(Type_Info)
+    // Check for explicit type annotation: name: type = expr
+    if ps.current_token.kind == .Colon {
+        parser_advance(ps)
+        explicit_type = parse_type(ps, allocator) or_return
+        parser_consume(ps, .Eq) or_return
+    } else {
+        // Inferred type: name := expr
+        parser_consume(ps, .Assign) or_return
     }
-    parser_advance(ps)
+
+    expr := parse_expression(ps, parent, allocator) or_return
+
+    // if !(ps.current_token.kind == .Assign || ps.current_token.kind == .Eq) {
+    //     return nil, fmt.tprintf("Expected (re)assignment, got %v", ps.current_token.kind)
+    // }
+    // parser_advance(ps)
     
     var_node := new(Node, allocator)
     var_node.node_kind = .Var_Def
     var_node.parent = parent
-    var_node.span = Span{start = span_start, end = ps.idx}
-    
-    expr := parse_expression(ps, var_node, allocator) or_return
-    var_node.payload = Node_Var_Def{name = name_tok.source, content = expr}
+    var_node.span = Span{start = span_start, end = ps.idx-1}
+    // 
+    var_node.payload = Node_Var_Def{name = name_tok.source, content = expr, explicit_type=explicit_type}
     
     return var_node, nil
 }
@@ -362,7 +382,7 @@ parse_factor :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.all
 }
 
 parse_unary :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
-    if ps.current_token.kind == .Minus || ps.current_token.kind == .Plus {
+    if ps.current_token.kind == .Minus || ps.current_token.kind == .Plus || ps.current_token.kind == .Amp || ps.current_token.kind == .Star {
         op_idx := ps.idx
         op := ps.current_token
         parser_advance(ps)
@@ -477,7 +497,7 @@ parse_fn_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.all
             parser_advance(ps) 
             parser_consume(ps, .Colon) or_return
 
-            param_type := parse_type(ps) or_return
+            param_type := parse_type(ps, allocator) or_return
             append(&param_list, Fn_Param{
                 name = param_name, 
                 type = param_type,
@@ -500,7 +520,7 @@ parse_fn_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.all
     return_type: Type_Info = .Void
     if ps.current_token.kind == .Colon {
         parser_advance(ps)
-        return_type = parse_type(ps) or_return
+        return_type = parse_type(ps, allocator) or_return
 
     }
 
@@ -555,7 +575,7 @@ parse_literal_array :: proc(ps: ^Parsing_State, parent: ^Node, allocator := cont
     parser_consume(ps, .Lt) or_return
     
     // Parse element type
-    elem_type := parse_type(ps) or_return
+    elem_type := parse_type(ps, allocator) or_return
     
     parser_consume(ps, .Comma) or_return
     
@@ -642,7 +662,40 @@ parse_for_in_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := c
     return for_node, nil
 }
 
-parse_type :: proc(ps: ^Parsing_State) -> (Type_Info, Parse_Error) {
+parse_type :: proc(ps: ^Parsing_State, allocator: mem.Allocator) -> (res:Type_Info, err:Parse_Error) {
+    // Pointer type
+    if ps.current_token.kind == .Star {
+        parser_advance(ps)
+        pointee_type := parse_type(ps, allocator) or_return
+        return Pointer_Type{
+            pointee = new_clone(pointee_type, allocator),
+        }, nil
+    }
+    
+    // Array type: arr<T, N>
+    if ps.current_token.kind == .KW_Arr {
+        parser_advance(ps)
+        parser_consume(ps, .Lt) or_return
+        
+        elem_type := parse_type(ps, allocator) or_return
+        
+        parser_consume(ps, .Comma) or_return
+        
+        if ps.current_token.kind != .Lit_Number {
+            return nil, "Array size must be an integer and known at compile-time"
+        }
+        size_str := ps.current_token.source
+        size := strconv.atoi(size_str)
+        parser_advance(ps)
+        
+        parser_consume(ps, .Gt) or_return
+        
+        return Array_Type{
+            element_type = new_clone(elem_type, allocator),
+            size = size,
+        }, nil
+    }
+
     prim: Type_Info
     #partial switch ps.current_token.kind {
     case .KW_Void: prim = .Void

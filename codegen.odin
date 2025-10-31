@@ -201,6 +201,8 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
             panic("Cannot print function")
         case Array_Type:
             panic("Cannot print array")
+        case Pointer_Type:
+            panic("Cannot print array")
         }
         
         strings.write_string(&ctx_cg.output_buf, "printf(\"")
@@ -274,6 +276,9 @@ codegen_type :: proc(ctx_cg: ^Codegen_Context, type: Type_Info) {
         }
     case Array_Type:
         codegen_type(ctx_cg, t.element_type^)
+    case Pointer_Type:
+        codegen_type(ctx_cg, t.pointee^)
+        strings.write_string(&ctx_cg.output_buf, "*")
     }
     
 }

@@ -184,9 +184,22 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
 
     case .Var_Def:
         var_def := node.payload.(Node_Var_Def)
-        inferred_type := semantic_infer_type(ctx, var_def.content)
-        node.inferred_type = inferred_type // NOTE(Aria): somehow this is needed
-        semantic_define_symbol(ctx, var_def.name, inferred_type, var_def.content.span)
+        value_type := semantic_infer_type(ctx, var_def.content)
+
+        // Override the inferenced type if explicit type is defined
+        actual_type: Type_Info
+        if explicit, has_explicit := var_def.explicit_type.?; has_explicit {
+            if !types_equal(explicit, value_type) {
+                add_error(ctx, node.span, "Type mismatch: declared as %v but initialized with %v", 
+                    explicit, value_type)
+            }
+            actual_type = explicit
+        } else {
+            actual_type = value_type
+        }
+
+        node.inferred_type = actual_type
+        semantic_define_symbol(ctx, var_def.name, actual_type, var_def.content.span)
         semantic_analyze_node(ctx, var_def.content)  
     
     case .Fn_Call:
@@ -230,22 +243,18 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
 
     case .If:
         if_stmt := node.payload.(Node_If)
-
-        // Analyze condition
         semantic_analyze_node(ctx, if_stmt.condition)
-        cond_type := semantic_infer_type(ctx, if_stmt.condition)
         
-        // Check condition is bool
+        // Primary condition must be of boolean type
+        cond_type := semantic_infer_type(ctx, if_stmt.condition)
         if cond_prim, ok := cond_type.(Primitive_Type); !ok || cond_prim != .Bool {
             add_error(ctx, if_stmt.condition.span, "If condition must be bool")
         }
         
-        // Analyze if body
         for stmt in if_stmt.if_body {
             semantic_analyze_node(ctx, stmt)
         }
         
-        // Analyze else body
         for stmt in if_stmt.else_body {
             semantic_analyze_node(ctx, stmt)
         }
@@ -257,13 +266,11 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
             semantic_analyze_node(ctx, elem)
         }
         
-        // Validate element count matches size
         if len(arr_lit.elements) != arr_lit.size {
             add_error(ctx, node.span, "Array literal has %d elements but size is %d", 
                 len(arr_lit.elements), arr_lit.size)
         }
         
-        // Validate all elements match declared type
         for elem, i in arr_lit.elements {
             elem_type := semantic_infer_type(ctx, elem)
             if !types_equal(elem_type, arr_lit.element_type) {
@@ -357,16 +364,9 @@ semantic_infer_type :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
         unop := node.payload.(Node_Un_Op)
         operand_type := semantic_infer_type(ctx, unop.operand)
         
-        prim, ok := operand_type.(Primitive_Type)
-        if !ok {
-            add_error(ctx, node.span, "Cannot apply unary operator to non-primitive type")
-            type := Primitive_Type.I32
-            node.inferred_type = type
-            return type
-        }
-        
         #partial switch unop.op.kind {
         case .Plus, .Minus:
+            prim, ok := operand_type.(Primitive_Type)
             if prim == .Void {
                 add_error(ctx, node.span, "Cannot apply unary operator to void")
                 type := Primitive_Type.I32
@@ -376,11 +376,32 @@ semantic_infer_type :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
             type := prim
             node.inferred_type = type
             return prim
+        case .Amp:
+            // Address-of: &x
+            if unop.operand.node_kind != .Identifier {
+                add_error(ctx, node.span, "Address-of requires an lvalue")
+            }
+            result := Pointer_Type{
+                pointee = new_clone(operand_type, ctx.allocator),
+            }
+            node.inferred_type = result
+            return result
+        case .Star:
+            // Dereference: *ptr
+            ptr_type, ok := operand_type.(Pointer_Type)
+            if !ok {
+                add_error(ctx, node.span, "Cannot dereference non-pointer type %v", operand_type)
+                result := Primitive_Type.I32
+                node.inferred_type = result
+                return result
+            }
+            result := ptr_type.pointee^
+            node.inferred_type = result
+            return result
         case:
             add_error(ctx, node.span, "Unary operator %v not defined", unop.op.kind)
-            type := prim
-            node.inferred_type = type
-            return prim
+            node.inferred_type = operand_type
+            return operand_type
         }
     
     case .Fn_Def:
