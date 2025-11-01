@@ -283,6 +283,7 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
         for stmt in if_stmt.else_body {
             semantic_analyze_node(ctx, stmt)
         }
+
     case .Literal_Arr:
         arr_lit := node.payload.(Node_Array_Literal)
         
@@ -417,7 +418,7 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
     case .Un_Op:
         semantic_analyze_node(ctx, node.payload.(Node_Un_Op).operand)
     
-    case .Literal_Number, .Identifier:
+    case .Literal_Number, .Literal_String, .Identifier:
         // nothing happened. These are leaf nodes in expressions.
     case: fmt.panicf("Cannot analyze %v yet", node.node_kind)
     }
@@ -435,6 +436,11 @@ semantic_infer_type :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
         }
     case .Literal_Number:
         type := Primitive_Type.I32
+        node.inferred_type = type
+        return type
+
+    case .Literal_String:
+        type := String_Type{}
         node.inferred_type = type
         return type
     
@@ -619,7 +625,7 @@ semantic_infer_type :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
         result := Primitive_Type.I64
         node.inferred_type = result
         return result
-        
+
     case .Type_Expr:  
         type_expr := node.payload.(Node_Type_Expr)
         node.inferred_type = type_expr.type_info
@@ -660,6 +666,9 @@ types_equal :: proc(a, b: Type_Info) -> bool {
     case Function_Type:
         fmt.println("TODO(Aria): types are uncomparable")
         return false
+    case String_Type:
+        b_val, ok := b.(String_Type)
+        return ok && a_val == b_val
     case Array_Type:
         b_val, ok := b.(Array_Type)
         if !ok do return false

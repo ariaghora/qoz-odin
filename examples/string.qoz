@@ -1,0 +1,13 @@
+main := func() {
+    str := "Hello, world!"
+    print(str)
+
+    fruits := arr<string, 3>{
+        "Apple",
+        "Banana",
+        "Cherry",
+    }
+    for fruit in fruits {
+        print(fruit)
+    }
+}

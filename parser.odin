@@ -19,6 +19,7 @@ Node_Kind :: enum {
     If,
     Literal_Arr,
     Literal_Number,
+    Literal_String,
     Print,
     Program,
     Return,
@@ -30,7 +31,9 @@ Node_Kind :: enum {
     Var_Def,
 }
 
-Type_Info :: union { Primitive_Type, Array_Type, Function_Type, Pointer_Type, Struct_Type, Named_Type }
+Type_Info :: union {
+    Primitive_Type, Array_Type, Function_Type, Pointer_Type, Struct_Type, Named_Type, String_Type
+}
 
 Primitive_Type :: enum { I32, I64, F32, F64, Bool, Void }
 
@@ -47,6 +50,8 @@ Array_Type :: struct {
 Pointer_Type :: struct {
     pointee: ^Type_Info,
 }
+
+String_Type :: struct {}
 
 Struct_Field :: struct { name: string, type: Type_Info }
 Struct_Type :: struct {
@@ -80,7 +85,8 @@ Node_Fn_Def         :: struct { params: [dynamic]Fn_Param, body: [dynamic]^Node,
 Node_For_In         :: struct { iterator: string, iterable: ^Node, body: [dynamic]^Node }
 Node_Identifier     :: struct { name:string }
 Node_If             :: struct { condition: ^Node, if_body: [dynamic]^Node, else_body: [dynamic]^Node }
-Node_Literal        :: struct { content: Token }
+Node_Literal_Number :: struct { content: Token }
+Node_Literal_String :: struct { content: Token }
 Node_Print          :: struct { content: ^Node }
 Node_Return         :: struct { value: ^Node } 
 Node_Statement_List :: struct { nodes: [dynamic]^Node }
@@ -108,7 +114,8 @@ Node :: struct {
         Node_For_In,
         Node_Identifier,
         Node_If,
-        Node_Literal,
+        Node_Literal_Number,
+        Node_Literal_String,
         Node_Print,
         Node_Return,
         Node_Size_Of,
@@ -522,6 +529,7 @@ parse_primary :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
         type_node.payload = Node_Type_Expr{type_info = struct_type}
         return type_node, nil
     case .Lit_Number: return parse_literal_number(ps, parent, allocator)
+    case .Lit_String: return parse_literal_string(ps, parent, allocator)
     case .KW_Arr: return parse_literal_array(ps, parent, allocator)
     case:
         fmt.println(ps.current_token)
@@ -598,7 +606,22 @@ parse_literal_number :: proc(ps: ^Parsing_State, parent: ^Node, allocator := con
     lit_node := new(Node, allocator)
     lit_node.node_kind = .Literal_Number
     lit_node.parent = parent
-    lit_node.payload = Node_Literal{content = tok}
+    lit_node.payload = Node_Literal_Number{content = tok}
+    
+    parser_advance(ps)
+    lit_node.span = Span{start = span_start, end = ps.idx - 1}
+    
+    return lit_node, nil
+}
+
+parse_literal_string :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
+    span_start := ps.idx
+    tok := ps.current_token
+    
+    lit_node := new(Node, allocator)
+    lit_node.node_kind = .Literal_String
+    lit_node.parent = parent
+    lit_node.payload = Node_Literal_String{content = tok}
     
     parser_advance(ps)
     lit_node.span = Span{start = span_start, end = ps.idx - 1}
@@ -870,7 +893,7 @@ parse_type :: proc(ps: ^Parsing_State, allocator: mem.Allocator) -> (res:Type_In
         type_name := ps.current_token.source
         parser_advance(ps)
         return Named_Type{name = type_name}, nil
-    }
+    } 
 
     prim: Type_Info
     #partial switch ps.current_token.kind {
@@ -879,6 +902,9 @@ parse_type :: proc(ps: ^Parsing_State, allocator: mem.Allocator) -> (res:Type_In
     case .KW_I64: prim = .I64
     case .KW_F32: prim = .F32
     case .KW_F64: prim = .F64
+    case .KW_String: 
+        parser_advance(ps)
+        return String_Type{}, nil
     case: 
         return nil, fmt.tprintf("Expected type at position %d, got %v", ps.idx, ps.current_token.kind)
     }

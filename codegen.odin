@@ -16,8 +16,9 @@ codegen :: proc(root: ^Node, ctx_sem: ^Semantic_Context, allocator := context.al
     sb := strings.builder_make(allocator) or_return
     ctx_cg := Codegen_Context { output_buf=sb, indent_level=0, ctx_sem=ctx_sem }
 
+    strings.write_string(&ctx_cg.output_buf, string(#load("qoz_runtime.c")))
+    strings.write_string(&ctx_cg.output_buf, "\n\n")
     strings.write_string(&ctx_cg.output_buf, "#include <stdio.h>\n")
-    strings.write_string(&ctx_cg.output_buf, "#include <stdint.h>\n\n")
 
     // Pass 1: forward declaration
     codegen_forward_decl(&ctx_cg, root)
@@ -195,9 +196,24 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         strings.write_string(&ctx_cg.output_buf, "}")
 
     case .Literal_Number:
-        lit := node.payload.(Node_Literal)
+        lit := node.payload.(Node_Literal_Number)
         src := lit.content.source
         strings.write_string(&ctx_cg.output_buf, src)
+    
+    case .Literal_String:
+        lit := node.payload.(Node_Literal_String)
+    
+        str_content := lit.content.source
+        if strings.has_prefix(str_content, "\"") {
+            str_content = str_content[1:len(str_content)-1]
+        }
+        
+        // Emit compound literal
+        strings.write_string(&ctx_cg.output_buf, "(Qoz_String){.data = \"")
+        strings.write_string(&ctx_cg.output_buf, str_content)
+        strings.write_string(&ctx_cg.output_buf, "\", .len = ")
+        fmt.sbprintf(&ctx_cg.output_buf, "%d", len(str_content))
+        strings.write_string(&ctx_cg.output_buf, "}")
     
     case .Return:
         ret := node.payload.(Node_Return)
@@ -210,6 +226,13 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         
         // Get type of expression being printed
         expr_type := print.content.inferred_type.? or_else panic("Type not annotated")
+
+        if _, is_string := expr_type.(String_Type); is_string {
+            strings.write_string(&ctx_cg.output_buf, "{ Qoz_String __tmp = ")
+            codegen_node(ctx_cg, print.content)
+            strings.write_string(&ctx_cg.output_buf, "; printf(\"%.*s\\n\", (int)__tmp.len, __tmp.data); }\n")
+            return
+        }
         
         // Determine format specifier
         format_spec := ""
@@ -221,6 +244,8 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
             case .Bool: format_spec = "%d"
             case .Void: panic("Cannot print void")
             }
+        case String_Type:
+            format_spec = "%s"
         case Function_Type: panic("Cannot print function")
         case Array_Type: panic("Cannot print array")
         case Pointer_Type: panic("Cannot print pointer")
@@ -347,6 +372,8 @@ codegen_type :: proc(ctx_cg: ^Codegen_Context, type: Type_Info) {
         }
     case Array_Type:
         codegen_type(ctx_cg, t.element_type^)
+    case String_Type:
+        strings.write_string(&ctx_cg.output_buf, "Qoz_String")
     case Pointer_Type:
         codegen_type(ctx_cg, t.pointee^)
         strings.write_string(&ctx_cg.output_buf, "*")

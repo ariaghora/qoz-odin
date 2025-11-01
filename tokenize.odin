@@ -12,7 +12,7 @@ Token_Kind :: enum {
     Left_Brace, Right_Brace,
     Lit_Number, Lit_String,
     KW_Fn, KW_External, KW_If, KW_Else, KW_Print, KW_Return,
-    KW_I32, KW_I64, KW_F32, KW_F64, KW_Void,
+    KW_I32, KW_I64, KW_F32, KW_F64, KW_Void, KW_String,
     KW_Arr, KW_Map, KW_For, KW_In, KW_Struct,
     KW_Size_Of,
     Iden, EOF,
@@ -107,6 +107,7 @@ make_id_or_kw :: proc(t: ^Tokenizer) {
     case "void":     tok_kind = .KW_Void
     case "arr":      tok_kind = .KW_Arr
     case "struct":   tok_kind = .KW_Struct
+    case "string":   tok_kind = .KW_String
     case "size_of":  tok_kind = .KW_Size_Of
     case:            tok_kind = .Iden
     }
@@ -133,6 +134,28 @@ make_number :: proc(t: ^Tokenizer) {
     append(&t.tokens, Token{
         source = t.source[start:t.offset],
         kind = .Lit_Number,
+        line = start_line,
+        column = start_column,
+    })
+}
+
+make_string :: proc(t: ^Tokenizer) {
+    start := t.offset
+    start_line := t.line
+    start_column := t.column
+    delimiter := current_char(t)
+    tokenizer_advance(t)
+    c := current_char(t)
+    for c != delimiter && t.offset < len(t.source)-1{
+        tokenizer_advance(t)
+        c = current_char(t)
+    }
+    if t.offset == len(t.source)-1 do panic("Unexpected EOF, string not closed?")
+
+    tokenizer_advance(t)
+    append(&t.tokens, Token{
+        source = t.source[start:t.offset],
+        kind = .Lit_String,
         line = start_line,
         column = start_column,
     })
@@ -166,6 +189,7 @@ tokenize :: proc(source: string, allocator := context.allocator) -> (tokens: [dy
         case '/': make_tok(&t, .Slash, "/")
         case '%': make_tok(&t, .Percent, "%")
         case '&': make_tok(&t, .Amp, "&")
+        case '"', '\'': make_string(&t)
         case ':': 
             if peek(&t, source) == '=' {
                 make_tok(&t, .Assign, ":=")
