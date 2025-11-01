@@ -543,9 +543,19 @@ parse_identifier :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context
     
     parser_advance(ps)
 
-    // Check if it's a struct literal: TypeName{ ... }
+    // Check if it's a struct literal: TypeName{ field: value, ... }
+    // Lookahead to distinguish from regular blocks
     if ps.current_token.kind == .Left_Brace {
-        return parse_struct_literal(ps, name, parent, allocator)
+        next_idx := ps.idx + 1
+        // Struct literal has pattern: { identifier : value }
+        if next_idx < len(ps.tokens) && 
+            ps.tokens[next_idx].kind == .Iden &&
+            next_idx + 1 < len(ps.tokens) &&
+            ps.tokens[next_idx + 1].kind == .Colon {
+            // It's a struct literal
+            return parse_struct_literal(ps, name, parent, allocator)
+        }
+        // Otherwise just an identifier, let caller handle the {
     }
 
     iden_node := new(Node, allocator)
