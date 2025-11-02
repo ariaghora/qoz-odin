@@ -41,7 +41,6 @@ Type_Info :: union {
     Pointer_Type,
     Struct_Type,
     Named_Type,
-    String_Type
 }
 
 Primitive_Type :: enum { I8, U8, I32, I64, F32, F64, Bool, Void }
@@ -59,8 +58,6 @@ Array_Type :: struct {
 Pointer_Type :: struct {
     pointee: ^Type_Info,
 }
-
-String_Type :: struct {}
 
 Struct_Field :: struct { name: string, type: Type_Info }
 Struct_Type :: struct {
@@ -1078,9 +1075,9 @@ parse_type :: proc(ps: ^Parsing_State, allocator: mem.Allocator) -> (res:Type_In
     case .KW_I64: prim = .I64
     case .KW_F32: prim = .F32
     case .KW_F64: prim = .F64
-    case .KW_String: 
-        parser_advance(ps)
-        return String_Type{}, nil
+    // case .KW_String: 
+    //     parser_advance(ps)
+    //     return String_Type{}, nil
     case .KW_Fn:
         parser_advance(ps)
         parser_consume(ps, .Left_Paren) or_return

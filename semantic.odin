@@ -73,7 +73,19 @@ semantic_analyze :: proc(root: ^Node, allocator := context.allocator) -> Semanti
         global_symbols=make(map[string]bool, allocator),
     }
 
+    fields := make([dynamic]Struct_Field, allocator)
+    i8_type: Type_Info = Primitive_Type.I8
+    i8_ptr_type: Type_Info = Pointer_Type{pointee = new_clone(i8_type, allocator)}
+    append_elems(&fields,
+        Struct_Field{name = "data", type = Pointer_Type{pointee = &i8_ptr_type}},
+        Struct_Field{name = "len", type = Primitive_Type.I64},
+    )
+    string_struct := Struct_Type{
+        fields = fields,
+    }
+
     semantic_push_scope(&ctx)
+    semantic_define_symbol(&ctx, "string", string_struct, Span{})
     
     // Pass 1: Collect all top-level declarations
     // - Walks through global scope only (Program node and top-level Var_Defs)
@@ -618,9 +630,17 @@ check_node :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
         n := node.payload.(Node_Len)
         value_type := check_node(ctx, n.value)
         
+        valid := false
         #partial switch t in value_type {
-        case Array_Type, String_Type:
-        case:
+        case Array_Type:
+            valid = true
+        case Named_Type:
+            if t.name == "string" {
+                valid = true
+            }
+        }
+        
+        if !valid {
             add_error(ctx, node.span, "len() requires array or string, got %v", value_type)
         }
         
@@ -744,8 +764,9 @@ check_node :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
         return Primitive_Type.I32
 
     case .Literal_String:
-        node.inferred_type = String_Type{}
-        return String_Type{}
+        result := Named_Type{name = "string"}
+        node.inferred_type = result
+        return result
     
     case .Identifier:
         iden := node.payload.(Node_Identifier)
@@ -777,9 +798,6 @@ types_equal :: proc(a, b: Type_Info) -> bool {
             if !types_equal(param_a, param_b) do return false
         }
         return true
-    case String_Type:
-        b_val, ok := b.(String_Type)
-        return ok && a_val == b_val
     case Array_Type:
         b_val, ok := b.(Array_Type)
         if !ok do return false

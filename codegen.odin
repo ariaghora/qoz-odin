@@ -256,19 +256,21 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
     
     case .Len:
         len_node := node.payload.(Node_Len)
-        
-        // Get the type of the value
         value_type := len_node.value.inferred_type.? or_else panic("Type not inferred")
         
         #partial switch t in value_type {
         case Array_Type:
             // Array length is compile-time constant
             fmt.sbprintf(&ctx_cg.output_buf, "%d", t.size)
-        case String_Type:
-            // String length is runtime field access
-            strings.write_string(&ctx_cg.output_buf, "(")
-            codegen_node(ctx_cg, len_node.value)
-            strings.write_string(&ctx_cg.output_buf, ").len")
+        case Named_Type:
+            if t.name == "string" {
+                // String length is runtime field access
+                strings.write_string(&ctx_cg.output_buf, "(")
+                codegen_node(ctx_cg, len_node.value)
+                strings.write_string(&ctx_cg.output_buf, ").len")
+            } else {
+                panic("len() called on invalid type")
+            }
         case:
             panic("len() called on invalid type")
         }
@@ -316,7 +318,8 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         // Get type of expression being printed
         expr_type := print.content.inferred_type.? or_else panic("Type not annotated")
 
-        if _, is_string := expr_type.(String_Type); is_string {
+        // Special handling for string
+        if named, is_named := expr_type.(Named_Type); is_named && named.name == "string" {
             strings.write_string(&ctx_cg.output_buf, "{ Qoz_String __tmp = ")
             codegen_node(ctx_cg, print.content)
             strings.write_string(&ctx_cg.output_buf, "; printf(\"%.*s\\n\", (int)__tmp.len, __tmp.data); }\n")
@@ -333,8 +336,6 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
             case .Bool: format_spec = "%d"
             case .Void: panic("Cannot print void")
             }
-        case String_Type:
-            format_spec = "%s"
         case Function_Type: panic("Cannot print function")
         case Array_Type: panic("Cannot print array")
         case Pointer_Type: panic("Cannot print pointer")
@@ -491,16 +492,19 @@ codegen_type :: proc(ctx_cg: ^Codegen_Context, type: Type_Info, name: string = "
         }
     case Array_Type:
         codegen_type(ctx_cg, t.element_type^)
-    case String_Type:
-        strings.write_string(&ctx_cg.output_buf, "Qoz_String")
     case Pointer_Type:
         codegen_type(ctx_cg, t.pointee^)
         strings.write_string(&ctx_cg.output_buf, "*")
     case Struct_Type:
         panic("Internal error: FIXME(Aria): Cannot inline anonymous struct type")
     case Named_Type:
-        strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX)
-        strings.write_string(&ctx_cg.output_buf, t.name)
+        // Special case for built-in string
+        if t.name == "string" {
+            strings.write_string(&ctx_cg.output_buf, "Qoz_String")
+        } else {
+            strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX)
+            strings.write_string(&ctx_cg.output_buf, t.name)
+        }
     case: fmt.panicf("Internal error: cannot generate code for type %v", t)
     }
     
