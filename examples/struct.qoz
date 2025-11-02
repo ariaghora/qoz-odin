@@ -30,4 +30,7 @@ main := func() {
 
     print(root.value.x)
     print(root.left.value.y)
+
+    root.left.value.y = 42
+    print(root.left.value.y)
 }

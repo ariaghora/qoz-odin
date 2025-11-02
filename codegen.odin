@@ -62,7 +62,7 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
 
     case .Assignment:
         assign := node.payload.(Node_Assign)
-        strings.write_string(&ctx_cg.output_buf, assign.target)
+        codegen_node(ctx_cg, assign.target)
         strings.write_string(&ctx_cg.output_buf, " = ")
         codegen_node(ctx_cg, assign.value)
         strings.write_string(&ctx_cg.output_buf, ";\n")

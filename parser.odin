@@ -85,7 +85,7 @@ Fn_Param :: struct { name: string, type: Type_Info, span: Span }
 Struct_Field_Init :: struct { name: string, value: ^Node }
 
 Node_Array_Literal  :: struct { element_type: Type_Info, size: int, elements: [dynamic]^Node }
-Node_Assign         :: struct { target: string, value: ^Node }
+Node_Assign         :: struct { target: ^Node, value: ^Node }
 Node_Bin_Op         :: struct { left, right: ^Node, op: Token }
 Node_Call           :: struct { callee: ^Node, args: [dynamic]^Node }
 Node_Field_Access   :: struct { object: ^Node, field_name: string }
@@ -198,16 +198,42 @@ parse_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.
         if next_tok == .Assign || next_tok == .Colon {
             // x := val  or  x: type = val
             return parse_var_def(ps, parent, allocator)
-        } else if next_tok == .Eq {
+        } 
+
+        // Parse lvalue expression (could be x, x[i], x.field, etc.)
+        expr := parse_expression(ps, parent, allocator) or_return
+        if ps.current_token.kind == .Eq {
             // x = val
-            return parse_assignment(ps, parent, allocator)
-        } else {
-            expr := parse_expression(ps, parent, allocator) or_return
-            expr_stmt := new(Node, allocator)
-            expr_stmt.node_kind = .Expr_Statement
-            expr_stmt.payload = Node_Expr_Statement{expr = expr}
-            return expr_stmt, nil
-        }
+            fmt.println("HERE", ps.current_token)
+            parser_advance(ps)  // eat '='
+            
+            // Validate lvalue
+            #partial switch expr.node_kind {
+            case .Identifier, .Index, .Field_Access:
+                // Valid
+            case:
+                return nil, "Invalid assignment target"
+            }
+            
+            fmt.println("HERE", ps.current_token)
+            value := parse_expression(ps, parent, allocator) or_return
+            
+            assign_node := new(Node, allocator)
+            assign_node.node_kind = .Assignment
+            assign_node.parent = parent
+            assign_node.span = Span{start = expr.span.start, end = ps.idx - 1}
+            assign_node.payload = Node_Assign{
+                target = expr,
+                value = value,
+            }
+        
+            return assign_node, nil
+        } 
+
+        expr_stmt := new(Node, allocator)
+        expr_stmt.node_kind = .Expr_Statement
+        expr_stmt.payload = Node_Expr_Statement{expr = expr}
+        return expr_stmt, nil
     case .KW_For: return parse_for_in_statement(ps, parent, allocator)
     case .KW_If: return parse_if_statement(ps, parent, allocator)
     case .KW_Print: return parse_print_statement(ps, parent, allocator)
@@ -220,23 +246,23 @@ parse_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.
     }
 }
 
-parse_assignment :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
-    span_start := ps.idx
-    name := ps.current_token.source
+// parse_assignment :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
+//     span_start := ps.idx
+//     name := ps.current_token.source
     
-    parser_advance(ps)
-    parser_consume(ps, .Eq) or_return
+//     parser_advance(ps)
+//     parser_consume(ps, .Eq) or_return
     
-    assign_node := new(Node, allocator)
-    assign_node.node_kind = .Assignment
-    assign_node.parent = parent
+//     assign_node := new(Node, allocator)
+//     assign_node.node_kind = .Assignment
+//     assign_node.parent = parent
     
-    value := parse_expression(ps, assign_node, allocator) or_return
-    assign_node.span = Span{start = span_start, end = ps.idx - 1}
-    assign_node.payload = Node_Assign{target = name, value = value}
+//     value := parse_expression(ps, assign_node, allocator) or_return
+//     assign_node.span = Span{start = span_start, end = ps.idx - 1}
+//     assign_node.payload = Node_Assign{target = name, value = value}
     
-    return assign_node, nil
-}
+//     return assign_node, nil
+// }
 
 parse_var_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
     span_start := ps.idx

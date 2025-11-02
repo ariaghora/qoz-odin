@@ -1,15 +1,20 @@
 main := func() {
     numbers := arr<i32, 5>{1, 2, 3, 4, 5}
+    print("Whe have numbers array of length:")
+    print(len(numbers))
     
     sum : i32 = 10
+    print("The numbers are:")
     for n in numbers {
+        print(n)
         sum = sum + n
     }
 
+    print("The sum is:")
     print(sum)
 
-    print(len(numbers))
 
+    print("Our numbers now are:")
     numbers[2] = 42
     for n in numbers {
         print(n)
