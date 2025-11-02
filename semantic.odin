@@ -23,8 +23,6 @@ Semantic_Context :: struct {
     errors: [dynamic]Semantic_Error,
     allocator: mem.Allocator,
     current_function_return_type: Maybe(Type_Info),
-    // This is to track the current struct's name while analyzing
-    // recursively within it
     current_struct_name: Maybe(string), 
     external_functions: map[string]bool,
     global_symbols: map[string]bool
@@ -67,7 +65,6 @@ semantic_lookup_symbol :: proc(ctx: ^Semantic_Context, name: string) -> (Symbol,
     return {}, false
 }
 
-// Semantic analysis entry point. Should be called in, e.g., main.
 semantic_analyze :: proc(root: ^Node, allocator := context.allocator) -> Semantic_Context {
     ctx := Semantic_Context {
         allocator=allocator,
@@ -76,14 +73,32 @@ semantic_analyze :: proc(root: ^Node, allocator := context.allocator) -> Semanti
         global_symbols=make(map[string]bool, allocator),
     }
 
-    semantic_push_scope(&ctx) // global
-    semantic_analyze_node(&ctx, root)
+    semantic_push_scope(&ctx)
+    
+    // Pass 1: Collect all top-level declarations
+    // - Walks through global scope only (Program node and top-level Var_Defs)
+    // - Registers all global symbols (functions, types, global variables) in symbol table
+    // - Determines types syntactically without analyzing function bodies or initializers
+    // - Enables forward references: functions can call other functions defined later
+    // - Does NOT recurse into function bodies, only collects their signatures
+    // - After this pass, all global names are known and can be referenced
+    collect_declarations(&ctx, root)
+    
+    // Pass 2: Full semantic analysis and validation
+    // - Performs complete type checking on all expressions and statements
+    // - Analyzes function bodies, checking control flow and return types
+    // - Validates initializers and function calls against declared types
+    // - For local variables with self-references:
+    //   - Detects struct literals syntactically
+    //   - Pre-registers the local variable with its type before checking initializer
+    //   - Then validates the initializer, at which point the variable exists in scope
+    // - Uses the global symbol table built in pass 1 for lookups
+    // - Reports all semantic errors (type mismatches, undefined symbols, etc.)
+    check_node(&ctx, root)
 
-    // Validate main function exists
     main_span := Span{start = 0, end = 0}
     main_sym, has_main := ctx.current_scope.symbols["main"]
 
-    // Find main's definition span
     if root.node_kind == .Program {
         for stmt in root.payload.(Node_Statement_List).nodes {
             if stmt.node_kind == .Var_Def {
@@ -137,135 +152,333 @@ add_error :: proc(ctx: ^Semantic_Context, span: Span, format: string, args: ..an
     append(&ctx.errors, error)
 }
 
-semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
-    if node == nil do return 
-
-    #partial switch node.node_kind {
-    case .Program: 
-        for stmt in node.payload.(Node_Statement_List).nodes {
-            semantic_analyze_node(ctx, stmt)
-        }
+// Pass 1: Collect declarations without analyzing bodies
+collect_declarations :: proc(ctx: ^Semantic_Context, node: ^Node) {
+    if node == nil do return
     
-    case .Expr_Statement:
-        expr_stmt := node.payload.(Node_Expr_Statement)
-        semantic_analyze_node(ctx, expr_stmt.expr)
-        _ = semantic_infer_type(ctx, expr_stmt.expr)
-
-    case .Assignment:
-        assign := node.payload.(Node_Assign)
-        
-        // Validate target is assignable
-        #partial switch assign.target.node_kind {
-        case .Identifier, .Index, .Field_Access:
-            // Valid lvalue
-        case:
-            add_error(ctx, assign.target.span, "Invalid assignment target")
+    #partial switch node.node_kind {
+    case .Program:
+        for stmt in node.payload.(Node_Statement_List).nodes {
+            collect_declarations(ctx, stmt)
         }
-        
-        semantic_analyze_node(ctx, assign.target)
-        semantic_analyze_node(ctx, assign.value)
-        
-        target_type := semantic_infer_type(ctx, assign.target)
-        value_type := semantic_infer_type(ctx, assign.value)
-        
-        if !types_compatible(target_type, value_type) {
-            add_error(ctx, node.span, "Cannot assign %v to %v", value_type, target_type)
-        }
-        
-        node.inferred_type = value_type
-
-    case .Bin_Op:
-        binop := node.payload.(Node_Bin_Op)
-        semantic_analyze_node(ctx, binop.left)
-        semantic_analyze_node(ctx, binop.right)
-
-    case .Cast:
-        cast_node := node.payload.(Node_Cast)
-        semantic_analyze_node(ctx, cast_node.expr)
-        
-    case .Field_Access:
-        field_access := node.payload.(Node_Field_Access)
-        semantic_analyze_node(ctx, field_access.object)
-
-    case .For_In:
-        for_in := node.payload.(Node_For_In)
-        
-        // Analyze iterable expression
-        semantic_analyze_node(ctx, for_in.iterable)
-        iterable_type := semantic_infer_type(ctx, for_in.iterable)
-        
-        // Check iterable is an array
-        arr_type, is_array := iterable_type.(Array_Type)
-        if !is_array {
-            add_error(ctx, for_in.iterable.span, "Cannot iterate over non-iterable type %v", iterable_type)
-            return
-        }
-        
-        // For loop body will have its own scope, so let's create it
-        semantic_push_scope(ctx)
-        // Define iterator variable with element type
-        semantic_define_symbol(ctx, for_in.iterator, arr_type.element_type^, node.span)
-        for stmt in for_in.body do semantic_analyze_node(ctx, stmt)
-        semantic_pop_scope(ctx)
-
-    case .Index:
-        index_node := node.payload.(Node_Index)
-        semantic_analyze_node(ctx, index_node.object)
-        semantic_analyze_node(ctx, index_node.index)
     
     case .Var_Def:
         var_def := node.payload.(Node_Var_Def)
-
-        // If defining a function, check whether or not it is external, and track it
+        
         if var_def.content.node_kind == .Fn_Def {
             fn_def := var_def.content.payload.(Node_Fn_Def)
             if fn_def.is_external {
                 ctx.external_functions[var_def.name] = true
             }
         }
+        
+        declared_type: Maybe(Type_Info)
+        
+        #partial switch var_def.content.node_kind {
+        case .Fn_Def:
+            fn_def := var_def.content.payload.(Node_Fn_Def)
+            param_types := make([]Type_Info, len(fn_def.params), ctx.allocator)
+            for param, i in fn_def.params {
+                param_types[i] = param.type
+            }
+            declared_type = Function_Type{
+                params = param_types,
+                return_type = new_clone(fn_def.return_type, ctx.allocator),
+            }
+        
+        case .Type_Expr:
+            type_expr := var_def.content.payload.(Node_Type_Expr)
+            declared_type = type_expr.type_info
+        
+        case .Struct_Literal:
+            // Can determine type from literal syntactically
+            struct_lit := var_def.content.payload.(Node_Struct_Literal)
+            declared_type = Named_Type{name = struct_lit.type_name}
+        
+        case:
+            // Check for explicit type annotation
+            if explicit, has_explicit := var_def.explicit_type.?; has_explicit {
+                declared_type = explicit
+            }
+        }
+        
+        if type, ok := declared_type.?; ok {
+            semantic_define_symbol(ctx, var_def.name, type, node.span)
+        }
+    }
+}
 
+// Pass 2: Full checking with bodies
+check_node :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
+    if node == nil do return Primitive_Type.Void
+    
+    #partial switch node.node_kind {
+    case .Program: 
+        for stmt in node.payload.(Node_Statement_List).nodes {
+            check_node(ctx, stmt)
+        }
+        return Primitive_Type.Void
+    
+    case .Expr_Statement:
+        expr_stmt := node.payload.(Node_Expr_Statement)
+        expr_type := check_node(ctx, expr_stmt.expr)
+        node.inferred_type = expr_type
+        return expr_type
 
-        // If defining a struct, track the name
+    case .Assignment:
+        assign := node.payload.(Node_Assign)
+        
+        #partial switch assign.target.node_kind {
+        case .Identifier, .Index, .Field_Access:
+        case:
+            add_error(ctx, assign.target.span, "Invalid assignment target")
+        }
+        
+        target_type := check_node(ctx, assign.target)
+        value_type := check_node(ctx, assign.value)
+        
+        if !types_compatible(target_type, value_type) {
+            add_error(ctx, node.span, "Cannot assign %v to %v", value_type, target_type)
+        }
+        
+        node.inferred_type = value_type
+        return value_type
+
+    case .Bin_Op:
+        binop := node.payload.(Node_Bin_Op)
+        left_type := check_node(ctx, binop.left)
+        right_type := check_node(ctx, binop.right)
+        
+        if !types_equal(left_type, right_type) {
+            add_error(ctx, node.span, "Type mismatch: %v vs %v", left_type, right_type)
+        }
+
+        result_type := semantic_binop_type_resolve(left_type, right_type, binop.op, node.span, ctx)
+        node.inferred_type = result_type
+        return result_type
+
+    case .Cast:
+        cast_node := node.payload.(Node_Cast)
+        source_type := check_node(ctx, cast_node.expr)
+        target_type := cast_node.target_type
+        
+        source_ptr, source_is_ptr := source_type.(Pointer_Type)
+        target_ptr, target_is_ptr := target_type.(Pointer_Type)
+        
+        valid := false
+        if source_is_ptr && target_is_ptr {
+            valid = true
+        } else if source_prim, ok := source_type.(Primitive_Type); ok {
+            if target_prim, ok2 := target_type.(Primitive_Type); ok2 {
+                valid = (source_prim == .I32 || source_prim == .I64 || source_prim == .F32 || source_prim == .F64) &&
+                        (target_prim == .I32 || target_prim == .I64 || target_prim == .F32 || target_prim == .F64)
+            }
+        }
+        
+        if !valid {
+            add_error(ctx, node.span, "Invalid cast from %v to %v", source_type, target_type)
+        }
+        
+        node.inferred_type = target_type
+        return target_type
+
+    case .Field_Access:
+        field_access := node.payload.(Node_Field_Access)
+        object_type := check_node(ctx, field_access.object)
+        
+        actual_type := object_type
+        if named, is_named := object_type.(Named_Type); is_named {
+            sym, ok := semantic_lookup_symbol(ctx, named.name)
+            if !ok {
+                add_error(ctx, node.span, "Undefined type '%s'", named.name)
+                node.inferred_type = Primitive_Type.Void
+                return Primitive_Type.Void
+            }
+            actual_type = sym.type
+        }
+
+        if ptr_type, is_ptr := actual_type.(Pointer_Type); is_ptr {
+            actual_type = ptr_type.pointee^
+            if named, is_named := actual_type.(Named_Type); is_named {
+                sym, ok := semantic_lookup_symbol(ctx, named.name)
+                if !ok {
+                    add_error(ctx, node.span, "Undefined type '%s'", named.name)
+                    node.inferred_type = Primitive_Type.Void
+                    return Primitive_Type.Void
+                }
+                actual_type = sym.type
+            }
+        }
+        
+        struct_type, is_struct := actual_type.(Struct_Type)
+        if !is_struct {
+            add_error(ctx, node.span, "Cannot access field of non-struct type")
+            node.inferred_type = Primitive_Type.Void
+            return Primitive_Type.Void
+        }
+        
+        for field in struct_type.fields {
+            if field.name == field_access.field_name {
+                node.inferred_type = field.type
+                return field.type
+            }
+        }
+        
+        add_error(ctx, node.span, "Struct has no field '%s'", field_access.field_name)
+        node.inferred_type = Primitive_Type.Void
+        return Primitive_Type.Void
+
+    case .For_In:
+        for_in := node.payload.(Node_For_In)
+        
+        iterable_type := check_node(ctx, for_in.iterable)
+        
+        arr_type, is_array := iterable_type.(Array_Type)
+        if !is_array {
+            add_error(ctx, for_in.iterable.span, "Cannot iterate over non-iterable type %v", iterable_type)
+            return Primitive_Type.Void
+        }
+        
+        semantic_push_scope(ctx)
+        semantic_define_symbol(ctx, for_in.iterator, arr_type.element_type^, node.span)
+        for stmt in for_in.body do check_node(ctx, stmt)
+        semantic_pop_scope(ctx)
+        return Primitive_Type.Void
+
+    case .Index:
+        index_node := node.payload.(Node_Index)
+        object_type := check_node(ctx, index_node.object)
+        index_type := check_node(ctx, index_node.index)
+        
+        if index_prim, is_prim := index_type.(Primitive_Type); !is_prim || 
+        (index_prim != .I32 && index_prim != .I64) {
+            add_error(ctx, index_node.index.span, "Index must be integer")
+        }
+        
+        element_type: Type_Info
+        if arr_type, is_arr := object_type.(Array_Type); is_arr {
+            element_type = arr_type.element_type^
+        } else if ptr_type, is_ptr := object_type.(Pointer_Type); is_ptr {
+            element_type = ptr_type.pointee^
+        } else {
+            add_error(ctx, node.span, "Cannot index non-array/pointer type")
+            node.inferred_type = Primitive_Type.Void
+            return Primitive_Type.Void
+        }
+        
+        node.inferred_type = element_type
+        return element_type
+    
+    case .Var_Def:
+        var_def := node.payload.(Node_Var_Def)
+
         if var_def.content.node_kind == .Type_Expr {
             ctx.current_struct_name = var_def.name
         }
 
-        value_type := semantic_infer_type(ctx, var_def.content)
-
-        // Override the inferenced type if explicit type is defined
-        actual_type: Type_Info
-        if explicit, has_explicit := var_def.explicit_type.?; has_explicit {
-            if !types_compatible(explicit, value_type) {
+        // Check if symbol already exists (from pass 1)
+        existing_sym, already_defined := semantic_lookup_symbol(ctx, var_def.name)
+        
+        if already_defined {
+            // Symbol was collected in pass 1, just validate
+            value_type := check_node(ctx, var_def.content)
+            actual_type := existing_sym.type
+            
+            if !types_compatible(actual_type, value_type) {
                 add_error(ctx, node.span, "Type mismatch: declared as %v but initialized with %v", 
-                    explicit, value_type)
+                    actual_type, value_type)
             }
-            actual_type = explicit
+            
+            node.inferred_type = actual_type
         } else {
-            actual_type = value_type
+            // Local variable not in pass 1, need to define it first
+            // Determine type syntactically without full validation
+            declared_type: Type_Info
+            
+            #partial switch var_def.content.node_kind {
+            case .Struct_Literal:
+                struct_lit := var_def.content.payload.(Node_Struct_Literal)
+                declared_type = Named_Type{name = struct_lit.type_name}
+            
+            case:
+                if explicit, has_explicit := var_def.explicit_type.?; has_explicit {
+                    declared_type = explicit
+                } else {
+                    // Need to infer, call check_node but this might fail for self-ref
+                    declared_type = check_node(ctx, var_def.content)
+                }
+            }
+            
+            // Define symbol BEFORE validating initializer contents
+            semantic_define_symbol(ctx, var_def.name, declared_type, node.span)
+            // Now validate the initializer and recurse the node_check
+            value_type := check_node(ctx, var_def.content)
+            
+            if !types_compatible(declared_type, value_type) {
+                add_error(ctx, node.span, "Type mismatch: declared as %v but initialized with %v", 
+                    declared_type, value_type)
+            }
+            
+            node.inferred_type = declared_type
         }
 
-        node.inferred_type = actual_type
-        semantic_define_symbol(ctx, var_def.name, actual_type, var_def.content.span)
-        semantic_analyze_node(ctx, var_def.content)  
-
-        // Reset the current struct name since we're done with the business here
-        // in this struct
         if var_def.content.node_kind == .Type_Expr {
             ctx.current_struct_name = nil
         }
-
+        
+        return node.inferred_type.?
     
     case .Fn_Call:
         call := node.payload.(Node_Call)
-        semantic_analyze_node(ctx, call.callee)
+        callee_type := check_node(ctx, call.callee)
         
+        arg_types := make([dynamic]Type_Info, context.temp_allocator)
         for arg in call.args {
-            semantic_analyze_node(ctx, arg)
+            arg_type := check_node(ctx, arg)
+            append(&arg_types, arg_type)
         }
+        
+        fn_type, ok := callee_type.(Function_Type)
+        if !ok {
+            add_error(ctx, node.span, "Cannot call non-function")
+            node.inferred_type = Primitive_Type.Void
+            return Primitive_Type.Void
+        }
+        
+        if len(call.args) != len(fn_type.params) {
+            add_error(ctx, node.span, "Expected %d arguments, got %d", len(fn_type.params), len(call.args))
+        }
+        
+        for arg_type, i in arg_types {
+            if i >= len(fn_type.params) do break
+            expected := fn_type.params[i]
+            
+            arg_prim, arg_ok := arg_type.(Primitive_Type)
+            exp_prim, exp_ok := expected.(Primitive_Type)
+            
+            if arg_ok && exp_ok && arg_prim != exp_prim {
+                add_error(ctx, call.args[i].span, "Argument %d: expected %v, got %v", i, exp_prim, arg_prim)
+            }
+        }
+        
+        return_type := fn_type.return_type^
+        node.inferred_type = return_type
+        return return_type
 
     case .Fn_Def:
         fn_def := node.payload.(Node_Fn_Def)
-        if fn_def.is_external do return 
+        
+        param_types := make([]Type_Info, len(fn_def.params), ctx.allocator)
+        for param, i in fn_def.params {
+            param_types[i] = param.type
+        }
+        fn_type := Function_Type{
+            params = param_types,
+            return_type = new_clone(fn_def.return_type, ctx.allocator),
+        }
+        node.inferred_type = fn_type
+        
+        if fn_def.is_external do return fn_type
 
         old_return_type := ctx.current_function_return_type
         ctx.current_function_return_type = fn_def.return_type
@@ -277,7 +490,7 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
             }
 
             for stmt in fn_def.body {
-                semantic_analyze_node(ctx, stmt)
+                check_node(ctx, stmt)
             }
 
             requires_return := true
@@ -295,31 +508,34 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
         }
         semantic_pop_scope(ctx)
         ctx.current_function_return_type = old_return_type
+        
+        return fn_type
 
     case .If:
         if_stmt := node.payload.(Node_If)
-        semantic_analyze_node(ctx, if_stmt.condition)
+        cond_type := check_node(ctx, if_stmt.condition)
         
-        // Primary condition must be of boolean type
-        cond_type := semantic_infer_type(ctx, if_stmt.condition)
         if cond_prim, ok := cond_type.(Primitive_Type); !ok || cond_prim != .Bool {
             add_error(ctx, if_stmt.condition.span, "If condition must be bool")
         }
         
         for stmt in if_stmt.if_body {
-            semantic_analyze_node(ctx, stmt)
+            check_node(ctx, stmt)
         }
         
         for stmt in if_stmt.else_body {
-            semantic_analyze_node(ctx, stmt)
+            check_node(ctx, stmt)
         }
+        
+        return Primitive_Type.Void
 
     case .Literal_Arr:
         arr_lit := node.payload.(Node_Array_Literal)
         
-        // Analyze all elements
+        elem_types := make([dynamic]Type_Info, context.temp_allocator)
         for elem in arr_lit.elements {
-            semantic_analyze_node(ctx, elem)
+            elem_type := check_node(ctx, elem)
+            append(&elem_types, elem_type)
         }
         
         if len(arr_lit.elements) != arr_lit.size {
@@ -327,101 +543,109 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
                 len(arr_lit.elements), arr_lit.size)
         }
         
-        for elem, i in arr_lit.elements {
-            elem_type := semantic_infer_type(ctx, elem)
+        for elem_type, i in elem_types {
             if !types_equal(elem_type, arr_lit.element_type) {
-                add_error(ctx, elem.span, "Array element %d: expected %v, got %v", 
+                add_error(ctx, arr_lit.elements[i].span, "Array element %d: expected %v, got %v", 
                     i, arr_lit.element_type, elem_type)
             }
         }
         
-        // Infer array type
         array_type := Array_Type{
             element_type = new_clone(arr_lit.element_type, ctx.allocator),
             size = arr_lit.size,
         }
         node.inferred_type = array_type
+        return array_type
 
     case .Print:
-        semantic_analyze_node(ctx, node.payload.(Node_Print).content)
-        infered_type := semantic_infer_type(ctx, node.payload.(Node_Print).content)
+        content_type := check_node(ctx, node.payload.(Node_Print).content)
+        return content_type
 
     case .Return:
-        // TODO(Aria): analyze multi-codepath return type
         ret := node.payload.(Node_Return)
         expected_ret_type, in_function := ctx.current_function_return_type.?
         if !in_function {
             add_error(ctx, node.span, "Return statement outside function")
-            return
+            return Primitive_Type.Void
         }
 
-        if ret.value != nil { // Has return val. It is either Type_Info or Void
-            semantic_analyze_node(ctx, ret.value)
-            ret_type := semantic_infer_type(ctx, ret.value)
+        if ret.value != nil {
+            ret_type := check_node(ctx, ret.value)
             if !types_equal(ret_type, ctx.current_function_return_type.?) {
                 add_error(ctx, node.span, "Return type mismatch: expected %v, got %v", expected_ret_type, ret_type)
             }
-        } else { // If expected type is NOT Primitive_Type.Void, error.
+        } else {
             exp_prim_type, is_prim := expected_ret_type.(Primitive_Type)
             if !is_prim || exp_prim_type != .Void {
                 add_error(ctx, node.span, "Function expects return value")
             }
         }
+        
+        return Primitive_Type.Void
     
     case .Len:
         n := node.payload.(Node_Len)
-        semantic_analyze_node(ctx, n.value)
-        _ = semantic_infer_type(ctx, n.value)
+        value_type := check_node(ctx, n.value)
+        
+        #partial switch t in value_type {
+        case Array_Type, String_Type:
+        case:
+            add_error(ctx, node.span, "len() requires array or string, got %v", value_type)
+        }
+        
+        node.inferred_type = Primitive_Type.I64
+        return Primitive_Type.I64
+        
     case .Size_Of:
         n := node.payload.(Node_Size_Of)
-        semantic_analyze_node(ctx, n.type)
-        _ = semantic_infer_type(ctx, n.type)
+        check_node(ctx, n.type)
+        
+        node.inferred_type = Primitive_Type.I64
+        return Primitive_Type.I64
 
     case .Struct_Literal:
         struct_lit := node.payload.(Node_Struct_Literal)
         
-        // Lookup the struct type by name
         sym, ok := semantic_lookup_symbol(ctx, struct_lit.type_name)
         if !ok {
             add_error(ctx, node.span, "Undefined type '%s'", struct_lit.type_name)
             node.inferred_type = Primitive_Type.Void
-            return
+            return Primitive_Type.Void
         }
         
         struct_type, is_struct := sym.type.(Struct_Type)
         if !is_struct {
             add_error(ctx, node.span, "'%s' is not a struct type", struct_lit.type_name)
-            return
+            node.inferred_type = Primitive_Type.Void
+            return Primitive_Type.Void
         }
         
-        // Analyze all field values
+        field_types := make(map[string]Type_Info, context.temp_allocator)
         for field_init in struct_lit.field_inits {
-            semantic_analyze_node(ctx, field_init.value)
-        }
-        
-        // Validate all fields are present and types match
-        field_map := make(map[string]^Node, context.temp_allocator)
-        for field_init in struct_lit.field_inits {
-            field_map[field_init.name] = field_init.value
+            value_type := check_node(ctx, field_init.value)
+            field_types[field_init.name] = value_type
         }
         
         for field in struct_type.fields {
-            value_node, has_field := field_map[field.name]
+            value_type, has_field := field_types[field.name]
             if !has_field {
                 add_error(ctx, node.span, "Missing field '%s' in struct literal", field.name)
                 continue
             }
             
-            value_type := semantic_infer_type(ctx, value_node)
             if !types_compatible(value_type, field.type) {
-                add_error(ctx, value_node.span, "Field '%s': expected %v, got %v", 
+                add_error(ctx, node.span, "Field '%s': expected %v, got %v", 
                     field.name, field.type, value_type)
             }
         }
+        
+        result := Named_Type{name = struct_lit.type_name}
+        node.inferred_type = result
+        return result
+        
     case .Type_Expr:
         type_expr := node.payload.(Node_Type_Expr)
 
-        // Validate struct fields if it's a struct type
         if struct_type, is_struct := type_expr.type_info.(Struct_Type); is_struct {
             field_names := make(map[string]bool, context.temp_allocator)
             for field in struct_type.fields {
@@ -432,8 +656,6 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
                 field_names[field.name] = true
             }
 
-            // Check for infinite size (direct recursion without pointer)
-            // We need the struct name, that we can get from parent, i.e., Var_Def
             if struct_name, has_name := ctx.current_struct_name.?; has_name {
                 for field in struct_type.fields {
                     if check_infinite_size(ctx, struct_name, field.type, node.span) {
@@ -443,172 +665,25 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
                 }
             }
         }
-
-    case .Un_Op:
-        semantic_analyze_node(ctx, node.payload.(Node_Un_Op).operand)
-    
-    case .Literal_Number, .Literal_String, .Identifier:
-        // nothing happened. These are leaf nodes in expressions.
-    case: fmt.panicf("Cannot analyze %v yet", node.node_kind)
-    }
-}
-
-semantic_infer_type :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
-    if node == nil do return Primitive_Type.Void
-    
-    #partial switch node.node_kind {
-    case .Literal_Arr:
-        arr_lit := node.payload.(Node_Array_Literal)
-        return Array_Type{
-            element_type = new_clone(arr_lit.element_type, ctx.allocator),
-            size = arr_lit.size,
-        }
-    case .Literal_Number:
-        type := Primitive_Type.I32
-        node.inferred_type = type
-        return type
-
-    case .Literal_String:
-        type := String_Type{}
-        node.inferred_type = type
-        return type
-    
-    case .Identifier:
-        iden := node.payload.(Node_Identifier)
-        if sym, ok := semantic_lookup_symbol(ctx, iden.name); ok {
-            type := sym.type
-            node.inferred_type = type
-            return type
-        }
-        add_error(ctx, node.span, "Undefined variable '%s'", iden.name)
-        type := Primitive_Type.I32
-        node.inferred_type = type
-        return type
-    
-    case .Expr_Statement:
-        expr_stmt := node.payload.(Node_Expr_Statement)
-        semantic_analyze_node(ctx, expr_stmt.expr)
-        type := semantic_infer_type(ctx, expr_stmt.expr)
-        node.inferred_type = type
-        return type
-
-    case .Bin_Op:
-        binop := node.payload.(Node_Bin_Op)
-        left_type := semantic_infer_type(ctx, binop.left)
-        right_type := semantic_infer_type(ctx, binop.right)
         
-        if !types_equal(left_type, right_type) {
-            add_error(ctx, node.span, "Type mismatch: %v vs %v", left_type, right_type)
-        }
-
-        result_type := semantic_binop_type_resolve(left_type, right_type, binop.op, node.span, ctx)
-        node.inferred_type = result_type
-        return result_type
-    
-    case .Cast:
-        cast_node := node.payload.(Node_Cast)
-        source_type := semantic_infer_type(ctx, cast_node.expr)
-        target_type := cast_node.target_type
-        
-        source_ptr, source_is_ptr := source_type.(Pointer_Type)
-        target_ptr, target_is_ptr := target_type.(Pointer_Type)
-        
-        // Allow: pointer <-> pointer, int <-> int
-        valid := false
-        if source_is_ptr && target_is_ptr {
-            valid = true  // Any pointer can cast to any pointer
-        } else if source_prim, ok := source_type.(Primitive_Type); ok {
-            if target_prim, ok2 := target_type.(Primitive_Type); ok2 {
-                // Numeric types can cast to each other
-                valid = (source_prim == .I32 || source_prim == .I64 || source_prim == .F32 || source_prim == .F64) &&
-                        (target_prim == .I32 || target_prim == .I64 || target_prim == .F32 || target_prim == .F64)
-            }
-        }
-        
-        if !valid {
-            add_error(ctx, node.span, "Invalid cast from %v to %v", source_type, target_type)
-        }
-        
-        node.inferred_type = target_type
-        return target_type
-
-    case .Field_Access:
-        field_access := node.payload.(Node_Field_Access)
-        object_type := semantic_infer_type(ctx, field_access.object)
-        
-        // Most of cases, the accessed object is a Named_Type (user-defined struct).
-        // In this case, we need to resolve it to actual type.
-        actual_type := object_type
-        if named, is_named := object_type.(Named_Type); is_named {
-            sym, ok := semantic_lookup_symbol(ctx, named.name)
-            if !ok {
-                add_error(ctx, node.span, "Undefined type '%s'", named.name)
-                result := Primitive_Type.Void
-                node.inferred_type = result
-                return result
-            }
-            actual_type = sym.type
-        }
-
-        // Unwrap pointer if accessing through pointer
-        if ptr_type, is_ptr := actual_type.(Pointer_Type); is_ptr {
-            actual_type = ptr_type.pointee^
-            // Resolve Named_Type again if the pointee is named
-            if named, is_named := actual_type.(Named_Type); is_named {
-                sym, ok := semantic_lookup_symbol(ctx, named.name)
-                if !ok {
-                    add_error(ctx, node.span, "Undefined type '%s'", named.name)
-                    result := Primitive_Type.Void
-                    node.inferred_type = result
-                    return result
-                }
-                actual_type = sym.type
-            }
-        }
-        
-        // Gotta ensure that that named type is a struct. Cannot access field
-        // from anything other than struct.
-        struct_type, is_struct := actual_type.(Struct_Type)
-        if !is_struct {
-            add_error(ctx, node.span, "Cannot access field of non-struct type")
-            result := Primitive_Type.Void
-            node.inferred_type = result
-            return result
-        }
-        
-        // Find the field
-        // NOTE(Aria): be patient with linear search, we're preserving the order
-        // of the fields.
-        for field in struct_type.fields {
-            if field.name == field_access.field_name {
-                node.inferred_type = field.type
-                return field.type
-            }
-        }
-        
-        add_error(ctx, node.span, "Struct has no field '%s'", field_access.field_name)
-        result := Primitive_Type.Void
-        node.inferred_type = result
-        return result
+        node.inferred_type = type_expr.type_info
+        return type_expr.type_info
 
     case .Un_Op:
         unop := node.payload.(Node_Un_Op)
-        operand_type := semantic_infer_type(ctx, unop.operand)
+        operand_type := check_node(ctx, unop.operand)
         
         #partial switch unop.op.kind {
         case .Plus, .Minus:
             prim, ok := operand_type.(Primitive_Type)
             if prim == .Void {
                 add_error(ctx, node.span, "Cannot apply unary operator to void")
-                type := Primitive_Type.I32
-                node.inferred_type = type
-                return type
+                node.inferred_type = Primitive_Type.I32
+                return Primitive_Type.I32
             }
-            type := prim
-            node.inferred_type = type
+            node.inferred_type = prim
             return prim
         case .Amp:
-            // Address-of: &x
             if unop.operand.node_kind != .Identifier {
                 add_error(ctx, node.span, "Address-of requires an lvalue")
             }
@@ -618,13 +693,11 @@ semantic_infer_type :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
             node.inferred_type = result
             return result
         case .Star:
-            // Dereference: *ptr
             ptr_type, ok := operand_type.(Pointer_Type)
             if !ok {
                 add_error(ctx, node.span, "Cannot dereference non-pointer type %v", operand_type)
-                result := Primitive_Type.I32
-                node.inferred_type = result
-                return result
+                node.inferred_type = Primitive_Type.I32
+                return Primitive_Type.I32
             }
             result := ptr_type.pointee^
             node.inferred_type = result
@@ -635,131 +708,29 @@ semantic_infer_type :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
             return operand_type
         }
     
-    case .Fn_Def:
-        fn_def := node.payload.(Node_Fn_Def)
-        param_types := make([]Type_Info, len(fn_def.params), ctx.allocator)
-        for param, i in fn_def.params {
-            param_types[i] = param.type
-        }
-        type := Function_Type{
-            params = param_types,
-            return_type = new_clone(fn_def.return_type, ctx.allocator),
-        }
-        node.inferred_type = type
-        return type
+    case .Literal_Number:
+        node.inferred_type = Primitive_Type.I32
+        return Primitive_Type.I32
+
+    case .Literal_String:
+        node.inferred_type = String_Type{}
+        return String_Type{}
     
-    case .Fn_Call:
-        call := node.payload.(Node_Call)
-        callee_type := semantic_infer_type(ctx, call.callee)
-        
-        fn_type, ok := callee_type.(Function_Type)
-        if !ok {
-            add_error(ctx, node.span, "Cannot call non-function")
-            node.inferred_type = Primitive_Type.Void
-            return Primitive_Type.Void
+    case .Identifier:
+        iden := node.payload.(Node_Identifier)
+        if sym, ok := semantic_lookup_symbol(ctx, iden.name); ok {
+            node.inferred_type = sym.type
+            return sym.type
         }
+        add_error(ctx, node.span, "Undefined variable '%s'", iden.name)
+        node.inferred_type = Primitive_Type.I32
+        return Primitive_Type.I32
         
-        if len(call.args) != len(fn_type.params) {
-            add_error(ctx, node.span, "Expected %d arguments, got %d", len(fn_type.params), len(call.args))
-        }
-        
-        for arg, i in call.args {
-            if i >= len(fn_type.params) do break
-            arg_type := semantic_infer_type(ctx, arg)
-            expected := fn_type.params[i]
-            
-            arg_prim, arg_ok := arg_type.(Primitive_Type)
-            exp_prim, exp_ok := expected.(Primitive_Type)
-            
-            if arg_ok && exp_ok && arg_prim != exp_prim {
-                add_error(ctx, arg.span, "Argument %d: expected %v, got %v", i, exp_prim, arg_prim)
-            }
-        }
-        type := fn_type.return_type^
-        node.inferred_type = type
-        return type
-
-    case .Index:
-        index_node := node.payload.(Node_Index)
-        object_type := semantic_infer_type(ctx, index_node.object)
-        index_type := semantic_infer_type(ctx, index_node.index)
-        
-        // Index must be integer
-        if index_prim, is_prim := index_type.(Primitive_Type); !is_prim || 
-        (index_prim != .I32 && index_prim != .I64) {
-            add_error(ctx, index_node.index.span, "Index must be integer")
-        }
-        
-        // Object must be array or pointer
-        element_type: Type_Info
-        if arr_type, is_arr := object_type.(Array_Type); is_arr {
-            element_type = arr_type.element_type^
-        } else if ptr_type, is_ptr := object_type.(Pointer_Type); is_ptr {
-            element_type = ptr_type.pointee^
-        } else {
-            add_error(ctx, node.span, "Cannot index non-array/pointer type")
-            result := Primitive_Type.Void
-            node.inferred_type = result
-            return result
-        }
-        
-        node.inferred_type = element_type
-        return element_type
-
-    case .Len:
-        len_node := node.payload.(Node_Len)
-        value_type := semantic_infer_type(ctx, len_node.value)
-        
-        // Validate the type has a length
-        #partial switch t in value_type {
-        case Array_Type, String_Type: // Valid
-        case:
-            add_error(ctx, node.span, "len() requires array or string, got %v", value_type)
-        }
-        
-        node.inferred_type = Primitive_Type.I64
-        return Primitive_Type.I64
-
-    case .Size_Of:
-        sizeof_op := node.payload.(Node_Size_Of)
-        // Validate the type is valid
-        _ = semantic_infer_type(ctx, sizeof_op.type)
-        
-        // sizeof always returns i64 
-        result := Primitive_Type.I64
-        node.inferred_type = result
-        return result
-
-    case .Type_Expr:  
-        type_expr := node.payload.(Node_Type_Expr)
-        node.inferred_type = type_expr.type_info
-        return type_expr.type_info
-
-    case .Struct_Literal:
-        struct_lit := node.payload.(Node_Struct_Literal)
-        
-        sym, ok := semantic_lookup_symbol(ctx, struct_lit.type_name)
-        if !ok {
-            add_error(ctx, node.span, "Undefined type '%s'", struct_lit.type_name)
-            result := Primitive_Type.Void
-            node.inferred_type = result
-            return result
-        }
-
-         // Validate it's a struct (using resolved type)
-        _, is_struct := sym.type.(Struct_Type)
-        if !is_struct {
-            add_error(ctx, node.span, "'%s' is not a struct type", struct_lit.type_name)
-        }
-        
-        result := Named_Type{name = struct_lit.type_name}
-        node.inferred_type = result
-        return result
-    case:
-        type := Primitive_Type.Void
-        node.inferred_type = type
-        return type
+    case: 
+        fmt.panicf("Cannot check %v yet", node.node_kind)
     }
+    
+    return Primitive_Type.Void
 }
 
 types_equal :: proc(a, b: Type_Info) -> bool {
@@ -803,12 +774,9 @@ types_equal :: proc(a, b: Type_Info) -> bool {
     return false
 }
 
-// In general, we are striving for strict type checking. Type compatibility is 
-// limited for *void type as our escape hatch into unsafety.
 types_compatible :: proc(target: Type_Info, source: Type_Info) -> bool {
     if types_equal(target, source) do return true
     
-    // void* is compatible with any pointer
     target_ptr, target_is_ptr := target.(Pointer_Type)
     source_ptr, source_is_ptr := source.(Pointer_Type)
     if target_is_ptr && source_is_ptr {
@@ -819,9 +787,6 @@ types_compatible :: proc(target: Type_Info, source: Type_Info) -> bool {
             return true
         }
     }
-
-    // TODO(Aria): check other type compatibility
-    // ...
     
     return false
 }
@@ -850,14 +815,14 @@ semantic_binop_primitive :: proc(t: Primitive_Type, op: Token, span: Span, ctx: 
             add_error(ctx, span, "Cannot apply arithmetic to %v", t)
             return Primitive_Type.I32
         }
-        return t  // Numeric type stays numeric
+        return t
     
     case .Lt, .Gt, .Lt_Eq, .Gt_Eq:
         if t == .Void || t == .Bool {
             add_error(ctx, span, "Cannot compare %v", t)
             return Primitive_Type.Bool
         }
-        return Primitive_Type.Bool  // Comparison returns bool
+        return Primitive_Type.Bool
     
     case .Percent:
         if t == .I32 || t == .I64 do return t
@@ -868,7 +833,7 @@ semantic_binop_primitive :: proc(t: Primitive_Type, op: Token, span: Span, ctx: 
             add_error(ctx, span, "Cannot compare void")
             return Primitive_Type.Bool
         }
-        return Primitive_Type.Bool  // Equality returns bool
+        return Primitive_Type.Bool
     
     case:
         add_error(ctx, span, "Operator %v not defined for type %v", op.kind, t)
@@ -887,9 +852,7 @@ block_returns :: proc(stmts: [dynamic]^Node) -> bool {
         return true
     case .If:
         if_node := last.payload.(Node_If)
-        // Must have else clause
         if len(if_node.else_body) == 0 do return false
-        // Both branches must return
         if_returns := block_returns(if_node.if_body)
         else_returns := block_returns(if_node.else_body)
         return if_returns && else_returns
@@ -897,6 +860,7 @@ block_returns :: proc(stmts: [dynamic]^Node) -> bool {
     
     return false
 }
+
 @(private="file")
 check_infinite_size :: proc(ctx: ^Semantic_Context, struct_name: string, field_type: Type_Info, span: Span) -> bool {
     seen := make(map[string]bool, context.temp_allocator)
@@ -907,33 +871,27 @@ check_infinite_size :: proc(ctx: ^Semantic_Context, struct_name: string, field_t
 check_infinite_size_impl :: proc(ctx: ^Semantic_Context, struct_name: string, field_type: Type_Info, seen: ^map[string]bool) -> bool {
     #partial switch t in field_type {
     case Named_Type:
-        // Direct reference to self without pointer
         if t.name == struct_name {
             return true
         }
         
-        // Avoid infinite loop in mutual recursion
         if t.name in seen {
             return false
         }
         seen[t.name] = true
         
-        // Resolve and check recursively
         sym, ok := semantic_lookup_symbol(ctx, t.name)
         if !ok do return false
         
         return check_infinite_size_impl(ctx, struct_name, sym.type, seen)
     
     case Pointer_Type:
-        // Pointer breaks recursion - fixed size
         return false
     
     case Array_Type:
-        // Check element type
         return check_infinite_size_impl(ctx, struct_name, t.element_type^, seen)
     
     case Struct_Type:
-        // Check all fields
         for field in t.fields {
             if check_infinite_size_impl(ctx, struct_name, field.type, seen) {
                 return true
