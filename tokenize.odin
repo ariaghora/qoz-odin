@@ -114,7 +114,7 @@ make_id_or_kw :: proc(t: ^Tokenizer) {
     case "struct":   tok_kind = .KW_Struct
     // case "string":   tok_kind = .KW_String
     case "size_of":  tok_kind = .KW_Size_Of
-    case "len":      tok_kind = .KW_Len
+    // case "len":      tok_kind = .KW_Len
     case:            tok_kind = .Iden
     }
     

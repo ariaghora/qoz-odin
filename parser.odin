@@ -238,31 +238,13 @@ parse_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.
     case .KW_If: return parse_if_statement(ps, parent, allocator)
     case .KW_Print: return parse_print_statement(ps, parent, allocator)
     case .KW_Return: return parse_return_statement(ps, parent, allocator)
-    case .KW_Len, .KW_Size_Of: 
+    case .KW_Size_Of: 
         return nil, fmt.tprintf("Cannot use `%v` here as a statement", ps.current_token.source)
     case:
         fmt.println(ps.current_token)
         return nil, fmt.tprintf("Cannot parse statement starting with %v at position %d", ps.current_token.kind, ps.idx)
     }
 }
-
-// parse_assignment :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
-//     span_start := ps.idx
-//     name := ps.current_token.source
-    
-//     parser_advance(ps)
-//     parser_consume(ps, .Eq) or_return
-    
-//     assign_node := new(Node, allocator)
-//     assign_node.node_kind = .Assignment
-//     assign_node.parent = parent
-    
-//     value := parse_expression(ps, assign_node, allocator) or_return
-//     assign_node.span = Span{start = span_start, end = ps.idx - 1}
-//     assign_node.payload = Node_Assign{target = name, value = value}
-    
-//     return assign_node, nil
-// }
 
 parse_var_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
     span_start := ps.idx
@@ -1103,6 +1085,7 @@ parse_type :: proc(ps: ^Parsing_State, allocator: mem.Allocator) -> (res:Type_In
             return_type = new_clone(return_type, allocator),
         }, nil
     case: 
+        fmt.println(ps.current_token)
         return nil, fmt.tprintf("Expected type at position %d, got %v", ps.idx, ps.current_token.kind)
     }
     // TODO(Aria): function type and other types parsing

@@ -75,9 +75,9 @@ semantic_analyze :: proc(root: ^Node, allocator := context.allocator) -> Semanti
 
     fields := make([dynamic]Struct_Field, allocator)
     i8_type: Type_Info = Primitive_Type.I8
-    i8_ptr_type: Type_Info = Pointer_Type{pointee = new_clone(i8_type, allocator)}
+    i8_ptr_type := Pointer_Type{pointee = new_clone(i8_type, allocator)}
     append_elems(&fields,
-        Struct_Field{name = "data", type = Pointer_Type{pointee = &i8_ptr_type}},
+        Struct_Field{name = "data", type = i8_ptr_type},  // Use directly, no &
         Struct_Field{name = "len", type = Primitive_Type.I64},
     )
     string_struct := Struct_Type{
@@ -261,10 +261,6 @@ check_node :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
         left_type := check_node(ctx, binop.left)
         right_type := check_node(ctx, binop.right)
         
-        if !types_equal(left_type, right_type) {
-            add_error(ctx, node.span, "Type mismatch: %v vs %v", left_type, right_type)
-        }
-
         result_type := semantic_binop_type_resolve(left_type, right_type, binop.op, node.span, ctx)
         node.inferred_type = result_type
         return result_type
@@ -473,6 +469,39 @@ check_node :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
     
     case .Fn_Call:
         call := node.payload.(Node_Call)
+
+        // Check for built-in len() function
+        // Short circuit
+        if call.callee.node_kind == .Identifier {
+            callee_name := call.callee.payload.(Node_Identifier).name
+            if callee_name == "len" {
+                // Validate: exactly 1 argument
+                if len(call.args) != 1 {
+                    add_error(ctx, node.span, "len() requires exactly 1 argument")
+                    node.inferred_type = Primitive_Type.I64
+                    return Primitive_Type.I64
+                }
+                
+                // Check argument type
+                arg_type := check_node(ctx, call.args[0])
+                
+                // Validate type
+                valid := false
+                #partial switch t in arg_type {
+                case Array_Type: valid = true
+                case Named_Type:
+                    if t.name == "string" do valid = true
+                }
+                
+                if !valid {
+                    add_error(ctx, node.span, "len() requires array or string, got %v", arg_type)
+                }
+                
+                node.inferred_type = Primitive_Type.I64
+                return Primitive_Type.I64
+            }
+        }
+
         callee_type := check_node(ctx, call.callee)
         
         arg_types := make([dynamic]Type_Info, context.temp_allocator)
@@ -841,6 +870,40 @@ types_compatible :: proc(target: Type_Info, source: Type_Info) -> bool {
 }
 
 semantic_binop_type_resolve :: proc(t1, t2: Type_Info, op: Token, span: Span, ctx: ^Semantic_Context) -> Type_Info {
+    #partial switch op.kind {
+    case .Plus:
+        // Pointer + integer
+        if ptr_type, is_ptr := t1.(Pointer_Type); is_ptr {
+            if int_type, is_int := t2.(Primitive_Type); is_int && 
+               (int_type == .I32 || int_type == .I64) {
+                return t1  // Returns pointer type
+            }
+        }
+        // Integer + pointer
+        if ptr_type, is_ptr := t2.(Pointer_Type); is_ptr {
+            if int_type, is_int := t1.(Primitive_Type); is_int && 
+               (int_type == .I32 || int_type == .I64) {
+                return t2
+            }
+        }
+        
+    case .Minus:
+        // Pointer - integer
+        if ptr_type, is_ptr := t1.(Pointer_Type); is_ptr {
+            if int_type, is_int := t2.(Primitive_Type); is_int && 
+               (int_type == .I32 || int_type == .I64) {
+                return t1
+            }
+        }
+        // Pointer - pointer
+        if _, is_ptr1 := t1.(Pointer_Type); is_ptr1 {
+            if _, is_ptr2 := t2.(Pointer_Type); is_ptr2 {
+                return Primitive_Type.I64
+            }
+        }
+    }
+    
+    // Regular type checking
     if !types_equal(t1, t2) {
         add_error(ctx, span, "Type mismatch in binary operation")
         return Primitive_Type.I32
@@ -853,8 +916,6 @@ semantic_binop_type_resolve :: proc(t1, t2: Type_Info, op: Token, span: Span, ct
         add_error(ctx, span, fmt.tprintf("Cannot use %v in binary operation", t))
         return Primitive_Type.I32
     }
-    
-    return Primitive_Type.I32
 }
 
 semantic_binop_primitive :: proc(t: Primitive_Type, op: Token, span: Span, ctx: ^Semantic_Context) -> Type_Info {

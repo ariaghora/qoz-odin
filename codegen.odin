@@ -357,7 +357,18 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
 
     case .Struct_Literal:
         struct_lit := node.payload.(Node_Struct_Literal)
-        // C99 designated initializers: {.field = value, ...}
+        
+        // Emit type name for compound literal
+        strings.write_string(&ctx_cg.output_buf, "(")
+        // Look up the type to emit the correct C name
+        if struct_lit.type_name == "string" {
+            strings.write_string(&ctx_cg.output_buf, "Qoz_String")
+        } else {
+            strings.write_string(&ctx_cg.output_buf, struct_lit.type_name)
+        }
+        strings.write_string(&ctx_cg.output_buf, ")")
+        
+        // Then the initializer list
         strings.write_string(&ctx_cg.output_buf, "{")
         for field_init, i in struct_lit.field_inits {
             strings.write_string(&ctx_cg.output_buf, ".")
