@@ -7,4 +7,7 @@ main := func() {
     }
 
     print(sum)
+
+    print(len(numbers))
+    print(numbers[2])
 }

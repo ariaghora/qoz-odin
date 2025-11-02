@@ -147,7 +147,9 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
         }
     
     case .Expr_Statement:
-        semantic_analyze_node(ctx, node.payload.(Node_Expr_Statement).expr)
+        expr_stmt := node.payload.(Node_Expr_Statement)
+        semantic_analyze_node(ctx, expr_stmt.expr)
+        _ = semantic_infer_type(ctx, expr_stmt.expr)
 
     case .Assignment:
         assign := node.payload.(Node_Assign)
@@ -472,6 +474,13 @@ semantic_infer_type :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
         node.inferred_type = type
         return type
     
+    case .Expr_Statement:
+        expr_stmt := node.payload.(Node_Expr_Statement)
+        semantic_analyze_node(ctx, expr_stmt.expr)
+        type := semantic_infer_type(ctx, expr_stmt.expr)
+        node.inferred_type = type
+        return type
+
     case .Bin_Op:
         binop := node.payload.(Node_Bin_Op)
         left_type := semantic_infer_type(ctx, binop.left)

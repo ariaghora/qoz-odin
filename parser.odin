@@ -198,16 +198,12 @@ parse_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.
         } else if next_tok == .Eq {
             // x = val
             return parse_assignment(ps, parent, allocator)
-        } else if next_tok == .Left_Paren {
-            // Expression statement (function call)
+        } else {
             expr := parse_expression(ps, parent, allocator) or_return
-            
             expr_stmt := new(Node, allocator)
             expr_stmt.node_kind = .Expr_Statement
             expr_stmt.payload = Node_Expr_Statement{expr = expr}
             return expr_stmt, nil
-        } else {
-            return nil, "Expected :=, :, or = after identifier in statement"
         }
     case .KW_For: return parse_for_in_statement(ps, parent, allocator)
     case .KW_If: return parse_if_statement(ps, parent, allocator)

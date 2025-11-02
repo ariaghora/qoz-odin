@@ -361,6 +361,7 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
                 
             if struct_type, is_struct := type_expr.type_info.(Struct_Type); is_struct {
                 strings.write_string(&ctx_cg.output_buf, "typedef struct ")
+                strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX) 
                 strings.write_string(&ctx_cg.output_buf, var_def.name) 
                 strings.write_string(&ctx_cg.output_buf, " {\n")
                 ctx_cg.indent_level += 1
@@ -381,6 +382,7 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
                 
                 ctx_cg.indent_level -= 1
                 strings.write_string(&ctx_cg.output_buf, "} ")
+                strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX) 
                 strings.write_string(&ctx_cg.output_buf, var_def.name)
                 strings.write_string(&ctx_cg.output_buf, ";\n\n")
             }
@@ -448,6 +450,7 @@ codegen_type :: proc(ctx_cg: ^Codegen_Context, type: Type_Info, name: string = "
     case Struct_Type:
         panic("Internal error: FIXME(Aria): Cannot inline anonymous struct type")
     case Named_Type:
+        strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX)
         strings.write_string(&ctx_cg.output_buf, t.name)
     case: fmt.panicf("Internal error: cannot generate code for type %v", t)
     }
@@ -471,8 +474,10 @@ codegen_forward_decl :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
                     type_expr := var_def.content.payload.(Node_Type_Expr)
                     if _, is_struct := type_expr.type_info.(Struct_Type); is_struct {
                         strings.write_string(&ctx_cg.output_buf, "typedef struct ")
+                        strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX)
                         strings.write_string(&ctx_cg.output_buf, var_def.name)
                         strings.write_string(&ctx_cg.output_buf, " ")
+                        strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX)
                         strings.write_string(&ctx_cg.output_buf, var_def.name)
                         strings.write_string(&ctx_cg.output_buf, ";\n")
                     }

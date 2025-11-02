@@ -10,6 +10,7 @@ Token_Kind :: enum {
     Plus, Minus, Star, Slash, Percent,
     Left_Paren, Right_Paren,
     Left_Brace, Right_Brace,
+    Left_Bracket, Right_Bracket,
     Lit_Number, Lit_String,
     KW_Fn, KW_External, KW_If, KW_Else, KW_Print, KW_Return,
     KW_I32, KW_I64, KW_F32, KW_F64, KW_Void, KW_String,
@@ -184,6 +185,8 @@ tokenize :: proc(source: string, allocator := context.allocator) -> (tokens: [dy
         case ')': make_tok(&t, .Right_Paren, ")")
         case '{': make_tok(&t, .Left_Brace, "{")
         case '}': make_tok(&t, .Right_Brace, "}")
+        case '[': make_tok(&t, .Left_Bracket, "[")
+        case ']': make_tok(&t, .Right_Bracket, "]")
         case '+': make_tok(&t, .Plus, "+")
         case '-': make_tok(&t, .Minus, "-")
         case '*': make_tok(&t, .Star, "*")
