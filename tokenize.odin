@@ -14,7 +14,7 @@ Token_Kind :: enum {
     KW_Fn, KW_External, KW_If, KW_Else, KW_Print, KW_Return,
     KW_I32, KW_I64, KW_F32, KW_F64, KW_Void, KW_String,
     KW_Arr, KW_Map, KW_For, KW_In, KW_Struct,
-    KW_Size_Of,
+    KW_Size_Of, KW_Len,
     Iden, EOF,
 }
 
@@ -109,6 +109,7 @@ make_id_or_kw :: proc(t: ^Tokenizer) {
     case "struct":   tok_kind = .KW_Struct
     case "string":   tok_kind = .KW_String
     case "size_of":  tok_kind = .KW_Size_Of
+    case "len":      tok_kind = .KW_Len
     case:            tok_kind = .Iden
     }
     

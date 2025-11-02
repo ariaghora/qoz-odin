@@ -8,6 +8,7 @@ Person := struct {
 main := func() {
     str := "Hello, world!"
     print(str)
+    print(len(str))
 
     fruits := arr<string, 3>{
         "Apple",
@@ -29,5 +30,5 @@ main := func() {
         print(member.age)
     }
 
-    abon : *Person = malloc(size_of(Person))
+    abon : *Person = malloc(size_of(1))
 }

@@ -17,6 +17,7 @@ Node_Kind :: enum {
     For_C,
     Identifier,
     If,
+    Len,
     Literal_Arr,
     Literal_Number,
     Literal_String,
@@ -32,7 +33,13 @@ Node_Kind :: enum {
 }
 
 Type_Info :: union {
-    Primitive_Type, Array_Type, Function_Type, Pointer_Type, Struct_Type, Named_Type, String_Type
+    Primitive_Type,
+    Array_Type,
+    Function_Type,
+    Pointer_Type,
+    Struct_Type,
+    Named_Type,
+    String_Type
 }
 
 Primitive_Type :: enum { I32, I64, F32, F64, Bool, Void }
@@ -85,6 +92,7 @@ Node_Fn_Def         :: struct { params: [dynamic]Fn_Param, body: [dynamic]^Node,
 Node_For_In         :: struct { iterator: string, iterable: ^Node, body: [dynamic]^Node }
 Node_Identifier     :: struct { name:string }
 Node_If             :: struct { condition: ^Node, if_body: [dynamic]^Node, else_body: [dynamic]^Node }
+Node_Len            :: struct { value: ^Node }
 Node_Literal_Number :: struct { content: Token }
 Node_Literal_String :: struct { content: Token }
 Node_Print          :: struct { content: ^Node }
@@ -114,6 +122,7 @@ Node :: struct {
         Node_For_In,
         Node_Identifier,
         Node_If,
+        Node_Len,
         Node_Literal_Number,
         Node_Literal_String,
         Node_Print,
@@ -204,6 +213,8 @@ parse_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.
     case .KW_If: return parse_if_statement(ps, parent, allocator)
     case .KW_Print: return parse_print_statement(ps, parent, allocator)
     case .KW_Return: return parse_return_statement(ps, parent, allocator)
+    case .KW_Len, .KW_Size_Of: 
+        return nil, fmt.tprintf("Cannot use `%v` here as a statement", ps.current_token.source)
     case:
         fmt.println(ps.current_token)
         return nil, fmt.tprintf("Cannot parse statement starting with %v at position %d", ps.current_token.kind, ps.idx)
@@ -314,6 +325,44 @@ parse_if_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := conte
     }
     
     return if_node, nil
+}
+
+parse_len_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
+    span_start := ps.idx
+    
+    parser_advance(ps)
+    parser_consume(ps, .Left_Paren) or_return
+    
+    len_node := new(Node, allocator)
+    len_node.node_kind = .Len
+    len_node.parent = parent
+    len_node.span = Span{start = span_start, end = ps.idx}
+    
+    content := parse_expression(ps, len_node, allocator) or_return
+    len_node.payload = Node_Len{value = content}
+    
+    parser_consume(ps, .Right_Paren) or_return
+    
+    return len_node, nil
+}
+
+parse_size_of_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
+    span_start := ps.idx
+    
+    parser_advance(ps)
+    parser_consume(ps, .Left_Paren) or_return
+    
+    size_of_node := new(Node, allocator)
+    size_of_node.node_kind = .Size_Of
+    size_of_node.parent = parent
+    size_of_node.span = Span{start = span_start, end = ps.idx}
+    
+    content := parse_expression(ps, size_of_node, allocator) or_return
+    size_of_node.payload = Node_Size_Of{type = content}
+    
+    parser_consume(ps, .Right_Paren) or_return
+    
+    return size_of_node, nil
 }
 
 parse_print_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
@@ -451,6 +500,22 @@ parse_unary :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allo
         }, allocator)
 
         return size_of_node, nil
+    } else if ps.current_token.kind == .KW_Len {
+        op_idx := ps.idx
+        op := ps.current_token
+        parser_advance(ps)
+        parser_consume(ps, .Left_Paren)
+        value := parse_expression(ps, parent, allocator) or_return
+        parser_consume(ps, .Right_Paren)
+
+        len_node := new_clone(Node {
+            node_kind=.Len,
+            parent=parent,
+            span=Span{start = op_idx, end = value.span.end},
+            payload=Node_Len {value=value}
+        }, allocator)
+
+        return len_node, nil
     }
 
     return parse_postfix(ps, parent, allocator)

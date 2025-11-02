@@ -338,16 +338,15 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
             }
         }
     
+    case .Len:
+        n := node.payload.(Node_Len)
+        semantic_analyze_node(ctx, n.value)
+        _ = semantic_infer_type(ctx, n.value)
     case .Size_Of:
-        sizeof_op := node.payload.(Node_Size_Of)
-        // Validate the type is valid
-        _ = semantic_infer_type(ctx, sizeof_op.type)
-        
-        // sizeof always returns i64 (or i32 if you prefer)
-        result := Primitive_Type.I64
-        node.inferred_type = result
-        return 
-    
+        n := node.payload.(Node_Size_Of)
+        semantic_analyze_node(ctx, n.type)
+        _ = semantic_infer_type(ctx, n.type)
+
     case .Struct_Literal:
         struct_lit := node.payload.(Node_Struct_Literal)
         
@@ -616,12 +615,25 @@ semantic_infer_type :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
         node.inferred_type = type
         return type
 
+    case .Len:
+        len_node := node.payload.(Node_Len)
+        value_type := semantic_infer_type(ctx, len_node.value)
+        
+        // Validate the type has a length
+        #partial switch t in value_type {
+        case Array_Type, String_Type: // Valid
+        case:
+            add_error(ctx, node.span, "len() requires array or string, got %v", value_type)
+        }
+        
+        node.inferred_type = Primitive_Type.I64
+        return Primitive_Type.I64
     case .Size_Of:
         sizeof_op := node.payload.(Node_Size_Of)
         // Validate the type is valid
         _ = semantic_infer_type(ctx, sizeof_op.type)
         
-        // sizeof always returns i64 (or i32 if you prefer)
+        // sizeof always returns i64 
         result := Primitive_Type.I64
         node.inferred_type = result
         return result

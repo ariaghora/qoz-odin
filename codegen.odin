@@ -184,6 +184,24 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         iden := node.payload.(Node_Identifier)
         strings.write_string(&ctx_cg.output_buf, iden.name)
     
+    case .Len:
+        len_node := node.payload.(Node_Len)
+        
+        // Get the type of the value
+        value_type := len_node.value.inferred_type.? or_else panic("Type not inferred")
+        
+        #partial switch t in value_type {
+        case Array_Type:
+            // Array length is compile-time constant
+            fmt.sbprintf(&ctx_cg.output_buf, "%d", t.size)
+        case String_Type:
+            // String length is runtime field access
+            strings.write_string(&ctx_cg.output_buf, "(")
+            codegen_node(ctx_cg, len_node.value)
+            strings.write_string(&ctx_cg.output_buf, ").len")
+        case:
+            panic("len() called on invalid type")
+        }
     case .Literal_Arr:
         arr_lit := node.payload.(Node_Array_Literal)
         strings.write_string(&ctx_cg.output_buf, "{")
