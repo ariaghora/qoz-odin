@@ -9,5 +9,9 @@ main := func() {
     print(sum)
 
     print(len(numbers))
-    print(numbers[2])
+
+    numbers[2] = 42
+    for n in numbers {
+        print(n)
+    }
 }

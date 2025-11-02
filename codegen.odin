@@ -192,6 +192,7 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         } else {
             strings.write_string(&ctx_cg.output_buf, "\n")
         }
+
     case .Identifier:
         iden := node.payload.(Node_Identifier)
 
@@ -209,6 +210,13 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         
         // Local variable or parameter - don't mangle
         strings.write_string(&ctx_cg.output_buf, iden.name)
+    
+    case .Index:
+        index_node := node.payload.(Node_Index)
+        codegen_node(ctx_cg, index_node.object)
+        strings.write_string(&ctx_cg.output_buf, "[")
+        codegen_node(ctx_cg, index_node.index)
+        strings.write_string(&ctx_cg.output_buf, "]")
     
     case .Len:
         len_node := node.payload.(Node_Len)
@@ -228,6 +236,7 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         case:
             panic("len() called on invalid type")
         }
+
     case .Literal_Arr:
         arr_lit := node.payload.(Node_Array_Literal)
         strings.write_string(&ctx_cg.output_buf, "{")

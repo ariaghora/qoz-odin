@@ -17,6 +17,7 @@ Node_Kind :: enum {
     For_C,
     Identifier,
     If,
+    Index,
     Len,
     Literal_Arr,
     Literal_Number,
@@ -92,6 +93,7 @@ Node_Fn_Def         :: struct { params: [dynamic]Fn_Param, body: [dynamic]^Node,
 Node_For_In         :: struct { iterator: string, iterable: ^Node, body: [dynamic]^Node }
 Node_Identifier     :: struct { name:string }
 Node_If             :: struct { condition: ^Node, if_body: [dynamic]^Node, else_body: [dynamic]^Node }
+Node_Index          :: struct { object, index: ^Node }
 Node_Len            :: struct { value: ^Node }
 Node_Literal_Number :: struct { content: Token }
 Node_Literal_String :: struct { content: Token }
@@ -121,6 +123,7 @@ Node :: struct {
         Node_Fn_Def,
         Node_For_In,
         Node_Identifier,
+        Node_Index,
         Node_If,
         Node_Len,
         Node_Literal_Number,
@@ -569,6 +572,22 @@ parse_postfix :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
             
             left.parent = field_node
             left = field_node
+        
+        case .Left_Bracket:
+            parser_advance(ps)  // eat '['
+            index_expr := parse_expression(ps, left, allocator) or_return
+            parser_consume(ps, .Right_Bracket) or_return
+            
+            index_node := new(Node, allocator)
+            index_node.node_kind = .Index
+            index_node.parent = parent
+            index_node.span = Span{start = left.span.start, end = ps.idx - 1}
+            index_node.payload = Node_Index{
+                object = left,
+                index = index_expr,
+            }
+            left.parent = index_node
+            left = index_node
             
         case:
             return left, nil

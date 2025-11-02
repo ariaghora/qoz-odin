@@ -202,6 +202,11 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
         for stmt in for_in.body do semantic_analyze_node(ctx, stmt)
         semantic_pop_scope(ctx)
 
+    case .Index:
+        index_node := node.payload.(Node_Index)
+        semantic_analyze_node(ctx, index_node.object)
+        semantic_analyze_node(ctx, index_node.index)
+    
     case .Var_Def:
         var_def := node.payload.(Node_Var_Def)
 
@@ -641,6 +646,33 @@ semantic_infer_type :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
         node.inferred_type = type
         return type
 
+    case .Index:
+        index_node := node.payload.(Node_Index)
+        object_type := semantic_infer_type(ctx, index_node.object)
+        index_type := semantic_infer_type(ctx, index_node.index)
+        
+        // Index must be integer
+        if index_prim, is_prim := index_type.(Primitive_Type); !is_prim || 
+        (index_prim != .I32 && index_prim != .I64) {
+            add_error(ctx, index_node.index.span, "Index must be integer")
+        }
+        
+        // Object must be array or pointer
+        element_type: Type_Info
+        if arr_type, is_arr := object_type.(Array_Type); is_arr {
+            element_type = arr_type.element_type^
+        } else if ptr_type, is_ptr := object_type.(Pointer_Type); is_ptr {
+            element_type = ptr_type.pointee^
+        } else {
+            add_error(ctx, node.span, "Cannot index non-array/pointer type")
+            result := Primitive_Type.Void
+            node.inferred_type = result
+            return result
+        }
+        
+        node.inferred_type = element_type
+        return element_type
+
     case .Len:
         len_node := node.payload.(Node_Len)
         value_type := semantic_infer_type(ctx, len_node.value)
@@ -654,6 +686,7 @@ semantic_infer_type :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
         
         node.inferred_type = Primitive_Type.I64
         return Primitive_Type.I64
+
     case .Size_Of:
         sizeof_op := node.payload.(Node_Size_Of)
         // Validate the type is valid
