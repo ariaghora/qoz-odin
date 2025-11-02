@@ -10,6 +10,7 @@ Codegen_Context :: struct {
     ctx_sem: ^Semantic_Context,
     func_nesting_depth: int, // TODO(Aria): track depth for lambda lifting
     loop_counter: int,
+    in_for_header: bool, 
 }
 
 MANGLE_PREFIX :: "qoz__"
@@ -65,7 +66,9 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         codegen_node(ctx_cg, assign.target)
         strings.write_string(&ctx_cg.output_buf, " = ")
         codegen_node(ctx_cg, assign.value)
-        strings.write_string(&ctx_cg.output_buf, ";\n")
+        if !ctx_cg.in_for_header {
+            strings.write_string(&ctx_cg.output_buf, ";\n")
+        }
         
     case .Bin_Op:
         binop := node.payload.(Node_Bin_Op)
@@ -124,6 +127,31 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         
         strings.write_string(&ctx_cg.output_buf, ")")
     
+    case .For_C:
+        for_c := node.payload.(Node_For_C)
+        
+        strings.write_string(&ctx_cg.output_buf, "for (")
+        
+        ctx_cg.in_for_header = true
+        codegen_node(ctx_cg, for_c.init)
+        strings.write_string(&ctx_cg.output_buf, "; ")
+        codegen_node(ctx_cg, for_c.condition)
+        strings.write_string(&ctx_cg.output_buf, "; ")
+        codegen_node(ctx_cg, for_c.post)
+        ctx_cg.in_for_header = false
+        
+        strings.write_string(&ctx_cg.output_buf, ") {\n")
+        
+        ctx_cg.indent_level += 1
+        for stmt in for_c.body {
+            codegen_indent(ctx_cg, ctx_cg.indent_level)
+            codegen_node(ctx_cg, stmt)
+        }
+        ctx_cg.indent_level -= 1
+        
+        codegen_indent(ctx_cg, ctx_cg.indent_level)
+        strings.write_string(&ctx_cg.output_buf, "}\n")
+
     case .For_In:
         for_in := node.payload.(Node_For_In)
         
@@ -300,7 +328,7 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         switch t in expr_type {
         case Primitive_Type:
             switch t {
-            case .I32, .I64: format_spec = "%d"
+            case .I8, .U8, .I32, .I64: format_spec = "%d"
             case .F32, .F64: format_spec = "%f"
             case .Bool: format_spec = "%d"
             case .Void: panic("Cannot print void")
@@ -421,7 +449,9 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
 
             strings.write_string(&ctx_cg.output_buf, " = ")
             codegen_node(ctx_cg, var_def.content)
-            strings.write_string(&ctx_cg.output_buf, ";\n")
+            if !ctx_cg.in_for_header {
+                strings.write_string(&ctx_cg.output_buf, ";\n")
+            }
         }
     case: fmt.panicf("Internal error: cannot generate code for node %v", node.node_kind)
     }
@@ -450,6 +480,8 @@ codegen_type :: proc(ctx_cg: ^Codegen_Context, type: Type_Info, name: string = "
 
     case Primitive_Type:
         #partial switch t {
+        case .I8:  strings.write_string(&ctx_cg.output_buf, "int8_t")
+        case .U8:  strings.write_string(&ctx_cg.output_buf, "uint8_t")
         case .I32: strings.write_string(&ctx_cg.output_buf, "int32_t")
         case .I64: strings.write_string(&ctx_cg.output_buf, "int64_t")
         case .F32: strings.write_string(&ctx_cg.output_buf, "float")

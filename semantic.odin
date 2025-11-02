@@ -261,6 +261,11 @@ check_node :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
         cast_node := node.payload.(Node_Cast)
         source_type := check_node(ctx, cast_node.expr)
         target_type := cast_node.target_type
+
+        if !validate_type_exists(ctx, target_type, node.span) {
+            node.inferred_type = source_type
+            return source_type
+        }
         
         source_ptr, source_is_ptr := source_type.(Pointer_Type)
         target_ptr, target_is_ptr := target_type.(Pointer_Type)
@@ -342,6 +347,32 @@ check_node :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
         semantic_push_scope(ctx)
         semantic_define_symbol(ctx, for_in.iterator, arr_type.element_type^, node.span)
         for stmt in for_in.body do check_node(ctx, stmt)
+        semantic_pop_scope(ctx)
+        return Primitive_Type.Void
+    
+    case .For_C:
+        for_c := node.payload.(Node_For_C)
+        
+        // Create scope for the entire loop (init variable lives here)
+        semantic_push_scope(ctx)
+        
+        // Check init (var def or assignment)
+        check_node(ctx, for_c.init)
+        
+        // Check condition (must be bool)
+        cond_type := check_node(ctx, for_c.condition)
+        if cond_prim, ok := cond_type.(Primitive_Type); !ok || cond_prim != .Bool {
+            add_error(ctx, for_c.condition.span, "For loop condition must be bool, got %v", cond_type)
+        }
+        
+        // Check post statement (usually increment)
+        check_node(ctx, for_c.post)
+        
+        // Check body
+        for stmt in for_c.body {
+            check_node(ctx, stmt)
+        }
+        
         semantic_pop_scope(ctx)
         return Primitive_Type.Void
 
@@ -901,4 +932,23 @@ check_infinite_size_impl :: proc(ctx: ^Semantic_Context, struct_name: string, fi
     }
     
     return false
+}
+
+@(private="file")
+validate_type_exists :: proc(ctx: ^Semantic_Context, t: Type_Info, span: Span) -> bool {
+    #partial switch typ in t {
+    case Named_Type:
+        _, ok := semantic_lookup_symbol(ctx, typ.name)
+        if !ok {
+            add_error(ctx, span, "Undefined type '%s'", typ.name)
+            return false
+        }
+        return true
+    case Pointer_Type:
+        return validate_type_exists(ctx, typ.pointee^, span)
+    case Array_Type:
+        return validate_type_exists(ctx, typ.element_type^, span)
+    case:
+        return true
+    }
 }

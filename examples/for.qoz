@@ -1,0 +1,10 @@
+main := func() {
+    names := arr<string, 3>{"Alice", "Bob", "Charlie"}
+    for name in names {
+        print(name)
+    }
+
+    for i := 0; i < len(names) as i32; i = i + 1 {
+        print(names[i])
+    }
+}

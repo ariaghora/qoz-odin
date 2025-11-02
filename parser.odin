@@ -44,7 +44,7 @@ Type_Info :: union {
     String_Type
 }
 
-Primitive_Type :: enum { I32, I64, F32, F64, Bool, Void }
+Primitive_Type :: enum { I8, U8, I32, I64, F32, F64, Bool, Void }
 
 Function_Type :: struct {
     params: []Type_Info,
@@ -92,6 +92,7 @@ Node_Call           :: struct { callee: ^Node, args: [dynamic]^Node }
 Node_Cast           :: struct { expr: ^Node, target_type: Type_Info }
 Node_Field_Access   :: struct { object: ^Node, field_name: string }
 Node_Fn_Def         :: struct { params: [dynamic]Fn_Param, body: [dynamic]^Node, return_type: Type_Info, is_external: bool}
+Node_For_C          :: struct { init: ^Node, condition: ^Node, post: ^Node, body: [dynamic]^Node }
 Node_For_In         :: struct { iterator: string, iterable: ^Node, body: [dynamic]^Node }
 Node_Identifier     :: struct { name:string }
 Node_If             :: struct { condition: ^Node, if_body: [dynamic]^Node, else_body: [dynamic]^Node }
@@ -124,6 +125,7 @@ Node :: struct {
         Node_Expr_Statement,
         Node_Field_Access,
         Node_Fn_Def,
+        Node_For_C,
         Node_For_In,
         Node_Identifier,
         Node_Index,
@@ -235,7 +237,7 @@ parse_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.
         expr_stmt.node_kind = .Expr_Statement
         expr_stmt.payload = Node_Expr_Statement{expr = expr}
         return expr_stmt, nil
-    case .KW_For: return parse_for_in_statement(ps, parent, allocator)
+    case .KW_For: return parse_for_statement(ps, parent, allocator)
     case .KW_If: return parse_if_statement(ps, parent, allocator)
     case .KW_Print: return parse_print_statement(ps, parent, allocator)
     case .KW_Return: return parse_return_statement(ps, parent, allocator)
@@ -916,26 +918,59 @@ parse_literal_array :: proc(ps: ^Parsing_State, parent: ^Node, allocator := cont
     return arr_node, nil
 }
 
-parse_for_in_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res:^Node, err:Parse_Error) {
+parse_for_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res:^Node, err:Parse_Error) {
     span_start := ps.idx
     parser_advance(ps) // eat 'for'
     
-    // Parse iterator variable
+    // Parse first identifier
     if ps.current_token.kind != .Iden {
         return nil, "Expected identifier after 'for'"
     }
-    iterator := ps.current_token.source
-    parser_advance(ps)
     
-    // Expect 'in'
-    parser_consume(ps, .KW_In) or_return
+    // Lookahead to determine which type of for loop
+    next_tok := ps.tokens[ps.idx + 1].kind
     
-    // Parse iterable expression
-    iterable := parse_expression(ps, parent, allocator) or_return
+    if next_tok == .KW_In {
+        // For-in loop: for i in arr { }
+        iterator := ps.current_token.source
+        parser_advance(ps)
+        parser_consume(ps, .KW_In) or_return
+        
+        iterable := parse_expression(ps, parent, allocator) or_return
+        
+        parser_consume(ps, .Left_Brace) or_return
+        body := make([dynamic]^Node, allocator)
+        for ps.current_token.kind != .Right_Brace {
+            if ps.current_token.kind == .EOF {
+                return nil, "Unexpected EOF in for statement"
+            }
+            stmt := parse_statement(ps, parent, allocator) or_return
+            append(&body, stmt)
+        }
+        parser_consume(ps, .Right_Brace) or_return
+        
+        return new_clone(Node{
+            node_kind = .For_In,
+            parent = parent,
+            span = Span{start = span_start, end = ps.idx - 1},
+            payload = Node_For_In{
+                iterator = iterator,
+                iterable = iterable,
+                body = body,
+            }
+        }, allocator), nil
+    }
     
-    // Parse body
+    // C-style for loop: for i := 0; i < n; i = i + 1 { }
+    init := parse_statement(ps, parent, allocator) or_return
+    parser_consume(ps, .Semicolon) or_return
+    
+    condition := parse_expression(ps, parent, allocator) or_return
+    parser_consume(ps, .Semicolon) or_return
+    
+    post := parse_statement(ps, parent, allocator) or_return
+    
     parser_consume(ps, .Left_Brace) or_return
-    
     body := make([dynamic]^Node, allocator)
     for ps.current_token.kind != .Right_Brace {
         if ps.current_token.kind == .EOF {
@@ -944,20 +979,19 @@ parse_for_in_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := c
         stmt := parse_statement(ps, parent, allocator) or_return
         append(&body, stmt)
     }
-    
     parser_consume(ps, .Right_Brace) or_return
     
-    for_node := new(Node, allocator)
-    for_node.node_kind = .For_In
-    for_node.parent = parent
-    for_node.span = Span{start = span_start, end = ps.idx - 1}
-    for_node.payload = Node_For_In{
-        iterator = iterator,
-        iterable = iterable,
-        body = body,
-    }
-    
-    return for_node, nil
+    return new_clone(Node{
+        node_kind = .For_C,
+        parent = parent,
+        span = Span{start = span_start, end = ps.idx - 1},
+        payload = Node_For_C{
+            init = init,
+            condition = condition,
+            post = post,
+            body = body,
+        }
+    }, allocator), nil
 }
 
 parse_type :: proc(ps: ^Parsing_State, allocator: mem.Allocator) -> (res:Type_Info, err:Parse_Error) {
@@ -1039,6 +1073,7 @@ parse_type :: proc(ps: ^Parsing_State, allocator: mem.Allocator) -> (res:Type_In
     prim: Type_Info
     #partial switch ps.current_token.kind {
     case .KW_Void: prim = .Void
+    case .KW_I8: prim = .I8
     case .KW_I32: prim = .I32
     case .KW_I64: prim = .I64
     case .KW_F32: prim = .F32

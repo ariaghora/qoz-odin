@@ -5,7 +5,7 @@ import "core:strings"
 import "core:unicode"
 
 Token_Kind :: enum {
-    Eq, Eq_Eq, Not_Eq, Assign, Colon, Comma, Dot,
+    Eq, Eq_Eq, Not_Eq, Assign, Colon, Semicolon, Comma, Dot,
     Lt, Gt, Lt_Eq, Gt_Eq, Amp, 
     Plus, Minus, Star, Slash, Percent,
     Left_Paren, Right_Paren,
@@ -13,7 +13,7 @@ Token_Kind :: enum {
     Left_Bracket, Right_Bracket,
     Lit_Number, Lit_String,
     KW_Fn, KW_External, KW_If, KW_Else, KW_Print, KW_Return, KW_As,
-    KW_I32, KW_I64, KW_F32, KW_F64, KW_Void, KW_String,
+    KW_I8, KW_U8, KW_I32, KW_I64, KW_F32, KW_F64, KW_Void, KW_String,
     KW_Arr, KW_Map, KW_For, KW_In, KW_Struct,
     KW_Size_Of, KW_Len,
     Iden, EOF,
@@ -102,6 +102,8 @@ make_id_or_kw :: proc(t: ^Tokenizer) {
     case "else":     tok_kind = .KW_Else
     case "print":    tok_kind = .KW_Print
     case "return":   tok_kind = .KW_Return
+    case "i8":       tok_kind = .KW_I8
+    case "u8":       tok_kind = .KW_U8
     case "i32":      tok_kind = .KW_I32
     case "i64":      tok_kind = .KW_I64
     case "f32":      tok_kind = .KW_F32
@@ -194,6 +196,7 @@ tokenize :: proc(source: string, allocator := context.allocator) -> (tokens: [dy
         case '/': make_tok(&t, .Slash, "/")
         case '%': make_tok(&t, .Percent, "%")
         case '&': make_tok(&t, .Amp, "&")
+        case ';': make_tok(&t, .Semicolon, ";")
         case '"', '\'': make_string(&t)
         case ':': 
             if peek(&t, source) == '=' {
