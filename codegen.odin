@@ -12,6 +12,18 @@ Codegen_Context :: struct {
     loop_counter: int,
 }
 
+MANGLE_PREFIX :: "qoz__"
+
+should_mangle :: proc(name: string, is_external: bool) -> bool {
+    if name == "main" do return false
+    if is_external do return false
+    return true
+}
+
+mangle_name :: proc(name: string) -> string {
+    return fmt.tprintf("%s%s", MANGLE_PREFIX, name)
+}
+
 codegen :: proc(root: ^Node, ctx_sem: ^Semantic_Context, allocator := context.allocator) -> (res: string, err: mem.Allocator_Error) {
     sb := strings.builder_make(allocator) or_return
     ctx_cg := Codegen_Context { output_buf=sb, indent_level=0, ctx_sem=ctx_sem }
@@ -182,6 +194,20 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         }
     case .Identifier:
         iden := node.payload.(Node_Identifier)
+
+        // Identifiers should be mangled at some conditions.
+        // 1) Don't mangle main or external functions
+        if iden.name == "main" || iden.name in ctx_cg.ctx_sem.external_functions {
+            strings.write_string(&ctx_cg.output_buf, iden.name)
+            return
+        }
+        // 2) Only mangle if it's from global scope (scope 0)
+        if iden.name in ctx_cg.ctx_sem.global_symbols {
+            fmt.sbprintf(&ctx_cg.output_buf, "%s%s", MANGLE_PREFIX, iden.name)
+            return
+        }
+        
+        // Local variable or parameter - don't mangle
         strings.write_string(&ctx_cg.output_buf, iden.name)
     
     case .Len:
@@ -335,15 +361,21 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
                 
             if struct_type, is_struct := type_expr.type_info.(Struct_Type); is_struct {
                 strings.write_string(&ctx_cg.output_buf, "typedef struct ")
-                strings.write_string(&ctx_cg.output_buf, var_def.name)  // Add tag here
+                strings.write_string(&ctx_cg.output_buf, var_def.name) 
                 strings.write_string(&ctx_cg.output_buf, " {\n")
                 ctx_cg.indent_level += 1
                 
                 for field in struct_type.fields {
                     codegen_indent(ctx_cg, ctx_cg.indent_level)
-                    codegen_type(ctx_cg, field.type)
-                    strings.write_string(&ctx_cg.output_buf, " ")
-                    strings.write_string(&ctx_cg.output_buf, field.name)
+
+                    if _, is_fn := field.type.(Function_Type); is_fn {
+                        codegen_type(ctx_cg, field.type, field.name)
+                    } else {
+                        codegen_type(ctx_cg, field.type)
+                        strings.write_string(&ctx_cg.output_buf, " ")
+                        strings.write_string(&ctx_cg.output_buf, field.name)
+                    }
+
                     strings.write_string(&ctx_cg.output_buf, ";\n")
                 }
                 
@@ -376,9 +408,27 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
     }
 }
 
-codegen_type :: proc(ctx_cg: ^Codegen_Context, type: Type_Info) {
+codegen_type :: proc(ctx_cg: ^Codegen_Context, type: Type_Info, name: string = "") {
     #partial switch t in type {
     case Function_Type:
+        // C function pointer format: return_type (*)(params)
+        codegen_type(ctx_cg, t.return_type^)
+        strings.write_string(&ctx_cg.output_buf, " (*")
+        strings.write_string(&ctx_cg.output_buf, name)
+        strings.write_string(&ctx_cg.output_buf, ")(")
+
+        if len(t.params) == 0 {
+            strings.write_string(&ctx_cg.output_buf, "void")
+        } else {
+            for param, i in t.params {
+                codegen_type(ctx_cg, param)
+                if i < len(t.params) - 1 {
+                    strings.write_string(&ctx_cg.output_buf, ", ")
+                }
+            }
+        }
+        strings.write_string(&ctx_cg.output_buf, ")")
+
     case Primitive_Type:
         #partial switch t {
         case .I32: strings.write_string(&ctx_cg.output_buf, "int32_t")
@@ -441,7 +491,14 @@ codegen_func_signature :: proc(ctx_cg: ^Codegen_Context, fn_name: string, node: 
 
     codegen_type(ctx_cg, node.return_type)
     strings.write_string(&ctx_cg.output_buf, " ")
-    strings.write_string(&ctx_cg.output_buf, fn_name)
+
+    // Mangle unless external
+    if node.is_external {
+        strings.write_string(&ctx_cg.output_buf, fn_name)
+    } else {
+        fmt.sbprintf(&ctx_cg.output_buf, "%s%s", MANGLE_PREFIX, fn_name)
+    }
+
     strings.write_string(&ctx_cg.output_buf, "(")
     if len(node.params) == 0 {
         strings.write_string(&ctx_cg.output_buf, "void")

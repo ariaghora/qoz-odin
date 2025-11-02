@@ -1,0 +1,14 @@
+Test := struct {
+    callback: func(i32): i32,
+    data:   i32,
+}
+
+double := func(x: i32): i32 {
+    return x * 2
+}
+
+main := func() {
+    t := Test { callback: double, data: 10 }
+    result := t.callback(t.data)  
+    print(result)  
+}

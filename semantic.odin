@@ -26,6 +26,8 @@ Semantic_Context :: struct {
     // This is to track the current struct's name while analyzing
     // recursively within it
     current_struct_name: Maybe(string), 
+    external_functions: map[string]bool,
+    global_symbols: map[string]bool
 }
 
 semantic_push_scope :: proc(ctx: ^Semantic_Context) {
@@ -42,11 +44,15 @@ semantic_pop_scope :: proc(ctx: ^Semantic_Context) {
 }
 
 semantic_define_symbol :: proc(ctx: ^Semantic_Context, name: string, type: Type_Info, span: Span) -> bool {
+    scope := ctx.current_scope
     if name in ctx.current_scope.symbols {
         add_error(ctx, span, "Symbol '%s' already defined in this scope", name)
         return false
     }
     ctx.current_scope.symbols[name] = Symbol { name=name, type=type }
+    if scope.parent == nil {
+        ctx.global_symbols[name] = true
+    }
     return true
 }
 
@@ -65,7 +71,9 @@ semantic_lookup_symbol :: proc(ctx: ^Semantic_Context, name: string) -> (Symbol,
 semantic_analyze :: proc(root: ^Node, allocator := context.allocator) -> Semantic_Context {
     ctx := Semantic_Context {
         allocator=allocator,
-        errors=make([dynamic]Semantic_Error, allocator)
+        errors=make([dynamic]Semantic_Error, allocator),
+        external_functions=make(map[string]bool, allocator),
+        global_symbols=make(map[string]bool, allocator),
     }
 
     semantic_push_scope(&ctx) // global
@@ -194,6 +202,15 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
 
     case .Var_Def:
         var_def := node.payload.(Node_Var_Def)
+
+        // If defining a function, check whether or not it is external, and track it
+        if var_def.content.node_kind == .Fn_Def {
+            fn_def := var_def.content.payload.(Node_Fn_Def)
+            if fn_def.is_external {
+                ctx.external_functions[var_def.name] = true
+            }
+        }
+
 
         // If defining a struct, track the name
         if var_def.content.node_kind == .Type_Expr {
@@ -676,8 +693,13 @@ types_equal :: proc(a, b: Type_Info) -> bool {
         b_val, ok := b.(Primitive_Type)
         return ok && a_val == b_val
     case Function_Type:
-        fmt.println("TODO(Aria): types are uncomparable")
-        return false
+        b_val, ok := b.(Function_Type)
+        if !types_equal(a_val.return_type^, b_val.return_type^) do return false
+        for param_a, i in a_val.params {
+            param_b := b_val.params[i]
+            if !types_equal(param_a, param_b) do return false
+        }
+        return true
     case String_Type:
         b_val, ok := b.(String_Type)
         return ok && a_val == b_val

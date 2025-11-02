@@ -24,10 +24,10 @@ main := fn() {
 
     //| Vector, all items are of the same type with dynamic length
     //+-----------------------------------------------------------
-    floats := vec<f32>(heap) { 1.0, 2.0, 3.0, 4.0, 5.0 }
+    floats := vec<f32> { 1.0, 2.0, 3.0, 4.0, 5.0 }
     defer free(floats)
 
-    a_map := map<string, i32>(heap) {
+    a_map := map<string, i32> {
         "one"   : 1,
         "two"   : 2,
         "three" : 3,

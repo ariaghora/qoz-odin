@@ -166,7 +166,7 @@ parser_consume :: proc(ps: ^Parsing_State, expected: Token_Kind) -> Parse_Error 
     return nil
 }
 
-parse :: proc(tokens: [dynamic]Token, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
+parse :: proc(tokens: [dynamic]Token, allocator := context.allocator, loc:=#caller_location) -> (res: ^Node, err: Parse_Error) {
     ps := Parsing_State {
         tokens = tokens,
         current_token = tokens[0],
@@ -980,6 +980,30 @@ parse_type :: proc(ps: ^Parsing_State, allocator: mem.Allocator) -> (res:Type_In
     case .KW_String: 
         parser_advance(ps)
         return String_Type{}, nil
+    case .KW_Fn:
+        parser_advance(ps)
+        parser_consume(ps, .Left_Paren) or_return
+        
+        param_types := make([dynamic]Type_Info, allocator)
+        for ps.current_token.kind != .Right_Paren {
+            param_type := parse_type(ps, allocator) or_return
+            append(&param_types, param_type)
+            
+            if ps.current_token.kind == .Comma {
+                parser_advance(ps)
+            } else if ps.current_token.kind != .Right_Paren {
+                return nil, "Expected ',' or ')' in function type"
+            }
+        }
+        parser_consume(ps, .Right_Paren) or_return
+        
+        parser_consume(ps, .Colon) or_return
+        return_type := parse_type(ps, allocator) or_return
+        
+        return Function_Type{
+            params = param_types[:],
+            return_type = new_clone(return_type, allocator),
+        }, nil
     case: 
         return nil, fmt.tprintf("Expected type at position %d, got %v", ps.idx, ps.current_token.kind)
     }
