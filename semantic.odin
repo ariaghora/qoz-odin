@@ -173,11 +173,16 @@ semantic_analyze_node :: proc(ctx: ^Semantic_Context, node: ^Node) {
         }
         
         node.inferred_type = value_type
+
     case .Bin_Op:
         binop := node.payload.(Node_Bin_Op)
         semantic_analyze_node(ctx, binop.left)
         semantic_analyze_node(ctx, binop.right)
 
+    case .Cast:
+        cast_node := node.payload.(Node_Cast)
+        semantic_analyze_node(ctx, cast_node.expr)
+        
     case .Field_Access:
         field_access := node.payload.(Node_Field_Access)
         semantic_analyze_node(ctx, field_access.object)
@@ -500,6 +505,33 @@ semantic_infer_type :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
         node.inferred_type = result_type
         return result_type
     
+    case .Cast:
+        cast_node := node.payload.(Node_Cast)
+        source_type := semantic_infer_type(ctx, cast_node.expr)
+        target_type := cast_node.target_type
+        
+        source_ptr, source_is_ptr := source_type.(Pointer_Type)
+        target_ptr, target_is_ptr := target_type.(Pointer_Type)
+        
+        // Allow: pointer <-> pointer, int <-> int
+        valid := false
+        if source_is_ptr && target_is_ptr {
+            valid = true  // Any pointer can cast to any pointer
+        } else if source_prim, ok := source_type.(Primitive_Type); ok {
+            if target_prim, ok2 := target_type.(Primitive_Type); ok2 {
+                // Numeric types can cast to each other
+                valid = (source_prim == .I32 || source_prim == .I64 || source_prim == .F32 || source_prim == .F64) &&
+                        (target_prim == .I32 || target_prim == .I64 || target_prim == .F32 || target_prim == .F64)
+            }
+        }
+        
+        if !valid {
+            add_error(ctx, node.span, "Invalid cast from %v to %v", source_type, target_type)
+        }
+        
+        node.inferred_type = target_type
+        return target_type
+
     case .Field_Access:
         field_access := node.payload.(Node_Field_Access)
         object_type := semantic_infer_type(ctx, field_access.object)

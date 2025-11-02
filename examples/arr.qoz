@@ -13,6 +13,10 @@ main := func() {
     print("The sum is:")
     print(sum)
 
+    print("The mean is:")
+    mean := (sum as f32) / (len(numbers) as f32)
+    print(mean)
+
 
     print("Our numbers now are:")
     numbers[2] = 42

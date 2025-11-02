@@ -12,7 +12,7 @@ Token_Kind :: enum {
     Left_Brace, Right_Brace,
     Left_Bracket, Right_Bracket,
     Lit_Number, Lit_String,
-    KW_Fn, KW_External, KW_If, KW_Else, KW_Print, KW_Return,
+    KW_Fn, KW_External, KW_If, KW_Else, KW_Print, KW_Return, KW_As,
     KW_I32, KW_I64, KW_F32, KW_F64, KW_Void, KW_String,
     KW_Arr, KW_Map, KW_For, KW_In, KW_Struct,
     KW_Size_Of, KW_Len,
@@ -93,6 +93,7 @@ make_id_or_kw :: proc(t: ^Tokenizer) {
     tok_kind: Token_Kind
     
     switch tok_src {
+    case "as":       tok_kind = .KW_As
     case "func":     tok_kind = .KW_Fn
     case "external": tok_kind = .KW_External
     case "for":      tok_kind = .KW_For

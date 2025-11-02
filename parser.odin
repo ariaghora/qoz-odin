@@ -9,6 +9,7 @@ Parse_Error :: union { string }
 Node_Kind :: enum {
     Assignment,
     Bin_Op,
+    Cast,
     Expr_Statement,
     Field_Access,
     Fn_Call,
@@ -88,6 +89,7 @@ Node_Array_Literal  :: struct { element_type: Type_Info, size: int, elements: [d
 Node_Assign         :: struct { target: ^Node, value: ^Node }
 Node_Bin_Op         :: struct { left, right: ^Node, op: Token }
 Node_Call           :: struct { callee: ^Node, args: [dynamic]^Node }
+Node_Cast           :: struct { expr: ^Node, target_type: Type_Info }
 Node_Field_Access   :: struct { object: ^Node, field_name: string }
 Node_Fn_Def         :: struct { params: [dynamic]Fn_Param, body: [dynamic]^Node, return_type: Type_Info, is_external: bool}
 Node_For_In         :: struct { iterator: string, iterable: ^Node, body: [dynamic]^Node }
@@ -118,6 +120,7 @@ Node :: struct {
         Node_Assign,
         Node_Bin_Op,
         Node_Call,
+        Node_Cast,
         Node_Expr_Statement,
         Node_Field_Access,
         Node_Fn_Def,
@@ -204,7 +207,6 @@ parse_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.
         expr := parse_expression(ps, parent, allocator) or_return
         if ps.current_token.kind == .Eq {
             // x = val
-            fmt.println("HERE", ps.current_token)
             parser_advance(ps)  // eat '='
             
             // Validate lvalue
@@ -215,7 +217,6 @@ parse_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.
                 return nil, "Invalid assignment target"
             }
             
-            fmt.println("HERE", ps.current_token)
             value := parse_expression(ps, parent, allocator) or_return
             
             assign_node := new(Node, allocator)
@@ -439,12 +440,13 @@ parse_equality :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.a
 }
 
 parse_comparison :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
-    left := parse_term(ps, parent, allocator) or_return
+    left := parse_cast(ps, parent, allocator) or_return
+    
     for ps.current_token.kind == .Gt || ps.current_token.kind == .Gt_Eq || ps.current_token.kind == .Lt || ps.current_token.kind == .Lt_Eq {
         op_idx := ps.idx
         op := ps.current_token
         parser_advance(ps)
-        right := parse_term(ps, parent, allocator) or_return
+        right := parse_cast(ps, parent, allocator) or_return 
         
         left = new_clone(Node {
             node_kind = .Bin_Op,
@@ -453,6 +455,24 @@ parse_comparison :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context
             payload = Node_Bin_Op{left = left, right = right, op = op}
         }, allocator)
     }
+    return left, nil
+}
+
+parse_cast :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
+    left := parse_term(ps, parent, allocator) or_return
+    
+    if ps.current_token.kind == .KW_As {
+        parser_advance(ps)
+        target_type := parse_type(ps, allocator) or_return
+        
+        return new_clone(Node{
+            node_kind = .Cast,
+            parent = parent,
+            span = Span{start = left.span.start, end = ps.idx - 1},
+            payload = Node_Cast{expr = left, target_type = target_type}
+        }, allocator), nil
+    }
+    
     return left, nil
 }
 
@@ -624,6 +644,11 @@ parse_postfix :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
 parse_primary :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
     span_start := ps.idx        
     #partial switch ps.current_token.kind {
+    case .Left_Paren: // Parenthesized expression
+        parser_advance(ps)  // eat '('
+        expr := parse_expression(ps, parent, allocator) or_return
+        parser_consume(ps, .Right_Paren) or_return
+        return expr, nil
     case .Iden: return parse_identifier(ps, parent, allocator)
     case .KW_Fn: return parse_fn_def(ps, parent, allocator)
     case .KW_Struct: 
