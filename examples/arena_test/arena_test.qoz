@@ -2,23 +2,24 @@ import "std:mem"
 import str "std:strings"
 
 main := func() {
-    // Create a 1KB arena on the stack
-    buffer: [1024]u8
-    arena := mem.arena_make(&buffer[0], 1024)
-    alloc := mem.arena_allocator(&arena)
-    
-    // Use arena allocator for string concatenation
-    word1 := "Hello, "
-    word2 := "Arena!"
-    greeting := str.string_concat(word1, word2, alloc)
-    print(greeting)
-    
-    // Arena doesn't free individual allocations, but we can reset it
-    mem.arena_reset(&arena)
-    
-    // Allocate again after reset
-    word3 := "Works "
-    word4 := "perfectly!"
-    message := str.string_concat(word3, word4, alloc)
-    print(message)
+
+	arena := mem.arena_make(1024)
+	alloc := mem.arena_allocator(&arena)
+
+	// Use arena allocator for string concatenation
+	word1 := "Hello, "
+	word2 := "Arena!"
+	greeting := str.string_concat(word1, word2, alloc)
+	print(greeting)
+
+	// Arena doesn't free individual allocations, but we can reset it
+	// mem.arena_reset(&arena)
+
+	// Allocate again after reset
+	// word3 := "Works "
+	// word4 := "perfectly!"
+	// message := str.string_concat(word3, word4, alloc)
+	// print(message)
+
+	// mem.arena_free(&arena)
 }

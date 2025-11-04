@@ -1,0 +1,51 @@
+import "std:libc"
+
+Arena := struct {
+    buffer: *u8
+    offset: i64
+    size:   i64
+}
+
+arena_make := func(size: i64): Arena {
+    arena := Arena {
+        buffer: libc.malloc(size) as *u8,
+        offset: 0,
+        size:   size,
+    }
+    return arena
+}
+
+arena_free := func(arena: *Arena) {
+    libc.free(arena.buffer)
+}
+
+arena_alloc_proc := func(data: *void, size: i64): *void {
+    arena := data as *Arena
+
+    // Check if allocation fits
+    if arena.offset + size > arena.size {
+        print("Arena out of memory!")
+        libc.exit(1)
+    }
+
+    // Get pointer at current offset
+    ptr := arena.buffer + arena.offset
+
+    // Bump the offset
+    arena.offset = arena.offset + size
+
+    return ptr as *void
+}
+
+arena_free_proc := func(data: *void, ptr: *void) {
+    // Arena doesn't support individual frees - no-op
+    // return
+}
+
+arena_allocator := func(arena: *Arena): Allocator {
+    return Allocator {
+        data: arena,
+        alloc: arena_alloc_proc,
+        free: arena_free_proc
+    }
+}

@@ -499,6 +499,8 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         case Pointer_Type: panic("Cannot print pointer")
         case Struct_Type: panic("Cannot print pointer")
         case Named_Type: panic("Cannot print named type")
+        case Untyped_Int: format_spec = "%d"
+        case Untyped_Float: format_spec = "%f"
         }
         
         strings.write_string(&ctx_cg.output_buf, "printf(\"")
@@ -765,6 +767,10 @@ codegen_type :: proc(ctx_cg: ^Codegen_Context, type: Type_Info, name: string = "
             }
             strings.write_string(&ctx_cg.output_buf, t.name)
         }
+    case Untyped_Int:
+        strings.write_string(&ctx_cg.output_buf, "int64_t")
+    case Untyped_Float:
+        strings.write_string(&ctx_cg.output_buf, "double")
     case: fmt.panicf("Internal error: cannot generate code for type %v", t)
     }
     

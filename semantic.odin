@@ -77,6 +77,27 @@ semantic_lookup_symbol :: proc(ctx: ^Semantic_Context, name: string) -> (Symbol,
     }
     return {}, false
 }
+is_untyped_int :: proc(t: Type_Info) -> bool {
+    _, ok := t.(Untyped_Int)
+    return ok
+}
+
+is_untyped_float :: proc(t: Type_Info) -> bool {
+    _, ok := t.(Untyped_Float)
+    return ok
+}
+
+is_typed_int :: proc(t: Type_Info) -> bool {
+    p, ok := t.(Primitive_Type)
+    if !ok do return false
+    return p == .I8 || p == .U8 || p == .I32 || p == .I64
+}
+
+is_typed_float :: proc(t: Type_Info) -> bool {
+    p, ok := t.(Primitive_Type)
+    if !ok do return false
+    return p == .F32 || p == .F64
+}
 
 // Resolve a potentially qualified type name (e.g., "mem.Allocator" or "string")
 resolve_named_type :: proc(ctx: ^Semantic_Context, named: Named_Type) -> (Type_Info, bool) {
@@ -424,6 +445,35 @@ check_node :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
         left_type := check_node(ctx, binop.left)
         right_type := check_node(ctx, binop.right)
         
+        // Coerce untyped operands and update their inferred types
+        if is_untyped_int(left_type) && is_typed_int(right_type) {
+            binop.left.inferred_type = right_type
+            left_type = right_type
+        } else if is_typed_int(left_type) && is_untyped_int(right_type) {
+            binop.right.inferred_type = left_type
+            right_type = left_type
+        } else if is_untyped_int(left_type) && is_untyped_int(right_type) {
+            // Both untyped - default to i64
+            binop.left.inferred_type = Primitive_Type.I64
+            binop.right.inferred_type = Primitive_Type.I64
+            left_type = Primitive_Type.I64
+            right_type = Primitive_Type.I64
+        }
+        
+        // Coerce untyped floats
+        if is_untyped_float(left_type) && is_typed_float(right_type) {
+            binop.left.inferred_type = right_type
+            left_type = right_type
+        } else if is_typed_float(left_type) && is_untyped_float(right_type) {
+            binop.right.inferred_type = left_type
+            right_type = left_type
+        } else if is_untyped_float(left_type) && is_untyped_float(right_type) {
+            binop.left.inferred_type = Primitive_Type.F64
+            binop.right.inferred_type = Primitive_Type.F64
+            left_type = Primitive_Type.F64
+            right_type = Primitive_Type.F64
+        }
+        
         result_type := semantic_binop_type_resolve(left_type, right_type, binop.op, node.span, ctx)
         node.inferred_type = result_type
         return result_type
@@ -436,6 +486,18 @@ check_node :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
         if !validate_type_exists(ctx, target_type, node.span) {
             node.inferred_type = source_type
             return source_type
+        }
+        
+        // Untyped integers can be cast to any numeric or pointer type
+        if is_untyped_int(source_type) {
+            if is_typed_int(target_type) || is_typed_float(target_type) {
+                node.inferred_type = target_type
+                return target_type
+            }
+            if _, is_ptr := target_type.(Pointer_Type); is_ptr {
+                node.inferred_type = target_type
+                return target_type
+            }
         }
         
         source_ptr, source_is_ptr := source_type.(Pointer_Type)
@@ -927,7 +989,20 @@ check_node :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
                 continue
             }
             
-            if !types_compatible(value_type, field.type) {
+            // Coerce untyped literals to field type
+            coerced_type := value_type
+            if is_untyped_int(value_type) && is_typed_int(field.type) {
+                coerced_type = field.type
+                // Update the field value's inferred type
+                for field_init in struct_lit.field_inits {
+                    if field_init.name == field.name {
+                        field_init.value.inferred_type = field.type
+                        break
+                    }
+                }
+            }
+            
+            if !types_compatible(coerced_type, field.type) {
                 add_error(ctx, node.span, "Field '%s': expected %v, got %v", 
                     field.name, field.type, value_type)
             }
@@ -1003,8 +1078,8 @@ check_node :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
         }
     
     case .Literal_Number:
-        node.inferred_type = Primitive_Type.I32
-        return Primitive_Type.I32
+        node.inferred_type = Untyped_Int{}
+        return Untyped_Int{}
 
     case .Literal_String:
         result := Named_Type{name = "string"}
@@ -1085,6 +1160,16 @@ types_equal :: proc(a, b: Type_Info) -> bool {
 types_compatible :: proc(target: Type_Info, source: Type_Info) -> bool {
     if types_equal(target, source) do return true
     
+    // Untyped int can coerce to any typed integer
+    if is_untyped_int(source) && is_typed_int(target) {
+        return true
+    }
+    
+    // Untyped float can coerce to any typed float
+    if is_untyped_float(source) && is_typed_float(target) {
+        return true
+    }
+    
     target_ptr, target_is_ptr := target.(Pointer_Type)
     source_ptr, source_is_ptr := source.(Pointer_Type)
     if target_is_ptr && source_is_ptr {
@@ -1100,46 +1185,78 @@ types_compatible :: proc(target: Type_Info, source: Type_Info) -> bool {
 }
 
 semantic_binop_type_resolve :: proc(t1, t2: Type_Info, op: Token, span: Span, ctx: ^Semantic_Context) -> Type_Info {
+    // Handle untyped integer coercion
+    left_type := t1
+    right_type := t2
+    
+    if is_untyped_int(left_type) && is_typed_int(right_type) {
+        left_type = right_type  // Coerce untyped to match typed
+    } else if is_typed_int(left_type) && is_untyped_int(right_type) {
+        right_type = left_type  // Coerce untyped to match typed
+    } else if is_untyped_int(left_type) && is_untyped_int(right_type) {
+        // Both untyped - default to i64
+        left_type = Primitive_Type.I64
+        right_type = Primitive_Type.I64
+    }
+    
+    // Handle untyped float coercion
+    if is_untyped_float(left_type) && is_typed_float(right_type) {
+        left_type = right_type
+    } else if is_typed_float(left_type) && is_untyped_float(right_type) {
+        right_type = left_type
+    } else if is_untyped_float(left_type) && is_untyped_float(right_type) {
+        left_type = Primitive_Type.F64
+        right_type = Primitive_Type.F64
+    }
+    
+    // Handle untyped int with pointer operations
+    if is_untyped_int(left_type) {
+        left_type = Primitive_Type.I64
+    }
+    if is_untyped_int(right_type) {
+        right_type = Primitive_Type.I64
+    }
+    
     #partial switch op.kind {
     case .Plus:
         // Pointer + integer
-        if ptr_type, is_ptr := t1.(Pointer_Type); is_ptr {
-            if int_type, is_int := t2.(Primitive_Type); is_int && 
+        if ptr_type, is_ptr := left_type.(Pointer_Type); is_ptr {
+            if int_type, is_int := right_type.(Primitive_Type); is_int && 
                (int_type == .I32 || int_type == .I64) {
-                return t1  // Returns pointer type
+                return left_type  // Returns pointer type
             }
         }
         // Integer + pointer
-        if ptr_type, is_ptr := t2.(Pointer_Type); is_ptr {
-            if int_type, is_int := t1.(Primitive_Type); is_int && 
+        if ptr_type, is_ptr := right_type.(Pointer_Type); is_ptr {
+            if int_type, is_int := left_type.(Primitive_Type); is_int && 
                (int_type == .I32 || int_type == .I64) {
-                return t2
+                return right_type
             }
         }
         
     case .Minus:
         // Pointer - integer
-        if ptr_type, is_ptr := t1.(Pointer_Type); is_ptr {
-            if int_type, is_int := t2.(Primitive_Type); is_int && 
+        if ptr_type, is_ptr := left_type.(Pointer_Type); is_ptr {
+            if int_type, is_int := right_type.(Primitive_Type); is_int && 
                (int_type == .I32 || int_type == .I64) {
-                return t1
+                return left_type
             }
         }
         // Pointer - pointer
-        if _, is_ptr1 := t1.(Pointer_Type); is_ptr1 {
-            if _, is_ptr2 := t2.(Pointer_Type); is_ptr2 {
+        if _, is_ptr1 := left_type.(Pointer_Type); is_ptr1 {
+            if _, is_ptr2 := right_type.(Pointer_Type); is_ptr2 {
                 return Primitive_Type.I64
             }
         }
     }
     
     // Regular type checking
-    if !types_equal(t1, t2) {
+    if !types_equal(left_type, right_type) {
         add_error(ctx, span, "Type mismatch in binary operation")
-        return Primitive_Type.I32
+        return Primitive_Type.I64
     }
     
-    #partial switch t in t1 {
+    #partial switch t in left_type {
     case Primitive_Type:
         return semantic_binop_primitive(t, op, span, ctx)
     case:

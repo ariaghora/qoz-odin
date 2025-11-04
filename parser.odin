@@ -47,6 +47,8 @@ Type_Info :: union {
     Pointer_Type,
     Struct_Type,
     Named_Type,
+    Untyped_Int,
+    Untyped_Float,
 }
 
 Primitive_Type :: enum { I8, U8, I32, I64, F32, F64, Bool, Void }
@@ -73,6 +75,9 @@ Struct_Type :: struct {
 Named_Type :: struct {
     name: string,
 }
+
+Untyped_Int :: struct {}
+Untyped_Float :: struct {}
 
 Span :: struct {
     start: int,
@@ -1233,6 +1238,7 @@ parse_type :: proc(ps: ^Parsing_State, allocator: mem.Allocator) -> (res:Type_In
     #partial switch ps.current_token.kind {
     case .KW_Void: prim = .Void
     case .KW_I8: prim = .I8
+    case .KW_U8: prim = .U8
     case .KW_I32: prim = .I32
     case .KW_I64: prim = .I64
     case .KW_F32: prim = .F32
