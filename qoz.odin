@@ -50,18 +50,25 @@ main :: proc() {
 
 	// Parse entire project (all packages)
 	asts, err_parse := parse_project(entry_dir, arena_lexer, arena_parser)
-	ensure(err_parse == nil, fmt.tprint(err_parse))
+	if err_parse != nil {
+		parse_err := err_parse.(Parse_Error)
+		fmt.eprintfln("%s:%d:%d: %s", parse_err.file, parse_err.line, parse_err.column, parse_err.message)
+		os.exit(1)
+	}
 	
-	fmt.printfln("Parsed %d files", len(asts))
-
 	packages, err_deps := build_dependency_graph(asts, context.temp_allocator)
-	ensure(err_deps == nil, fmt.tprint(err_deps))
+	if err_deps != nil {
+		dep_err := err_deps.(Parse_Error)
+		fmt.eprintfln("%s:%d:%d: %s", dep_err.file, dep_err.line, dep_err.column, dep_err.message)
+		os.exit(1)
+	}
 
 	sorted_packages, err_sort := topological_sort_packages(packages, context.temp_allocator)
-	ensure(err_sort == nil, fmt.tprint(err_sort))
-
-	fmt.printfln("Package processing order: %v", sorted_packages)
-
+	if err_sort != nil {
+		sort_err := err_sort.(Parse_Error)
+		fmt.eprintfln("%s:%d:%d: %s", sort_err.file, sort_err.line, sort_err.column, sort_err.message)
+		os.exit(1)
+	}
 
 	// Multi-file semantic analysis
 	entry_package_asts := make([dynamic]^Node, context.temp_allocator)
@@ -78,9 +85,8 @@ main :: proc() {
 
 
 	if len(ctx_sem.errors) > 0 {
-		// TODO: Need to map errors back to files
 		for err in ctx_sem.errors {
-			fmt.eprintfln("[%d:%d] %s", err.span.start, err.span.end, err.message)
+			fmt.eprintfln("%s:[%d:%d] %s", err.file, err.span.start, err.span.end, err.message)
 		}
 		os.exit(1)
 	}

@@ -7,6 +7,8 @@ main := func() {
 
 	// Use arena allocator for string concatenation
 	word1 := "Hello, "
+	word1 := "Hello, "
+	word2 := "Arena!"
 	word2 := "Arena!"
 	greeting := str.string_concat(word1, word2, alloc)
 	print(greeting)

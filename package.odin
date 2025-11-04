@@ -10,7 +10,7 @@ Package_Info :: struct {
     imports: [dynamic]string,  
 }
 
-build_dependency_graph :: proc(asts: map[string]^Node, allocator := context.allocator) -> (packages: map[string]Package_Info, err: Parse_Error) {
+build_dependency_graph :: proc(asts: map[string]^Node, allocator := context.allocator) -> (packages: map[string]Package_Info, err: Maybe(Parse_Error)) {
     packages = make(map[string]Package_Info, allocator)
     
     // Group files by package (directory)
@@ -56,16 +56,16 @@ build_dependency_graph :: proc(asts: map[string]^Node, allocator := context.allo
     return packages, nil
 }
 
-topological_sort_packages :: proc(packages: map[string]Package_Info, allocator := context.allocator) -> (sorted: []string, err: Parse_Error) {
+topological_sort_packages :: proc(packages: map[string]Package_Info, allocator := context.allocator) -> (sorted: []string, err: Maybe(Parse_Error)) {
     // Standard topological sort with cycle detection
     // Returns packages in dependency order (dependencies first)
     visited := make(map[string]bool, allocator)
     temp_mark := make(map[string]bool, allocator)
     result := make([dynamic]string, allocator)
     
-    visit :: proc(pkg_dir: string, packages: map[string]Package_Info, visited, temp_mark: ^map[string]bool, result: ^[dynamic]string) -> Parse_Error {
+    visit :: proc(pkg_dir: string, packages: map[string]Package_Info, visited, temp_mark: ^map[string]bool, result: ^[dynamic]string) -> Maybe(Parse_Error) {
         if temp_mark[pkg_dir] {
-            return "Circular dependency detected"
+            return make_parse_error_simple("Circular dependency detected", pkg_dir, 0, 0)
         }
         if visited[pkg_dir] {
             return nil

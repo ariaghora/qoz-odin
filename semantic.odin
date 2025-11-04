@@ -19,6 +19,7 @@ Scope :: struct {
 
 Semantic_Error :: struct {
     message: string,
+    file: string,
     span: Span,
 }
 
@@ -38,6 +39,7 @@ Semantic_Context :: struct {
 
     packages: map[string]Package_Symbols, // package_dir -> symbols
     current_package: string,              // Which package we're analyzing
+    current_file: string,                 // Which file we're analyzing
     import_aliases: map[string]string,    // alias -> package_dir
 }
 
@@ -173,6 +175,7 @@ semantic_analyze_project :: proc(
         
         for file_path, ast in asts {
             if filepath.dir(file_path, allocator) == pkg_dir {
+                ctx.current_file = file_path
                 collect_declarations(&ctx, ast, pkg_dir, entry_package)
             }
         }
@@ -209,6 +212,7 @@ semantic_analyze_project :: proc(
             for file_path, ast in asts {
                 file_dir := filepath.dir(file_path, context.temp_allocator)
                 if file_dir == pkg_dir {
+                    ctx.current_file = file_path
                     check_node(&ctx, ast)
                 }
             }
@@ -240,6 +244,7 @@ semantic_analyze_project :: proc(
     if !has_entry_pkg || !has_main {
         append(&ctx.errors, Semantic_Error{
             message = "Program must define a 'main' function",
+            file = entry_package,
             span = Span{start = 0, end = 0},
         })
     } else {
@@ -247,12 +252,14 @@ semantic_analyze_project :: proc(
         if !is_fn {
             append(&ctx.errors, Semantic_Error{
                 message = "'main' must be a function",
+                file = ctx.current_file,
                 span = main_span,
             })
         } else {
             if len(fn_type.params) != 0 {
                 append(&ctx.errors, Semantic_Error{
                     message = "'main' must take no parameters",
+                    file = ctx.current_file,
                     span = main_span,
                 })
             }
@@ -260,6 +267,7 @@ semantic_analyze_project :: proc(
             if !is_void || ret_type != .Void {
                 append(&ctx.errors, Semantic_Error{
                     message = "'main' must return void",
+                    file = ctx.current_file,
                     span = main_span,
                 })
             }
@@ -274,6 +282,7 @@ semantic_analyze_project :: proc(
 add_error :: proc(ctx: ^Semantic_Context, span: Span, format: string, args: ..any) {
     error := Semantic_Error {
         message = fmt.tprintf(format, ..args),
+        file = ctx.current_file,
         span = span,
     }
     append(&ctx.errors, error)

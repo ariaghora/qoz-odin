@@ -7,7 +7,12 @@ import "core:mem"
 import "core:strconv"
 import "core:fmt"
 
-Parse_Error :: union { string }
+Parse_Error :: struct {
+    message: string,
+    file: string,
+    line: int,
+    column: int,
+}
 
 Node_Kind :: enum {
     Assignment,
@@ -88,6 +93,7 @@ Parsing_State :: struct {
     tokens: [dynamic]Token,
     current_token: Token,
     idx: int,
+    file: string,
 }
 
 Fn_Param :: struct { name: string, type: Type_Info, span: Span }
@@ -162,15 +168,31 @@ current_span :: proc(ps: ^Parsing_State) -> Span {
     return Span{start = ps.idx, end = ps.idx}
 }
 
+make_parse_error :: proc(ps: ^Parsing_State, message: string) -> Parse_Error {
+    return Parse_Error{
+        message = message,
+        file = ps.file,
+        line = ps.current_token.line,
+        column = ps.current_token.column,
+    }
+}
+
+make_parse_error_simple :: proc(message: string, file: string, line: int, column: int) -> Parse_Error {
+    return Parse_Error{
+        message = message,
+        file = file,
+        line = line,
+        column = column,
+    }
+}
+
 @(require_results)
-parser_expect :: proc(ps: ^Parsing_State, expected: Token_Kind) -> Parse_Error {
+parser_expect :: proc(ps: ^Parsing_State, expected: Token_Kind) -> Maybe(Parse_Error) {
     if ps.current_token.kind != expected {
-        return fmt.tprintf(
-            "[%d:%d] Expected %v, got %v", 
-            ps.current_token.line,
-            ps.current_token.column,
+        return make_parse_error(ps, fmt.tprintf(
+            "Expected %v, got %v", 
             expected,
-            ps.current_token.kind)
+            ps.current_token.kind))
     }
     return nil
 }
@@ -182,8 +204,10 @@ parser_advance :: proc(ps: ^Parsing_State) {
     }
 }
 
-parser_consume :: proc(ps: ^Parsing_State, expected: Token_Kind) -> Parse_Error {
-    parser_expect(ps, expected) or_return
+parser_consume :: proc(ps: ^Parsing_State, expected: Token_Kind) -> Maybe(Parse_Error) {
+    if err := parser_expect(ps, expected); err != nil {
+        return err
+    }
     parser_advance(ps)
     return nil
 }
@@ -210,7 +234,7 @@ resolve_import_path :: proc(current_file_dir: string, project_root: string, impo
     return filepath.clean(filepath.join({project_root, import_path}, context.temp_allocator))
 }
 
-parse_project :: proc(entry_package_dir: string, arena_lexer, arena_parser: mem.Allocator) -> (asts: map[string]^Node, err: Parse_Error) {
+parse_project :: proc(entry_package_dir: string, arena_lexer, arena_parser: mem.Allocator) -> (asts: map[string]^Node, err: Maybe(Parse_Error)) {
     asts = make(map[string]^Node, arena_parser)
     visited_packages := make(map[string]bool, arena_parser)
     packages_to_parse := make([dynamic]string, arena_parser)
@@ -229,13 +253,13 @@ parse_project :: proc(entry_package_dir: string, arena_lexer, arena_parser: mem.
         for file_path in qoz_files {
             source, read_ok := os.read_entire_file(file_path, arena_parser)
             if !read_ok {
-                return nil, fmt.tprintf("Failed to read file: %s", file_path)
+                return nil, make_parse_error_simple(fmt.tprintf("Failed to read file: %s", file_path), file_path, 0, 0)
             }
             
             tokens, err_tokenize := tokenize(string(source), arena_lexer)
-            if err_tokenize != nil do return nil, err_tokenize.(string)
+            if err_tokenize != nil do return nil, make_parse_error_simple(err_tokenize.(string), file_path, 0, 0)
 
-            ast := parse(tokens, arena_parser) or_return
+            ast := parse(tokens, file_path, arena_parser) or_return
             asts[file_path] = ast
             
             // Extract imports and add packages to queue
@@ -256,16 +280,16 @@ parse_project :: proc(entry_package_dir: string, arena_lexer, arena_parser: mem.
     return asts, nil
 }
 
-find_qoz_files_in_dir :: proc(dir: string, allocator := context.allocator) -> (files: []string, err: Parse_Error) {
+find_qoz_files_in_dir :: proc(dir: string, allocator := context.allocator) -> (files: []string, err: Maybe(Parse_Error)) {
     handle, open_err := os.open(dir)
     if open_err != 0 {
-        return nil, fmt.tprintf("Failed to open directory: %s", dir)
+        return nil, make_parse_error_simple(fmt.tprintf("Failed to open directory: %s", dir), dir, 0, 0)
     }
     defer os.close(handle)
     
     file_infos, read_err := os.read_dir(handle, -1, allocator)
     if read_err != 0 {
-        return nil, fmt.tprintf("Failed to read directory: %s", dir)
+        return nil, make_parse_error_simple(fmt.tprintf("Failed to read directory: %s", dir), dir, 0, 0)
     }
     
     result := make([dynamic]string, allocator)
@@ -283,11 +307,12 @@ resolve_package_path :: proc(current_pkg_dir: string, import_path: string) -> st
     return filepath.clean(filepath.join({current_pkg_dir, import_path}, context.temp_allocator), context.temp_allocator)
 }
 
-parse :: proc(tokens: [dynamic]Token, allocator := context.allocator, loc:=#caller_location) -> (res: ^Node, err: Parse_Error) {
+parse :: proc(tokens: [dynamic]Token, file: string, allocator := context.allocator, loc:=#caller_location) -> (res: ^Node, err: Maybe(Parse_Error)) {
     ps := Parsing_State {
         tokens = tokens,
         current_token = tokens[0],
         idx = 0,
+        file = file,
     }
 
     program_node := new(Node, allocator)
@@ -305,7 +330,7 @@ parse :: proc(tokens: [dynamic]Token, allocator := context.allocator, loc:=#call
     return program_node, nil
 }
 
-parse_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
+parse_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     #partial switch ps.current_token.kind {
     case .KW_Import:
         span_start := ps.idx
@@ -318,7 +343,7 @@ parse_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.
         }
         
         if ps.current_token.kind != .Lit_String {
-            return nil, fmt.tprintf("Expected import path (string), got %v", ps.current_token.kind)
+            return nil, make_parse_error(ps, fmt.tprintf("Expected import path (string), got %v", ps.current_token.kind))
         }
         
         path := strings.trim(ps.current_token.source, "\"")
@@ -352,7 +377,7 @@ parse_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.
             case .Identifier, .Index, .Field_Access:
                 // Valid
             case:
-                return nil, "Invalid assignment target"
+                return nil, make_parse_error(ps, "Invalid assignment target")
             }
             
             value := parse_expression(ps, parent, allocator) or_return
@@ -397,14 +422,14 @@ parse_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.
     case .KW_Print: return parse_print_statement(ps, parent, allocator)
     case .KW_Return: return parse_return_statement(ps, parent, allocator)
     case .KW_Size_Of: 
-        return nil, fmt.tprintf("Cannot use `%v` here as a statement", ps.current_token.source)
+        return nil, make_parse_error(ps, fmt.tprintf("Cannot use `%v` here as a statement", ps.current_token.source))
     case:
         fmt.println(ps.current_token)
-        return nil, fmt.tprintf("Cannot parse statement starting with %v at position %d", ps.current_token.kind, ps.idx)
+        return nil, make_parse_error(ps, fmt.tprintf("Cannot parse statement starting with %v at position %d", ps.current_token.kind, ps.idx))
     }
 }
 
-parse_var_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
+parse_var_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     span_start := ps.idx
     name_tok := ps.current_token
     parser_advance(ps)
@@ -432,7 +457,7 @@ parse_var_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
     return var_node, nil
 }
 
-parse_if_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
+parse_if_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     span_start := ps.idx
     
     parser_advance(ps) // eat 'if'
@@ -445,7 +470,7 @@ parse_if_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := conte
     if_body := make([dynamic]^Node, allocator)
     for ps.current_token.kind != .Right_Brace {
         if ps.current_token.kind == .EOF {
-            return nil, "Unexpected EOF in if statement"
+            return nil, make_parse_error(ps, "Unexpected EOF in if statement")
         }
         stmt := parse_statement(ps, parent, allocator) or_return
         append(&if_body, stmt)
@@ -469,7 +494,7 @@ parse_if_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := conte
             else_body = make([dynamic]^Node, allocator)
             for ps.current_token.kind != .Right_Brace {
                 if ps.current_token.kind == .EOF {
-                    return nil, "Unexpected EOF in else statement"
+                    return nil, make_parse_error(ps, "Unexpected EOF in else statement")
                 }
                 stmt := parse_statement(ps, parent, allocator) or_return
                 append(&else_body, stmt)
@@ -492,7 +517,7 @@ parse_if_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := conte
     return if_node, nil
 }
 
-parse_len_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
+parse_len_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     span_start := ps.idx
     
     parser_advance(ps)
@@ -511,7 +536,7 @@ parse_len_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := cont
     return len_node, nil
 }
 
-parse_size_of_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
+parse_size_of_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     span_start := ps.idx
     
     parser_advance(ps)
@@ -530,7 +555,7 @@ parse_size_of_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := 
     return size_of_node, nil
 }
 
-parse_print_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
+parse_print_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     span_start := ps.idx
     
     parser_advance(ps)
@@ -549,16 +574,16 @@ parse_print_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := co
     return print_node, nil
 }
 
-parse_expression :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
+parse_expression :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     return parse_logical(ps, parent, allocator)
 }
 
-parse_logical :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
+parse_logical :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     left := parse_equality(ps, parent, allocator) or_return
     return left, nil
 }
 
-parse_equality :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
+parse_equality :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     left := parse_comparison(ps, parent, allocator) or_return
 
     for ps.current_token.kind == .Eq_Eq || ps.current_token.kind == .Not_Eq {
@@ -578,7 +603,7 @@ parse_equality :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.a
     return left, nil
 }
 
-parse_comparison :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
+parse_comparison :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     left := parse_cast(ps, parent, allocator) or_return
     
     for ps.current_token.kind == .Gt || ps.current_token.kind == .Gt_Eq || ps.current_token.kind == .Lt || ps.current_token.kind == .Lt_Eq {
@@ -597,7 +622,7 @@ parse_comparison :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context
     return left, nil
 }
 
-parse_cast :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
+parse_cast :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     left := parse_term(ps, parent, allocator) or_return
     
     if ps.current_token.kind == .KW_As {
@@ -615,7 +640,7 @@ parse_cast :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.alloc
     return left, nil
 }
 
-parse_term :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
+parse_term :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     left := parse_factor(ps, parent, allocator) or_return
     for ps.current_token.kind == .Plus || ps.current_token.kind == .Minus {
         op := ps.current_token
@@ -633,7 +658,7 @@ parse_term :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.alloc
     return left, nil
 }
 
-parse_factor :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
+parse_factor :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     left := parse_unary(ps, parent, allocator) or_return
     for ps.current_token.kind == .Star || ps.current_token.kind == .Slash || ps.current_token.kind == .Percent {
         op := ps.current_token
@@ -651,7 +676,7 @@ parse_factor :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.all
     return left, nil
 }
 
-parse_unary :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
+parse_unary :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     if ps.current_token.kind == .Minus || ps.current_token.kind == .Plus || ps.current_token.kind == .Amp || ps.current_token.kind == .Star {
         op_idx := ps.idx
         op := ps.current_token
@@ -705,7 +730,7 @@ parse_unary :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allo
     return parse_postfix(ps, parent, allocator)
 }
 
-parse_postfix :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res:^Node, err:Parse_Error) {
+parse_postfix :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res:^Node, err:Maybe(Parse_Error)) {
     left := parse_primary(ps, parent, allocator) or_return
     
     for {
@@ -740,7 +765,7 @@ parse_postfix :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
             parser_advance(ps) // eat '.'
             
             if ps.current_token.kind != .Iden {
-                return nil, "Expected field name after '.'"
+                return nil, make_parse_error(ps, "Expected field name after '.'")
             }
             
             field_name := ps.current_token.source
@@ -780,7 +805,7 @@ parse_postfix :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
     }
 }
 
-parse_primary :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
+parse_primary :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     span_start := ps.idx        
     #partial switch ps.current_token.kind {
     case .Left_Paren: // Parenthesized expression
@@ -803,12 +828,11 @@ parse_primary :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
     case .Lit_Nil: return parse_literal_nil(ps, parent, allocator)
     case .KW_Arr: return parse_literal_array(ps, parent, allocator)
     case:
-        fmt.println(ps.current_token)
-        return nil, fmt.tprintf("Expected expression at position %d, got %v", ps.idx, ps.current_token.kind)
+        return nil, make_parse_error(ps, fmt.tprintf("Expected expression at position %d, got %v", ps.idx, ps.current_token.kind))
     }
 }
 
-parse_identifier :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
+parse_identifier :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     span_start := ps.idx
     name := ps.current_token.source
     
@@ -838,7 +862,7 @@ parse_identifier :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context
     return iden_node, nil
 }
 
-parse_struct_literal :: proc(ps: ^Parsing_State, type_name: string, parent: ^Node, allocator := context.allocator) -> (res:^Node, err:Parse_Error) {
+parse_struct_literal :: proc(ps: ^Parsing_State, type_name: string, parent: ^Node, allocator := context.allocator) -> (res:^Node, err:Maybe(Parse_Error)) {
     span_start := ps.idx - 1
     parser_consume(ps, .Left_Brace) or_return
     
@@ -846,10 +870,10 @@ parse_struct_literal :: proc(ps: ^Parsing_State, type_name: string, parent: ^Nod
     
     for ps.current_token.kind != .Right_Brace {
         if ps.current_token.kind == .EOF {
-            return nil, "Unexpected EOF in struct literal"
+            return nil, make_parse_error(ps, "Unexpected EOF in struct literal")
         }
         
-        if ps.current_token.kind != .Iden do return nil, "Expected field name"
+        if ps.current_token.kind != .Iden do return nil, make_parse_error(ps, "Expected field name")
         
         field_name := ps.current_token.source
         parser_advance(ps)
@@ -862,7 +886,7 @@ parse_struct_literal :: proc(ps: ^Parsing_State, type_name: string, parent: ^Nod
         if ps.current_token.kind == .Comma {
             parser_advance(ps)
         } else if ps.current_token.kind != .Right_Brace {
-            return nil, "Expected ',' or '}' in struct literal"
+            return nil, make_parse_error(ps, "Expected ',' or '}' in struct literal")
         }
     }
     
@@ -880,7 +904,7 @@ parse_struct_literal :: proc(ps: ^Parsing_State, type_name: string, parent: ^Nod
     return struct_node, nil
 }
 
-parse_literal_number :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
+parse_literal_number :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     span_start := ps.idx
     tok := ps.current_token
     
@@ -895,7 +919,7 @@ parse_literal_number :: proc(ps: ^Parsing_State, parent: ^Node, allocator := con
     return lit_node, nil
 }
 
-parse_literal_string :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
+parse_literal_string :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     span_start := ps.idx
     tok := ps.current_token
     
@@ -910,7 +934,7 @@ parse_literal_string :: proc(ps: ^Parsing_State, parent: ^Node, allocator := con
     return lit_node, nil
 }
 
-parse_literal_nil :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
+parse_literal_nil :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     span_start := ps.idx
     
     lit_node := new(Node, allocator)
@@ -924,7 +948,7 @@ parse_literal_nil :: proc(ps: ^Parsing_State, parent: ^Node, allocator := contex
     return lit_node, nil
 }
 
-parse_fn_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
+parse_fn_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     span_start := ps.idx
     
     parser_advance(ps)
@@ -959,7 +983,7 @@ parse_fn_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.all
 
         parser_consume(ps, .Right_Paren) or_return
     } else {
-        return nil, fmt.tprintfln("Expected ')' or identifier for parameter(s), found %v", ps.current_token.source)
+        return nil, make_parse_error(ps, fmt.tprintfln("Expected ')' or identifier for parameter(s), found %v", ps.current_token.source))
     }
 
     // Return type
@@ -983,7 +1007,7 @@ parse_fn_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.all
         parser_consume(ps, .Left_Brace) or_return
         for ps.current_token.kind != .Right_Brace {
             if ps.current_token.kind == .EOF {
-                return nil, fmt.tprintf("Unexpected EOF in function body starting at position %d", span_start)
+                return nil, make_parse_error(ps, fmt.tprintf("Unexpected EOF in function body starting at position %d", span_start))
             }
             stmt := parse_statement(ps, fn_node, allocator) or_return
             append(&stmts, stmt)
@@ -1000,7 +1024,7 @@ parse_fn_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.all
     return fn_node, nil
 }
 
-parse_return_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
+parse_return_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     span_start := ps.idx
     parser_advance(ps)
     
@@ -1020,7 +1044,7 @@ parse_return_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := c
     return ret_node, nil
 }
 
-parse_literal_array :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res:^Node, err:Parse_Error) {
+parse_literal_array :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res:^Node, err:Maybe(Parse_Error)) {
     span_start := ps.idx
     
     parser_advance(ps) // eat 'arr'
@@ -1033,7 +1057,7 @@ parse_literal_array :: proc(ps: ^Parsing_State, parent: ^Node, allocator := cont
     
     // Parse size (must be literal number)
     if ps.current_token.kind != .Lit_Number {
-        return nil, "Array size must be a number literal"
+        return nil, make_parse_error(ps, "Array size must be a number literal")
     }
     size_str := ps.current_token.source
     size := strconv.atoi(size_str)  // You'll need core:strconv
@@ -1051,7 +1075,7 @@ parse_literal_array :: proc(ps: ^Parsing_State, parent: ^Node, allocator := cont
         if ps.current_token.kind == .Comma {
             parser_advance(ps)
         } else if ps.current_token.kind != .Right_Brace {
-            return nil, "Expected ',' or '}' in array literal"
+            return nil, make_parse_error(ps, "Expected ',' or '}' in array literal")
         }
     }
     
@@ -1070,13 +1094,13 @@ parse_literal_array :: proc(ps: ^Parsing_State, parent: ^Node, allocator := cont
     return arr_node, nil
 }
 
-parse_for_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res:^Node, err:Parse_Error) {
+parse_for_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res:^Node, err:Maybe(Parse_Error)) {
     span_start := ps.idx
     parser_advance(ps) // eat 'for'
     
     // Parse first identifier
     if ps.current_token.kind != .Iden {
-        return nil, "Expected identifier after 'for'"
+        return nil, make_parse_error(ps, "Expected identifier after 'for'")
     }
     
     // Lookahead to determine which type of for loop
@@ -1094,7 +1118,7 @@ parse_for_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := cont
         body := make([dynamic]^Node, allocator)
         for ps.current_token.kind != .Right_Brace {
             if ps.current_token.kind == .EOF {
-                return nil, "Unexpected EOF in for statement"
+                return nil, make_parse_error(ps, "Unexpected EOF in for statement")
             }
             stmt := parse_statement(ps, parent, allocator) or_return
             append(&body, stmt)
@@ -1126,7 +1150,7 @@ parse_for_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := cont
     body := make([dynamic]^Node, allocator)
     for ps.current_token.kind != .Right_Brace {
         if ps.current_token.kind == .EOF {
-            return nil, "Unexpected EOF in for statement"
+            return nil, make_parse_error(ps, "Unexpected EOF in for statement")
         }
         stmt := parse_statement(ps, parent, allocator) or_return
         append(&body, stmt)
@@ -1146,7 +1170,7 @@ parse_for_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := cont
     }, allocator), nil
 }
 
-parse_type :: proc(ps: ^Parsing_State, allocator: mem.Allocator) -> (res:Type_Info, err:Parse_Error) {
+parse_type :: proc(ps: ^Parsing_State, allocator: mem.Allocator) -> (res:Type_Info, err:Maybe(Parse_Error)) {
     // Pointer type
     if ps.current_token.kind == .Star {
         parser_advance(ps)
@@ -1166,7 +1190,7 @@ parse_type :: proc(ps: ^Parsing_State, allocator: mem.Allocator) -> (res:Type_In
         parser_consume(ps, .Comma) or_return
         
         if ps.current_token.kind != .Lit_Number {
-            return nil, "Array size must be an integer and known at compile-time"
+            return nil, make_parse_error(ps, "Array size must be an integer and known at compile-time")
         }
         size_str := ps.current_token.source
         size := strconv.atoi(size_str)
@@ -1187,12 +1211,12 @@ parse_type :: proc(ps: ^Parsing_State, allocator: mem.Allocator) -> (res:Type_In
         
         for ps.current_token.kind != .Right_Brace {
             if ps.current_token.kind == .EOF {
-                return nil, "Unexpected EOF in struct definition"
+                return nil, make_parse_error(ps, "Unexpected EOF in struct definition")
             }
             
             // Parse field name
             if ps.current_token.kind != .Iden {
-                return nil, "Expected field name"
+                return nil, make_parse_error(ps, "Expected field name")
             }
             field_name := ps.current_token.source
             parser_advance(ps)
@@ -1224,7 +1248,7 @@ parse_type :: proc(ps: ^Parsing_State, allocator: mem.Allocator) -> (res:Type_In
         if ps.current_token.kind == .Dot {
             parser_advance(ps) // eat '.'
             if ps.current_token.kind != .Iden {
-                return nil, "Expected type name after '.'"
+                return nil, make_parse_error(ps, "Expected type name after '.'")
             }
             // Construct qualified name as "pkg.Type"
             type_name = fmt.tprintf("%s.%s", type_name, ps.current_token.source)
@@ -1255,7 +1279,7 @@ parse_type :: proc(ps: ^Parsing_State, allocator: mem.Allocator) -> (res:Type_In
             if ps.current_token.kind == .Comma {
                 parser_advance(ps)
             } else if ps.current_token.kind != .Right_Paren {
-                return nil, "Expected ',' or ')' in function type"
+                return nil, make_parse_error(ps, "Expected ',' or ')' in function type")
             }
         }
         parser_consume(ps, .Right_Paren) or_return
@@ -1269,7 +1293,7 @@ parse_type :: proc(ps: ^Parsing_State, allocator: mem.Allocator) -> (res:Type_In
         }, nil
     case: 
         fmt.println(ps.current_token)
-        return nil, fmt.tprintf("Expected type at position %d, got %v", ps.idx, ps.current_token.kind)
+        return nil, make_parse_error(ps, fmt.tprintf("Expected type at position %d, got %v", ps.idx, ps.current_token.kind))
     }
     // TODO(Aria): function type and other types parsing
 
