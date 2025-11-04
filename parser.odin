@@ -1,5 +1,8 @@
 package main
 
+import "core:os"
+import "core:path/filepath"
+import "core:strings"
 import "core:mem"
 import "core:strconv"
 import "core:fmt"
@@ -18,6 +21,7 @@ Node_Kind :: enum {
     For_C,
     Identifier,
     If,
+    Import,
     Index,
     Len,
     Literal_Arr,
@@ -93,6 +97,7 @@ Node_For_C          :: struct { init: ^Node, condition: ^Node, post: ^Node, body
 Node_For_In         :: struct { iterator: string, iterable: ^Node, body: [dynamic]^Node }
 Node_Identifier     :: struct { name:string }
 Node_If             :: struct { condition: ^Node, if_body: [dynamic]^Node, else_body: [dynamic]^Node }
+Node_Import         :: struct { path: string, alias: Maybe(string) }
 Node_Index          :: struct { object, index: ^Node }
 Node_Len            :: struct { value: ^Node }
 Node_Literal_Number :: struct { content: Token }
@@ -125,6 +130,7 @@ Node :: struct {
         Node_For_C,
         Node_For_In,
         Node_Identifier,
+        Node_Import,
         Node_Index,
         Node_If,
         Node_Len,
@@ -171,6 +177,78 @@ parser_consume :: proc(ps: ^Parsing_State, expected: Token_Kind) -> Parse_Error 
     return nil
 }
 
+parse_project :: proc(entry_package_dir: string, arena_lexer, arena_parser: mem.Allocator) -> (asts: map[string]^Node, err: Parse_Error) {
+    asts = make(map[string]^Node, arena_parser)
+    visited_packages := make(map[string]bool, arena_parser)
+    packages_to_parse := make([dynamic]string, arena_parser)
+    
+    append(&packages_to_parse, entry_package_dir)
+    
+    for len(packages_to_parse) > 0 {
+        pkg_dir := pop(&packages_to_parse)
+        if pkg_dir in visited_packages do continue
+        visited_packages[pkg_dir] = true
+        
+        // Find all .qoz files in this directory
+        qoz_files := find_qoz_files_in_dir(pkg_dir, arena_parser) or_return
+        
+        // Parse all files in the package
+        for file_path in qoz_files {
+            source, read_ok := os.read_entire_file(file_path, arena_parser)
+            if !read_ok {
+                return nil, fmt.tprintf("Failed to read file: %s", file_path)
+            }
+            
+            tokens, err_tokenize := tokenize(string(source), arena_lexer)
+            if err_tokenize != nil do return nil, err_tokenize.(string)
+
+            ast := parse(tokens, arena_parser) or_return
+            asts[file_path] = ast
+            
+            // Extract imports and add packages to queue
+            if ast.node_kind == .Program {
+                for stmt in ast.payload.(Node_Statement_List).nodes {
+                    if stmt.node_kind == .Import {
+                        import_node := stmt.payload.(Node_Import)
+                        // Resolve import path relative to pkg_dir
+                        imported_pkg := resolve_package_path(pkg_dir, import_node.path)
+                        append(&packages_to_parse, imported_pkg)
+                    }
+                }
+            }
+        }
+    }
+    
+    return asts, nil
+}
+
+find_qoz_files_in_dir :: proc(dir: string, allocator := context.allocator) -> (files: []string, err: Parse_Error) {
+    handle, open_err := os.open(dir)
+    if open_err != 0 {
+        return nil, fmt.tprintf("Failed to open directory: %s", dir)
+    }
+    defer os.close(handle)
+    
+    file_infos, read_err := os.read_dir(handle, -1, allocator)
+    if read_err != 0 {
+        return nil, fmt.tprintf("Failed to read directory: %s", dir)
+    }
+    
+    result := make([dynamic]string, allocator)
+    for info in file_infos {
+        if !info.is_dir && strings.has_suffix(info.name, ".qoz") {
+            full_path := filepath.join({dir, info.name}, allocator)
+            append(&result, full_path)
+        }
+    }
+    
+    return result[:], nil
+}
+
+resolve_package_path :: proc(current_pkg_dir: string, import_path: string) -> string {
+    return filepath.clean(filepath.join({current_pkg_dir, import_path}, context.temp_allocator), context.temp_allocator)
+}
+
 parse :: proc(tokens: [dynamic]Token, allocator := context.allocator, loc:=#caller_location) -> (res: ^Node, err: Parse_Error) {
     ps := Parsing_State {
         tokens = tokens,
@@ -195,6 +273,33 @@ parse :: proc(tokens: [dynamic]Token, allocator := context.allocator, loc:=#call
 
 parse_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
     #partial switch ps.current_token.kind {
+    case .KW_Import:
+        span_start := ps.idx
+        parser_advance(ps) // eat 'import'
+        
+        alias: Maybe(string)
+        if ps.current_token.kind == .Iden {
+            alias = ps.current_token.source
+            parser_advance(ps)
+        }
+        
+        if ps.current_token.kind != .Lit_String {
+            return nil, fmt.tprintf("Expected import path (string), got %v", ps.current_token.kind)
+        }
+        
+        path := strings.trim(ps.current_token.source, "\"")
+        parser_advance(ps)
+        
+        return new_clone(Node{
+            node_kind = .Import,
+            parent = parent,
+            span = Span{start = span_start, end = ps.idx - 1},
+            payload = Node_Import{
+                path = path,
+                alias = alias,
+            },
+        }, allocator), nil
+
     case .Iden: 
         next_tok := ps.tokens[ps.idx + 1].kind
         if next_tok == .Assign || next_tok == .Colon {
@@ -1057,9 +1162,6 @@ parse_type :: proc(ps: ^Parsing_State, allocator: mem.Allocator) -> (res:Type_In
     case .KW_I64: prim = .I64
     case .KW_F32: prim = .F32
     case .KW_F64: prim = .F64
-    // case .KW_String: 
-    //     parser_advance(ps)
-    //     return String_Type{}, nil
     case .KW_Fn:
         parser_advance(ps)
         parser_consume(ps, .Left_Paren) or_return

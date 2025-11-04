@@ -1,14 +1,14 @@
 package main
 
+import "core:path/filepath"
 import "core:os/os2"
 import "core:mem"
 import vmem "core:mem/virtual"
 import "core:fmt"
 import "core:os"
 
+
 main :: proc() {
-	// NOTE(Aria): in case of my potential fuckups for not specifying arena allocator
-	// for some sections and using default allocator instead
 	when ODIN_DEBUG {
 		track: mem.Tracking_Allocator
 		mem.tracking_allocator_init(&track, context.allocator)
@@ -45,33 +45,49 @@ main :: proc() {
 	ensure(err_alloc_semantic == nil)
 	arena_semantic := vmem.arena_allocator(&alloc_semantic)
 
+	ensure(len(os.args) == 2, "specify entry package directory as the first positional argument")
+	entry_dir := os.args[1]
 
-	ensure(len(os.args) == 2, "specify source name as the first positional argument")
-	file_name := os.args[1]
-
-	source_bytes, ok := os.read_entire_file(file_name, context.temp_allocator)
-	ensure(ok, fmt.tprintfln("cannot open %s", file_name))
-	source := string(source_bytes)
-
-    tokens, err_tokenize := tokenize(source, arena_lexer)
-	ensure(err_tokenize == nil, fmt.tprint(err_tokenize))
-
-    root, err_parse := parse(tokens, arena_parser)
+	// Parse entire project (all packages)
+	asts, err_parse := parse_project(entry_dir, arena_lexer, arena_parser)
 	ensure(err_parse == nil, fmt.tprint(err_parse))
+	
+	fmt.printfln("Parsed %d files", len(asts))
 
-    ctx_sem := semantic_analyze(root, arena_semantic)
+	packages, err_deps := build_dependency_graph(asts, context.temp_allocator)
+	ensure(err_deps == nil, fmt.tprint(err_deps))
+
+	sorted_packages, err_sort := topological_sort_packages(packages, context.temp_allocator)
+	ensure(err_sort == nil, fmt.tprint(err_sort))
+
+	fmt.printfln("Package processing order: %v", sorted_packages)
+
+
+	// Multi-file semantic analysis
+	entry_package_asts := make([dynamic]^Node, context.temp_allocator)
+	for file_path, ast in asts {
+		file_dir := filepath.dir(file_path, context.temp_allocator)
+		if file_dir == entry_dir {
+			append(&entry_package_asts, ast)
+		}
+	}
+
+	ensure(len(entry_package_asts) > 0, "No files in entry package")
+	root := entry_package_asts[0]
+	ctx_sem := semantic_analyze_project(asts, sorted_packages, entry_dir, arena_semantic)
+
 
 	if len(ctx_sem.errors) > 0 {
+		// TODO: Need to map errors back to files
 		for err in ctx_sem.errors {
-			tok := tokens[err.span.start]
-			fmt.eprintfln("[%d:%d] %s", tok.line, tok.column, err.message)
+			fmt.eprintfln("[%d:%d] %s", err.span.start, err.span.end, err.message)
 		}
 		os.exit(1)
 	}
 
 	fmt.println("Semantic analysis passed")
 
-	c_code, _ := codegen(root, &ctx_sem, context.temp_allocator)
+	c_code, _ := codegen(asts, sorted_packages, &ctx_sem, context.temp_allocator)
 
 	fmt.println(c_code)
 	

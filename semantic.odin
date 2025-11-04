@@ -1,11 +1,14 @@
 package main 
 
+import "core:path/filepath"
 import "core:fmt"
 import "core:mem"
 
 Symbol :: struct {
-    name: string,
-    type: Type_Info,
+    name:       string,
+    type:       Type_Info,
+    defined_at: Span,
+    pkg_dir:    string,
 }
 
 Scope :: struct {
@@ -18,6 +21,11 @@ Semantic_Error :: struct {
     span: Span,
 }
 
+Package_Symbols :: struct {
+    symbols: map[string]Symbol,
+    scope: ^Scope,
+}
+
 Semantic_Context :: struct {
     current_scope: ^Scope,
     errors: [dynamic]Semantic_Error,
@@ -25,7 +33,11 @@ Semantic_Context :: struct {
     current_function_return_type: Maybe(Type_Info),
     current_struct_name: Maybe(string), 
     external_functions: map[string]bool,
-    global_symbols: map[string]bool
+    global_symbols: map[string]bool,
+
+    packages: map[string]Package_Symbols, // package_dir -> symbols
+    current_package: string,              // Which package we're analyzing
+    import_aliases: map[string]string,    // alias -> package_dir
 }
 
 semantic_push_scope :: proc(ctx: ^Semantic_Context) {
@@ -41,13 +53,13 @@ semantic_pop_scope :: proc(ctx: ^Semantic_Context) {
     delete(old.symbols)
 }
 
-semantic_define_symbol :: proc(ctx: ^Semantic_Context, name: string, type: Type_Info, span: Span) -> bool {
+semantic_define_symbol :: proc(ctx: ^Semantic_Context, name: string, type: Type_Info, span: Span, pkg_dir := "") -> bool {
     scope := ctx.current_scope
     if name in ctx.current_scope.symbols {
         add_error(ctx, span, "Symbol '%s' already defined in this scope", name)
         return false
     }
-    ctx.current_scope.symbols[name] = Symbol { name=name, type=type }
+    ctx.current_scope.symbols[name] = Symbol { name=name, type=type, defined_at=span, pkg_dir=pkg_dir }
     if scope.parent == nil {
         ctx.global_symbols[name] = true
     }
@@ -65,28 +77,33 @@ semantic_lookup_symbol :: proc(ctx: ^Semantic_Context, name: string) -> (Symbol,
     return {}, false
 }
 
-semantic_analyze :: proc(root: ^Node, allocator := context.allocator) -> Semantic_Context {
-    ctx := Semantic_Context {
-        allocator=allocator,
-        errors=make([dynamic]Semantic_Error, allocator),
-        external_functions=make(map[string]bool, allocator),
-        global_symbols=make(map[string]bool, allocator),
+semantic_analyze_project :: proc(
+    asts: map[string]^Node,
+    sorted_packages: []string,
+    entry_package: string,
+    allocator := context.allocator
+) -> Semantic_Context {
+    ctx := Semantic_Context{
+        allocator = allocator,
+        errors = make([dynamic]Semantic_Error, allocator),
+        external_functions = make(map[string]bool, allocator),
+        global_symbols = make(map[string]bool, allocator),
+        packages = make(map[string]Package_Symbols, allocator),
+        import_aliases = make(map[string]string, allocator),
     }
 
     fields := make([dynamic]Struct_Field, allocator)
     i8_type: Type_Info = Primitive_Type.I8
     i8_ptr_type := Pointer_Type{pointee = new_clone(i8_type, allocator)}
     append_elems(&fields,
-        Struct_Field{name = "data", type = i8_ptr_type},  // Use directly, no &
+        Struct_Field{name = "data", type = i8_ptr_type},
         Struct_Field{name = "len", type = Primitive_Type.I64},
     )
-    string_struct := Struct_Type{
-        fields = fields,
-    }
-
+    string_struct := Struct_Type{fields = fields}
+    
     semantic_push_scope(&ctx)
     semantic_define_symbol(&ctx, "string", string_struct, Span{})
-    
+
     // Pass 1: Collect all top-level declarations
     // - Walks through global scope only (Program node and top-level Var_Defs)
     // - Registers all global symbols (functions, types, global variables) in symbol table
@@ -94,8 +111,25 @@ semantic_analyze :: proc(root: ^Node, allocator := context.allocator) -> Semanti
     // - Enables forward references: functions can call other functions defined later
     // - Does NOT recurse into function bodies, only collects their signatures
     // - After this pass, all global names are known and can be referenced
-    collect_declarations(&ctx, root)
-    
+    // Multi-package: processes all packages in dependency order
+    for pkg_dir in sorted_packages {
+        for file_path, ast in asts {
+            file_dir := filepath.dir(file_path, context.temp_allocator)
+            if file_dir == pkg_dir {
+                collect_declarations(&ctx, ast, pkg_dir)
+            }
+        }
+
+        // After collecting this package, save its symbols
+        pkg_symbols := make(map[string]Symbol, allocator)
+        for name, symbol in ctx.current_scope.symbols {
+            if symbol.pkg_dir == pkg_dir {
+                pkg_symbols[name] = symbol
+            }
+        }
+        ctx.packages[pkg_dir] = Package_Symbols{symbols = pkg_symbols}
+    }
+
     // Pass 2: Full semantic analysis and validation
     // - Performs complete type checking on all expressions and statements
     // - Analyzes function bodies, checking control flow and return types
@@ -106,18 +140,30 @@ semantic_analyze :: proc(root: ^Node, allocator := context.allocator) -> Semanti
     //   - Then validates the initializer, at which point the variable exists in scope
     // - Uses the global symbol table built in pass 1 for lookups
     // - Reports all semantic errors (type mismatches, undefined symbols, etc.)
-    check_node(&ctx, root)
+    // Multi-package: processes all packages in dependency order
+    for pkg_dir in sorted_packages {
+        for file_path, ast in asts {
+            file_dir := filepath.dir(file_path, context.temp_allocator)
+            if file_dir == pkg_dir {
+                check_node(&ctx, ast)
+            }
+        }
+    }
 
+    // Validate main exists in entry package
     main_span := Span{start = 0, end = 0}
     main_sym, has_main := ctx.current_scope.symbols["main"]
-
-    if root.node_kind == .Program {
-        for stmt in root.payload.(Node_Statement_List).nodes {
-            if stmt.node_kind == .Var_Def {
-                var_def := stmt.payload.(Node_Var_Def)
-                if var_def.name == "main" {
-                    main_span = stmt.span
-                    break
+    
+    for file_path, ast in asts {
+        file_dir := filepath.dir(file_path, context.temp_allocator)
+        if file_dir == entry_package && ast.node_kind == .Program {
+            for stmt in ast.payload.(Node_Statement_List).nodes {
+                if stmt.node_kind == .Var_Def {
+                    var_def := stmt.payload.(Node_Var_Def)
+                    if var_def.name == "main" {
+                        main_span = stmt.span
+                        break
+                    }
                 }
             }
         }
@@ -126,14 +172,14 @@ semantic_analyze :: proc(root: ^Node, allocator := context.allocator) -> Semanti
     if !has_main {
         append(&ctx.errors, Semantic_Error{
             message = "Program must define a 'main' function",
-            span = Span{start = 0, end = 0},  
+            span = Span{start = 0, end = 0},
         })
     } else {
         fn_type, is_fn := main_sym.type.(Function_Type)
         if !is_fn {
             append(&ctx.errors, Semantic_Error{
                 message = "'main' must be a function",
-                span = main_span,  
+                span = main_span,
             })
         } else {
             if len(fn_type.params) != 0 {
@@ -155,6 +201,7 @@ semantic_analyze :: proc(root: ^Node, allocator := context.allocator) -> Semanti
     return ctx
 }
 
+
 @(private="file")
 add_error :: proc(ctx: ^Semantic_Context, span: Span, format: string, args: ..any) {
     error := Semantic_Error {
@@ -165,15 +212,27 @@ add_error :: proc(ctx: ^Semantic_Context, span: Span, format: string, args: ..an
 }
 
 // Pass 1: Collect declarations without analyzing bodies
-collect_declarations :: proc(ctx: ^Semantic_Context, node: ^Node) {
+collect_declarations :: proc(ctx: ^Semantic_Context, node: ^Node, pkg_dir: string) {
     if node == nil do return
     
     #partial switch node.node_kind {
     case .Program:
         for stmt in node.payload.(Node_Statement_List).nodes {
-            collect_declarations(ctx, stmt)
+            collect_declarations(ctx, stmt, pkg_dir)
         }
     
+    case .Import: 
+        import_node := node.payload.(Node_Import)
+        alias: string
+        if import_alias, has_alias := import_node.alias.?; has_alias {
+            alias = import_alias
+        } else {
+            alias = filepath.base(import_node.path)
+        }
+
+        resolved_path := filepath.clean(filepath.join({pkg_dir, import_node.path}, context.temp_allocator), context.temp_allocator)
+        ctx.import_aliases[alias] = resolved_path 
+
     case .Var_Def:
         var_def := node.payload.(Node_Var_Def)
         
@@ -215,7 +274,7 @@ collect_declarations :: proc(ctx: ^Semantic_Context, node: ^Node) {
         }
         
         if type, ok := declared_type.?; ok {
-            semantic_define_symbol(ctx, var_def.name, type, node.span)
+            semantic_define_symbol(ctx, var_def.name, type, node.span, pkg_dir)
         }
     }
 }
@@ -225,6 +284,10 @@ check_node :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
     if node == nil do return Primitive_Type.Void
     
     #partial switch node.node_kind {
+    case .Import:
+        // Already processed during parse phase for dependency resolution
+        // Multi-package semantic analysis comes later
+        return Primitive_Type.Void
     case .Program: 
         for stmt in node.payload.(Node_Statement_List).nodes {
             check_node(ctx, stmt)
@@ -297,6 +360,24 @@ check_node :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
 
     case .Field_Access:
         field_access := node.payload.(Node_Field_Access)
+
+        // Check for qualified name (package.symbol)
+        if field_access.object.node_kind == .Identifier {
+            iden := field_access.object.payload.(Node_Identifier)
+            
+            // Is this a package alias?
+            if pkg_dir, is_pkg := ctx.import_aliases[iden.name]; is_pkg {
+                if pkg_info, has_pkg := ctx.packages[pkg_dir]; has_pkg {
+                    if symbol, found := pkg_info.symbols[field_access.field_name]; found {
+                        node.inferred_type = symbol.type
+                        return symbol.type
+                    }
+                }
+                add_error(ctx, node.span, "Package '%s' has no symbol '%s'", iden.name, field_access.field_name)
+                return Primitive_Type.Void
+            }
+        }
+
         object_type := check_node(ctx, field_access.object)
         
         actual_type := object_type

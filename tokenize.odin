@@ -14,10 +14,9 @@ Token_Kind :: enum {
     Lit_Number, Lit_String,
     KW_Fn, KW_External, KW_If, KW_Else, KW_Print, KW_Return, KW_As,
     KW_I8, KW_U8, KW_I32, KW_I64, KW_F32, KW_F64, KW_Void, 
-    // KW_String,
     KW_Arr, KW_Map, KW_For, KW_In, KW_Struct,
     KW_Size_Of, KW_Len,
-    Iden, EOF,
+    KW_Import, Iden, EOF,
 }
 
 Tokenize_Error :: union {
@@ -94,6 +93,7 @@ make_id_or_kw :: proc(t: ^Tokenizer) {
     tok_kind: Token_Kind
     
     switch tok_src {
+    case "import":   tok_kind = .KW_Import
     case "as":       tok_kind = .KW_As
     case "func":     tok_kind = .KW_Fn
     case "external": tok_kind = .KW_External
@@ -112,9 +112,7 @@ make_id_or_kw :: proc(t: ^Tokenizer) {
     case "void":     tok_kind = .KW_Void
     case "arr":      tok_kind = .KW_Arr
     case "struct":   tok_kind = .KW_Struct
-    // case "string":   tok_kind = .KW_String
     case "size_of":  tok_kind = .KW_Size_Of
-    // case "len":      tok_kind = .KW_Len
     case:            tok_kind = .Iden
     }
     

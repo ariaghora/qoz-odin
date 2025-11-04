@@ -1,5 +1,6 @@
 package main
 
+import "core:path/filepath"
 import "core:fmt"
 import "core:mem"
 import "core:strings"
@@ -11,6 +12,7 @@ Codegen_Context :: struct {
     func_nesting_depth: int, // TODO(Aria): track depth for lambda lifting
     loop_counter: int,
     in_for_header: bool, 
+    current_pkg_name: string,
 }
 
 MANGLE_PREFIX :: "qoz__"
@@ -25,7 +27,7 @@ mangle_name :: proc(name: string) -> string {
     return fmt.tprintf("%s%s", MANGLE_PREFIX, name)
 }
 
-codegen :: proc(root: ^Node, ctx_sem: ^Semantic_Context, allocator := context.allocator) -> (res: string, err: mem.Allocator_Error) {
+codegen :: proc(asts: map[string]^Node, sorted_packages: []string, ctx_sem: ^Semantic_Context, allocator := context.allocator) -> (res: string, err: mem.Allocator_Error) {
     sb := strings.builder_make(allocator) or_return
     ctx_cg := Codegen_Context { output_buf=sb, indent_level=0, ctx_sem=ctx_sem }
 
@@ -33,11 +35,29 @@ codegen :: proc(root: ^Node, ctx_sem: ^Semantic_Context, allocator := context.al
     strings.write_string(&ctx_cg.output_buf, "\n\n")
     strings.write_string(&ctx_cg.output_buf, "#include <stdio.h>\n")
 
-    // Pass 1: forward declaration
-    codegen_forward_decl(&ctx_cg, root)
+    // Pass 1: Forward declarations for ALL packages
+    for pkg_dir in sorted_packages {
+        ctx_cg.current_pkg_name = filepath.base(pkg_dir)
+        for file_path, ast in asts {
+            file_dir := filepath.dir(file_path, context.temp_allocator)
+            if file_dir == pkg_dir {
+                codegen_forward_decl(&ctx_cg, ast)
+            }
+        }
+    }
+    
     strings.write_string(&ctx_cg.output_buf, "\n")
-    // Pass 2: implementation
-    codegen_node(&ctx_cg, root)
+    
+    // Pass 2: Implementations for ALL packages
+    for pkg_dir in sorted_packages {
+        ctx_cg.current_pkg_name = filepath.base(pkg_dir)
+        for file_path, ast in asts {
+            file_dir := filepath.dir(file_path, context.temp_allocator)
+            if file_dir == pkg_dir {
+                codegen_node(&ctx_cg, ast)
+            }
+        }
+    }
 
     return strings.to_string(ctx_cg.output_buf), nil
 }
@@ -57,6 +77,7 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
             codegen_node(ctx_cg, stmt)
         }
 
+    case .Import: // NOTE(Aria): Imports are metadata for the compiler, no C code generated
     case .Expr_Statement:
         codegen_node(ctx_cg, node.payload.(Node_Expr_Statement).expr)
         strings.write_string(&ctx_cg.output_buf, ";\n")
@@ -95,6 +116,26 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
 
     case .Field_Access:
         field_access := node.payload.(Node_Field_Access)
+        
+            
+        // Check if this is a qualified name (package.symbol)
+        if field_access.object.node_kind == .Identifier {
+            iden := field_access.object.payload.(Node_Identifier)
+            // Check if this identifier is a package alias
+            if pkg_dir, is_pkg := ctx_cg.ctx_sem.import_aliases[iden.name]; is_pkg {
+                // Get actual package name from directory path
+                actual_pkg_name := filepath.base(pkg_dir)  
+                symbol_name := field_access.field_name
+                
+                if symbol_name == "main" || symbol_name in ctx_cg.ctx_sem.external_functions {
+                    strings.write_string(&ctx_cg.output_buf, symbol_name)
+                } else {
+                    fmt.sbprintf(&ctx_cg.output_buf, "%s%s__%s", MANGLE_PREFIX, actual_pkg_name, symbol_name)
+                }
+                return
+            }
+        }
+
         object_type := field_access.object.inferred_type.? or_else panic("Internal error: type not annotated")
 
         // Resolve Named_Type if needed
@@ -565,7 +606,12 @@ codegen_func_signature :: proc(ctx_cg: ^Codegen_Context, fn_name: string, node: 
     if node.is_external {
         strings.write_string(&ctx_cg.output_buf, fn_name)
     } else {
-        fmt.sbprintf(&ctx_cg.output_buf, "%s%s", MANGLE_PREFIX, fn_name)
+        // Use current package name from context
+        if ctx_cg.current_pkg_name != "" {
+            fmt.sbprintf(&ctx_cg.output_buf, "%s%s__%s", MANGLE_PREFIX, ctx_cg.current_pkg_name, fn_name)
+        } else {
+            fmt.sbprintf(&ctx_cg.output_buf, "%s%s", MANGLE_PREFIX, fn_name)
+        }
     }
 
     strings.write_string(&ctx_cg.output_buf, "(")
