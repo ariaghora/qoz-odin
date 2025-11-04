@@ -165,6 +165,7 @@ semantic_analyze_project :: proc(
     for pkg_dir in sorted_packages {
         pkg_scope := new(Scope, allocator)
         pkg_scope.symbols = make(map[string]Symbol, allocator)
+        pkg_scope.parent = ctx.current_scope  // Link to global scope so builtins are accessible
         
         // Temporarily make this the current scope
         old_scope := ctx.current_scope
@@ -195,17 +196,31 @@ semantic_analyze_project :: proc(
     // - Reports all semantic errors (type mismatches, undefined symbols, etc.)
     // Multi-package: processes all packages in dependency order
     for pkg_dir in sorted_packages {
-        for file_path, ast in asts {
-            file_dir := filepath.dir(file_path, context.temp_allocator)
-            if file_dir == pkg_dir {
-                check_node(&ctx, ast)
+        // Get the package scope that was created in Pass 1
+        if pkg_info, ok := ctx.packages[pkg_dir]; ok {
+            pkg_scope := new(Scope, allocator)
+            pkg_scope.symbols = pkg_info.symbols
+            pkg_scope.parent = ctx.current_scope  // Link to global scope for builtins
+            
+            old_scope := ctx.current_scope
+            ctx.current_scope = pkg_scope
+            ctx.current_package = pkg_dir
+            
+            for file_path, ast in asts {
+                file_dir := filepath.dir(file_path, context.temp_allocator)
+                if file_dir == pkg_dir {
+                    check_node(&ctx, ast)
+                }
             }
+            
+            ctx.current_scope = old_scope
         }
     }
 
     // Validate main exists in entry package
     main_span := Span{start = 0, end = 0}
-    main_sym, has_main := ctx.current_scope.symbols["main"]
+    entry_pkg_info, has_entry_pkg := ctx.packages[entry_package]
+    main_sym, has_main := entry_pkg_info.symbols["main"]
     
     for file_path, ast in asts {
         file_dir := filepath.dir(file_path, context.temp_allocator)
@@ -222,7 +237,7 @@ semantic_analyze_project :: proc(
         }
     }
 
-    if !has_main {
+    if !has_entry_pkg || !has_main {
         append(&ctx.errors, Semantic_Error{
             message = "Program must define a 'main' function",
             span = Span{start = 0, end = 0},
@@ -365,17 +380,12 @@ collect_declarations :: proc(ctx: ^Semantic_Context, node: ^Node, pkg_dir, proje
             fn_def := var_def.content.payload.(Node_Fn_Def)
             param_types := make([]Type_Info, len(fn_def.params), ctx.allocator)
             for param, i in fn_def.params {
-                // Qualify parameter types with package name if needed
-                qualified_param_type := qualify_type(ctx, param.type, pkg_name, ctx.allocator)
-                param_types[i] = qualified_param_type
+                param_types[i] = param.type
             }
-            // Qualify return type
-            qualified_return := qualify_type(ctx, fn_def.return_type, pkg_name, ctx.allocator)
             declared_type = Function_Type{
                 params = param_types,
-                return_type = new_clone(qualified_return, ctx.allocator),
+                return_type = new_clone(fn_def.return_type, ctx.allocator),
             }
-            // Store qualified type in the node for codegen
             var_def.content.inferred_type = declared_type
         
         case .Type_Expr:
@@ -564,8 +574,11 @@ check_node :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
             if pkg_dir, is_pkg := ctx.import_aliases[iden.name]; is_pkg {
                 if pkg_info, has_pkg := ctx.packages[pkg_dir]; has_pkg {
                     if symbol, found := pkg_info.symbols[field_access.field_name]; found {
-                        node.inferred_type = symbol.type
-                        return symbol.type
+                        // Qualify the type with the package name since it's from another package
+                        pkg_name := filepath.base(pkg_dir)
+                        qualified_type := qualify_type(ctx, symbol.type, pkg_name, ctx.allocator)
+                        node.inferred_type = qualified_type
+                        return qualified_type
                     }
                 }
                 add_error(ctx, node.span, "Package '%s' has no symbol '%s'", iden.name, field_access.field_name)

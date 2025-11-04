@@ -386,15 +386,29 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
             strings.write_string(&ctx_cg.output_buf, iden.name)
             return
         }
-        // 2) Only mangle if it's from global scope (scope 0)
-        if iden.name in ctx_cg.ctx_sem.global_symbols {
-            // Look up the symbol to get its package info
-            sym, found := semantic_lookup_symbol(ctx_cg.ctx_sem, iden.name)
-            pkg_name := ctx_cg.current_pkg_name  // Default to current package
-            if found && sym.pkg_dir != "" {
-                // Use the symbol's package if available
-                pkg_name = filepath.base(sym.pkg_dir)
+        
+        // 2) Check if it's a package-level symbol (needs mangling)
+        // Look in current package's symbols
+        pkg_dir := ""
+        for dir, pkg_info in ctx_cg.ctx_sem.packages {
+            if filepath.base(dir) == ctx_cg.current_pkg_name {
+                pkg_dir = dir
+                break
             }
+        }
+        
+        is_package_symbol := false
+        if pkg_dir != "" {
+            if pkg_info, ok := ctx_cg.ctx_sem.packages[pkg_dir]; ok {
+                if _, found := pkg_info.symbols[iden.name]; found {
+                    is_package_symbol = true
+                }
+            }
+        }
+        
+        if is_package_symbol || iden.name in ctx_cg.ctx_sem.global_symbols {
+            // Mangle with package name
+            pkg_name := ctx_cg.current_pkg_name
             fmt.sbprintf(&ctx_cg.output_buf, "%s%s__%s", MANGLE_PREFIX, pkg_name, iden.name)
             return
         }

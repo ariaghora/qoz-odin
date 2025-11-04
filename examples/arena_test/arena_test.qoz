@@ -12,14 +12,10 @@ main := func() {
 	greeting := str.string_concat(word1, word2, alloc)
 	print(greeting)
 
-	// Arena doesn't free individual allocations, but we can reset it
-	// mem.arena_reset(&arena)
+    word3 := "Works "
+    word4 := "perfectly!"
+    message := str.string_concat(word3, word4, alloc)
+    print(message)
 
-	// Allocate again after reset
-	// word3 := "Works "
-	// word4 := "perfectly!"
-	// message := str.string_concat(word3, word4, alloc)
-	// print(message)
-
-	// mem.arena_free(&arena)
+	mem.arena_free(&arena)
 }
