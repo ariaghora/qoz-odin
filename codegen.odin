@@ -657,33 +657,45 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         }
     
     case .Del:
-        // del(ptr, allocator) - for now just call free on the pointer
-        // TODO: Use allocator's free function once we support function pointers in structs
         del_node := node.payload.(Node_Del)
         
         // Check what we're freeing
         ptr_type := del_node.pointer.inferred_type.? or_else Primitive_Type.Void
         
+        // Call allocator.free(allocator.data, ptr)
         #partial switch t in ptr_type {
         case Named_Type:
             if t.name == "string" {
                 // Free string's internal data
-                strings.write_string(&ctx_cg.output_buf, "free((void*)")
+                codegen_node(ctx_cg, del_node.allocator)
+                strings.write_string(&ctx_cg.output_buf, ".free(")
+                codegen_node(ctx_cg, del_node.allocator)
+                strings.write_string(&ctx_cg.output_buf, ".data, (void*)")
                 codegen_node(ctx_cg, del_node.pointer)
                 strings.write_string(&ctx_cg.output_buf, ".data);\n")
             }
         case Pointer_Type:
             // Direct pointer free
-            strings.write_string(&ctx_cg.output_buf, "free(")
+            codegen_node(ctx_cg, del_node.allocator)
+            strings.write_string(&ctx_cg.output_buf, ".free(")
+            codegen_node(ctx_cg, del_node.allocator)
+            strings.write_string(&ctx_cg.output_buf, ".data, ")
             codegen_node(ctx_cg, del_node.pointer)
             strings.write_string(&ctx_cg.output_buf, ");\n")
         case Array_Type:
-            // TODO: Free array elements if they contain pointers
-            strings.write_string(&ctx_cg.output_buf, "free(")
+            // Free array pointer
+            codegen_node(ctx_cg, del_node.allocator)
+            strings.write_string(&ctx_cg.output_buf, ".free(")
+            codegen_node(ctx_cg, del_node.allocator)
+            strings.write_string(&ctx_cg.output_buf, ".data, ")
             codegen_node(ctx_cg, del_node.pointer)
             strings.write_string(&ctx_cg.output_buf, ");\n")
         case:
-            strings.write_string(&ctx_cg.output_buf, "free(")
+            // Fallback - direct pointer free
+            codegen_node(ctx_cg, del_node.allocator)
+            strings.write_string(&ctx_cg.output_buf, ".free(")
+            codegen_node(ctx_cg, del_node.allocator)
+            strings.write_string(&ctx_cg.output_buf, ".data, ")
             codegen_node(ctx_cg, del_node.pointer)
             strings.write_string(&ctx_cg.output_buf, ");\n")
         }

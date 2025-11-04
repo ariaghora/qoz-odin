@@ -3,15 +3,21 @@ import "std:libc"
 Allocator := struct {
     data:  *void,
     alloc: func(*void, i64): *void,
+    free:  func(*void, *void): void,
 }
 
 default_alloc_proc := func(data: *void, size: i64): *void {
     return libc.malloc(size)
 }
 
+default_free_proc := func(data: *void, ptr: *void): void {
+    libc.free(ptr)
+}
+
 default_allocator := func(): Allocator {
     return Allocator{
         data: nil,
         alloc: default_alloc_proc,
+        free: default_free_proc,
     }
 }
