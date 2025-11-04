@@ -2,21 +2,19 @@ import "std:mem"
 import str "std:strings"
 
 main := func() {
-	arena := mem.arena_make(1024)
-	alloc := mem.arena_allocator(&arena)
+    arena := mem.arena_make(1024)
+    alloc := mem.arena_allocator(&arena)
 
-	// Use arena allocator for string concatenation
-	word1 := "Hello, "
-	word1 := "Hello, "
-	word2 := "Arena!"
-	word2 := "Arena!"
-	greeting := str.string_concat(word1, word2, alloc)
-	print(greeting)
+    // Use arena allocator for string concatenation
+    word1 := "Hello, "
+    word2 := "Arena!"
+    greeting := str.string_concat(word1, word2, alloc)
+    print(greeting)
 
     word3 := "Works "
     word4 := "perfectly!"
     message := str.string_concat(word3, word4, alloc)
     print(message)
 
-	mem.arena_free(&arena)
+    mem.arena_free(&arena)
 }

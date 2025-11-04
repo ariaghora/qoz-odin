@@ -234,8 +234,9 @@ resolve_import_path :: proc(current_file_dir: string, project_root: string, impo
     return filepath.clean(filepath.join({project_root, import_path}, context.temp_allocator))
 }
 
-parse_project :: proc(entry_package_dir: string, arena_lexer, arena_parser: mem.Allocator) -> (asts: map[string]^Node, err: Maybe(Parse_Error)) {
+parse_project :: proc(entry_package_dir: string, arena_lexer, arena_parser: mem.Allocator) -> (asts: map[string]^Node, tokens_map: map[string][dynamic]Token, err: Maybe(Parse_Error)) {
     asts = make(map[string]^Node, arena_parser)
+    tokens_map = make(map[string][dynamic]Token, arena_parser)
     visited_packages := make(map[string]bool, arena_parser)
     packages_to_parse := make([dynamic]string, arena_parser)
     
@@ -253,14 +254,15 @@ parse_project :: proc(entry_package_dir: string, arena_lexer, arena_parser: mem.
         for file_path in qoz_files {
             source, read_ok := os.read_entire_file(file_path, arena_parser)
             if !read_ok {
-                return nil, make_parse_error_simple(fmt.tprintf("Failed to read file: %s", file_path), file_path, 0, 0)
+                return nil, nil, make_parse_error_simple(fmt.tprintf("Failed to read file: %s", file_path), file_path, 0, 0)
             }
             
             tokens, err_tokenize := tokenize(string(source), arena_lexer)
-            if err_tokenize != nil do return nil, make_parse_error_simple(err_tokenize.(string), file_path, 0, 0)
+            if err_tokenize != nil do return nil, nil, make_parse_error_simple(err_tokenize.(string), file_path, 0, 0)
 
             ast := parse(tokens, file_path, arena_parser) or_return
             asts[file_path] = ast
+            tokens_map[file_path] = tokens
             
             // Extract imports and add packages to queue
             if ast.node_kind == .Program {
@@ -277,7 +279,7 @@ parse_project :: proc(entry_package_dir: string, arena_lexer, arena_parser: mem.
         }
     }
     
-    return asts, nil
+    return asts, tokens_map, nil
 }
 
 find_qoz_files_in_dir :: proc(dir: string, allocator := context.allocator) -> (files: []string, err: Maybe(Parse_Error)) {

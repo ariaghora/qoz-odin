@@ -49,7 +49,7 @@ main :: proc() {
 	entry_dir := os.args[1]
 
 	// Parse entire project (all packages)
-	asts, err_parse := parse_project(entry_dir, arena_lexer, arena_parser)
+	asts, tokens_map, err_parse := parse_project(entry_dir, arena_lexer, arena_parser)
 	if err_parse != nil {
 		parse_err := err_parse.(Parse_Error)
 		fmt.eprintfln("%s:%d:%d: %s", parse_err.file, parse_err.line, parse_err.column, parse_err.message)
@@ -86,7 +86,13 @@ main :: proc() {
 
 	if len(ctx_sem.errors) > 0 {
 		for err in ctx_sem.errors {
-			fmt.eprintfln("%s:[%d:%d] %s", err.file, err.span.start, err.span.end, err.message)
+			// Look up token to get actual line/column
+			if tokens, ok := tokens_map[err.file]; ok && err.span.start < len(tokens) {
+				tok := tokens[err.span.start]
+				fmt.eprintfln("%s:%d:%d: %s", err.file, tok.line, tok.column, err.message)
+			} else {
+				fmt.eprintfln("%s:[%d:%d] %s", err.file, err.span.start, err.span.end, err.message)
+			}
 		}
 		os.exit(1)
 	}
