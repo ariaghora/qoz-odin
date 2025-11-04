@@ -759,19 +759,21 @@ check_node :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
                 if explicit, has_explicit := var_def.explicit_type.?; has_explicit {
                     declared_type = explicit
                 } else {
-                    // Need to infer, call check_node but this might fail for self-ref
+                    // Infer type - check once and reuse
                     declared_type = check_node(ctx, var_def.content)
                 }
             }
             
-            // Define symbol BEFORE validating initializer contents
+            // Define symbol BEFORE validating initializer
             semantic_define_symbol(ctx, var_def.name, declared_type, node.span)
-            // Now validate the initializer and recurse the node_check
-            value_type := check_node(ctx, var_def.content)
             
-            if !types_compatible(declared_type, value_type) {
-                add_error(ctx, node.span, "Type mismatch: declared as %v but initialized with %v", 
-                    declared_type, value_type)
+            // Validate initializer (only if not already checked during inference)
+            if _, has_explicit := var_def.explicit_type.?; has_explicit {
+                value_type := check_node(ctx, var_def.content)
+                if !types_compatible(declared_type, value_type) {
+                    add_error(ctx, node.span, "Type mismatch: declared as %v but initialized with %v", 
+                        declared_type, value_type)
+                }
             }
             
             node.inferred_type = declared_type
