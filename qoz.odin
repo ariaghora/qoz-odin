@@ -6,6 +6,103 @@ import "core:mem"
 import vmem "core:mem/virtual"
 import "core:fmt"
 import "core:os"
+import "core:strings"
+
+Compiler_Options :: struct {
+	entry_dir:        string,
+	output_file:      string,
+	optimization:     string,  // "0", "1", "2", "3"
+	emit_c_only:      bool,
+	verbose:          bool,
+}
+
+print_parse_error :: proc(err: Parse_Error) {
+	fmt.eprintfln("%s:%d:%d: %s", err.file, err.line, err.column, err.message)
+}
+
+print_semantic_errors :: proc(errors: [dynamic]Semantic_Error, tokens_map: map[string][dynamic]Token) {
+	for err in errors {
+		if tokens, ok := tokens_map[err.file]; ok && err.span.start < len(tokens) {
+			tok := tokens[err.span.start]
+			fmt.eprintfln("%s:%d:%d: %s", err.file, tok.line, tok.column, err.message)
+		} else {
+			fmt.eprintfln("%s:[%d:%d] %s", err.file, err.span.start, err.span.end, err.message)
+		}
+	}
+}
+
+parse_cli_args :: proc() -> (Compiler_Options, bool) {
+	opts := Compiler_Options{
+		optimization = "3",
+	}
+
+	if len(os.args) < 2 {
+		print_usage()
+		return opts, false
+	}
+
+	i := 1
+	for i < len(os.args) {
+		arg := os.args[i]
+		
+		if arg == "-h" || arg == "--help" {
+			print_usage()
+			return opts, false
+		} else if arg == "--emit-c" {
+			opts.emit_c_only = true
+		} else if arg == "--verbose" || arg == "-v" {
+			opts.verbose = true
+		} else if arg == "-o" || arg == "--output" {
+			i += 1
+			if i >= len(os.args) {
+				fmt.eprintfln("Error: %s requires an argument", arg)
+				return opts, false
+			}
+			opts.output_file = os.args[i]
+		} else if strings.has_prefix(arg, "-O") {
+			opt_level := arg[2:]
+			if opt_level == "0" || opt_level == "1" || opt_level == "2" || opt_level == "3" {
+				opts.optimization = opt_level
+			} else {
+				fmt.eprintfln("Error: Invalid optimization level '%s'. Use -O0, -O1, -O2, or -O3", arg)
+				return opts, false
+			}
+		} else if !strings.has_prefix(arg, "-") {
+			// Positional argument - entry directory
+			opts.entry_dir = arg
+		} else {
+			fmt.eprintfln("Error: Unknown option '%s'", arg)
+			print_usage()
+			return opts, false
+		}
+		
+		i += 1
+	}
+
+	if opts.entry_dir == "" {
+		fmt.eprintfln("Error: No entry package directory specified")
+		print_usage()
+		return opts, false
+	}
+
+	// Set default output name to directory basename if not specified
+	if opts.output_file == "" {
+		opts.output_file = filepath.base(opts.entry_dir)
+	}
+
+	return opts, true
+}
+
+print_usage :: proc() {
+	fmt.eprintln("Usage: qoz [OPTIONS] <entry_package_dir>")
+	fmt.eprintln()
+	fmt.eprintln("Options:")
+	fmt.eprintln("  -o, --output <file>    Set output executable name (default: directory basename)")
+	fmt.eprintln("  -O0, -O1, -O2, -O3     Set optimization level (default: -O3)")
+	fmt.eprintln("  --emit-c               Generate C code and stop (don't compile)")
+	fmt.eprintln("  -v, --verbose          Print generated C code")
+	fmt.eprintln("  -h, --help             Show this help message")
+}
 
 
 main :: proc() {
@@ -31,6 +128,12 @@ main :: proc() {
 		}
 	}
 
+	// Parse command-line arguments
+	opts, ok := parse_cli_args()
+	if !ok {
+		os.exit(1)
+	}
+
 	alloc_lexer, alloc_parser, alloc_semantic: vmem.Arena
 
 	err_alloc_lexer := vmem.arena_init_growing(&alloc_lexer)
@@ -45,28 +148,22 @@ main :: proc() {
 	ensure(err_alloc_semantic == nil)
 	arena_semantic := vmem.arena_allocator(&alloc_semantic)
 
-	ensure(len(os.args) == 2, "specify entry package directory as the first positional argument")
-	entry_dir := os.args[1]
-
 	// Parse entire project (all packages)
-	asts, tokens_map, err_parse := parse_project(entry_dir, arena_lexer, arena_parser)
+	asts, tokens_map, err_parse := parse_project(opts.entry_dir, arena_lexer, arena_parser)
 	if err_parse != nil {
-		parse_err := err_parse.(Parse_Error)
-		fmt.eprintfln("%s:%d:%d: %s", parse_err.file, parse_err.line, parse_err.column, parse_err.message)
+		print_parse_error(err_parse.(Parse_Error))
 		os.exit(1)
 	}
 	
 	packages, err_deps := build_dependency_graph(asts, context.temp_allocator)
 	if err_deps != nil {
-		dep_err := err_deps.(Parse_Error)
-		fmt.eprintfln("%s:%d:%d: %s", dep_err.file, dep_err.line, dep_err.column, dep_err.message)
+		print_parse_error(err_deps.(Parse_Error))
 		os.exit(1)
 	}
 
 	sorted_packages, err_sort := topological_sort_packages(packages, context.temp_allocator)
 	if err_sort != nil {
-		sort_err := err_sort.(Parse_Error)
-		fmt.eprintfln("%s:%d:%d: %s", sort_err.file, sort_err.line, sort_err.column, sort_err.message)
+		print_parse_error(err_sort.(Parse_Error))
 		os.exit(1)
 	}
 
@@ -74,42 +171,47 @@ main :: proc() {
 	entry_package_asts := make([dynamic]^Node, context.temp_allocator)
 	for file_path, ast in asts {
 		file_dir := filepath.dir(file_path, context.temp_allocator)
-		if file_dir == entry_dir {
+		if file_dir == opts.entry_dir {
 			append(&entry_package_asts, ast)
 		}
 	}
 
 	ensure(len(entry_package_asts) > 0, "No files in entry package")
-	root := entry_package_asts[0]
-	ctx_sem := semantic_analyze_project(asts, sorted_packages, entry_dir, arena_semantic)
-
+	ctx_sem := semantic_analyze_project(asts, sorted_packages, opts.entry_dir, arena_semantic)
 
 	if len(ctx_sem.errors) > 0 {
-		for err in ctx_sem.errors {
-			// Look up token to get actual line/column
-			if tokens, ok := tokens_map[err.file]; ok && err.span.start < len(tokens) {
-				tok := tokens[err.span.start]
-				fmt.eprintfln("%s:%d:%d: %s", err.file, tok.line, tok.column, err.message)
-			} else {
-				fmt.eprintfln("%s:[%d:%d] %s", err.file, err.span.start, err.span.end, err.message)
-			}
-		}
+		print_semantic_errors(ctx_sem.errors, tokens_map)
 		os.exit(1)
 	}
 
-	fmt.println("Semantic analysis passed")
+	if opts.verbose {
+		fmt.println("Semantic analysis passed")
+	}
 
 	c_code, _ := codegen(asts, sorted_packages, &ctx_sem, context.temp_allocator)
 
-	fmt.println(c_code)
+	if opts.verbose || opts.emit_c_only {
+		fmt.println(c_code)
+	}
 	
-	output_file := "output.c"
-	os.write_entire_file(output_file, transmute([]byte)c_code) 
-	defer os.remove(output_file)
-	fmt.printfln("Generated C code written to %s", output_file)
+	output_c_file := fmt.tprintf("%s.c", opts.output_file)
+	os.write_entire_file(output_c_file, transmute([]byte)c_code)
+	
+	if opts.verbose {
+		fmt.printfln("Generated C code written to %s", output_c_file)
+	}
 
+	// If only emitting C, stop here
+	if opts.emit_c_only {
+		fmt.printfln("C code written to %s", output_c_file)
+		return
+	}
+	
+	defer os.remove(output_c_file)
+
+	opt_flag := fmt.tprintf("-O%s", opts.optimization)
 	state, stdout, stderr, err := os2.process_exec({
-		command = []string{"clang", "-std=c11", "-O3", "-o", "output", output_file},
+		command = []string{"clang", "-std=c11", opt_flag, "-o", opts.output_file, output_c_file},
 	}, context.temp_allocator)
 
 	if err != nil {
@@ -118,8 +220,10 @@ main :: proc() {
 	}
 
 	if state.exit_code == 0 {
-		fmt.println("Compilation successful")
-		fmt.println("Run: ./output")
+		if opts.verbose {
+			fmt.println("Compilation successful")
+		}
+		fmt.printfln("Compiled successfully: ./%s", opts.output_file)
 	} else {
 		fmt.eprintfln("Compilation failed with exit code %d", state.exit_code)
 		if len(stderr) > 0 {
