@@ -744,14 +744,26 @@ codegen_type :: proc(ctx_cg: ^Codegen_Context, type: Type_Info, name: string = "
     case Struct_Type:
         panic("Internal error: FIXME(Aria): Cannot inline anonymous struct type")
     case Named_Type:
-        // Special case for built-in string
+        // Check for builtin string type
         if t.name == "string" || t.name == "strings.string" {
             strings.write_string(&ctx_cg.output_buf, "Qoz_String")
-        } else {
-            // Replace dots with double underscores for qualified names (e.g., mem.Allocator -> mem__Allocator)
+            return
+        }
+        
+        // Check if type name contains a dot (qualified)
+        if strings.contains(t.name, ".") {
+            // Qualified name like "mem.Allocator" -> "qoz__mem__Allocator"
             mangled_name, _ := strings.replace_all(t.name, ".", "__", context.temp_allocator)
             strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX)
             strings.write_string(&ctx_cg.output_buf, mangled_name)
+        } else {
+            // Unqualified name like "Arena" -> qualify with current package
+            strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX)
+            if ctx_cg.current_pkg_name != "" {
+                strings.write_string(&ctx_cg.output_buf, ctx_cg.current_pkg_name)
+                strings.write_string(&ctx_cg.output_buf, "__")
+            }
+            strings.write_string(&ctx_cg.output_buf, t.name)
         }
     case: fmt.panicf("Internal error: cannot generate code for type %v", t)
     }
