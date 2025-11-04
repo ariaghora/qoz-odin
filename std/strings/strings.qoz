@@ -1,0 +1,11 @@
+import "std:libc"
+
+string_concat := func(a: string, b: string): string {
+    new_len := a.len + b.len
+    new_data := libc.malloc(new_len) as *i8
+    
+    libc.memcpy(new_data, a.data, a.len)
+    libc.memcpy(new_data + a.len, b.data, b.len)
+    
+    return string{data: new_data, len: new_len}
+}

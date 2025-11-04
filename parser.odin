@@ -177,6 +177,28 @@ parser_consume :: proc(ps: ^Parsing_State, expected: Token_Kind) -> Parse_Error 
     return nil
 }
 
+resolve_import_path :: proc(current_file_dir: string, project_root: string, import_path: string) -> string {
+    if strings.has_prefix(import_path, "std:") {
+        qoz_root := os.get_env("QOZ_ROOT", context.temp_allocator)
+        if qoz_root == "" {
+            panic("QOZ_ROOT environment variable not set")
+        }
+        
+        // e.g., std:strings → $QOZ_ROOT/std/strings
+        rel_path := import_path[4:]  // Remove "std:"
+        return filepath.join({qoz_root, "std", rel_path}, context.temp_allocator)
+    }
+    
+    // Check for relative import
+    if strings.has_prefix(import_path, "./") || strings.has_prefix(import_path, "../") {
+        // Relative to current file's directory
+        return filepath.clean(filepath.join({current_file_dir, import_path}, context.temp_allocator), context.temp_allocator)
+    }
+    
+    // Default: relative to project root
+    return filepath.clean(filepath.join({project_root, import_path}, context.temp_allocator))
+}
+
 parse_project :: proc(entry_package_dir: string, arena_lexer, arena_parser: mem.Allocator) -> (asts: map[string]^Node, err: Parse_Error) {
     asts = make(map[string]^Node, arena_parser)
     visited_packages := make(map[string]bool, arena_parser)
@@ -211,7 +233,8 @@ parse_project :: proc(entry_package_dir: string, arena_lexer, arena_parser: mem.
                     if stmt.node_kind == .Import {
                         import_node := stmt.payload.(Node_Import)
                         // Resolve import path relative to pkg_dir
-                        imported_pkg := resolve_package_path(pkg_dir, import_node.path)
+                        current_file_dir := filepath.dir(file_path, context.temp_allocator)
+                        imported_pkg := resolve_import_path(current_file_dir, entry_package_dir, import_node.path)
                         append(&packages_to_parse, imported_pkg)
                     }
                 }

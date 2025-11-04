@@ -1,7 +1,12 @@
-import m "math"
-import "math"
+import "std:strings"
+import "./math"
 
 main := func() {
-    x := m.add(3, 4)
+    word1 := "Hello, "
+    word2 := "World!"
+    greeting := strings.string_concat(word1, word2)
+    print(greeting)
+
+    x := math.add(3, 4)
     print(x)
 }

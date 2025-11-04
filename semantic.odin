@@ -1,5 +1,6 @@
 package main 
 
+import "core:strings"
 import "core:path/filepath"
 import "core:fmt"
 import "core:mem"
@@ -116,7 +117,7 @@ semantic_analyze_project :: proc(
         for file_path, ast in asts {
             file_dir := filepath.dir(file_path, context.temp_allocator)
             if file_dir == pkg_dir {
-                collect_declarations(&ctx, ast, pkg_dir)
+                collect_declarations(&ctx, ast, pkg_dir, entry_package)
             }
         }
 
@@ -211,14 +212,33 @@ add_error :: proc(ctx: ^Semantic_Context, span: Span, format: string, args: ..an
     append(&ctx.errors, error)
 }
 
+@(private="file")
+extract_alias_from_path :: proc(import_path: string) -> string {
+    path := import_path
+    
+    // Strip prefix (std:, etc.)
+    if colon_idx := strings.index(path, ":"); colon_idx != -1 {
+        path = path[colon_idx+1:]
+    }
+    
+    // Strip ./ or ../
+    if strings.has_prefix(path, "./") {
+        path = path[2:]
+    } else if strings.has_prefix(path, "../") {
+        path = path[3:]
+    }
+    
+    return filepath.base(path)
+}
+
 // Pass 1: Collect declarations without analyzing bodies
-collect_declarations :: proc(ctx: ^Semantic_Context, node: ^Node, pkg_dir: string) {
+collect_declarations :: proc(ctx: ^Semantic_Context, node: ^Node, pkg_dir, project_root: string) {
     if node == nil do return
     
     #partial switch node.node_kind {
     case .Program:
         for stmt in node.payload.(Node_Statement_List).nodes {
-            collect_declarations(ctx, stmt, pkg_dir)
+            collect_declarations(ctx, stmt, pkg_dir, project_root)
         }
     
     case .Import: 
@@ -227,10 +247,11 @@ collect_declarations :: proc(ctx: ^Semantic_Context, node: ^Node, pkg_dir: strin
         if import_alias, has_alias := import_node.alias.?; has_alias {
             alias = import_alias
         } else {
-            alias = filepath.base(import_node.path)
+            alias = extract_alias_from_path(import_node.path)
         }
 
-        resolved_path := filepath.clean(filepath.join({pkg_dir, import_node.path}, context.temp_allocator), context.temp_allocator)
+        
+        resolved_path := resolve_import_path(pkg_dir, project_root, import_node.path)
         ctx.import_aliases[alias] = resolved_path 
 
     case .Var_Def:
