@@ -704,10 +704,12 @@ check_node :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
             ctx.current_struct_name = var_def.name
         }
 
-        // Check if symbol already exists (from pass 1)
+        // Check if this is a package-level symbol (already defined in Pass 1)
         existing_sym, already_defined := semantic_lookup_symbol(ctx, var_def.name)
         
-        if already_defined {
+        // If it's a package-level symbol (has pkg_dir), it was collected in Pass 1
+        // Just validate it, don't redefine
+        if already_defined && existing_sym.pkg_dir != "" {
             // Symbol was collected in pass 1, just validate
             value_type := check_node(ctx, var_def.content)
             actual_type := existing_sym.type
@@ -719,6 +721,22 @@ check_node :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
             
             node.inferred_type = actual_type
         } else {
+            // Local variable - check for redefinition or shadowing
+            
+            // Check if symbol exists in current scope (redefinition)
+            if var_def.name in ctx.current_scope.symbols {
+                add_error(ctx, node.span, "Symbol '%s' is already defined in this scope", var_def.name)
+                node.inferred_type = Primitive_Type.Void
+                return Primitive_Type.Void
+            }
+            
+            // Check if symbol exists in parent scope (shadowing)
+            if already_defined {
+                add_error(ctx, node.span, "Symbol '%s' shadows variable from outer scope", var_def.name)
+                node.inferred_type = Primitive_Type.Void
+                return Primitive_Type.Void
+            }
+            
             // Local variable not in pass 1, need to define it first
             // Determine type syntactically without full validation
             declared_type: Type_Info

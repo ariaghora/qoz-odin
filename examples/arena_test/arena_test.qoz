@@ -2,7 +2,6 @@ import "std:mem"
 import str "std:strings"
 
 main := func() {
-
 	arena := mem.arena_make(1024)
 	alloc := mem.arena_allocator(&arena)
 
