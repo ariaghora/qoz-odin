@@ -39,7 +39,6 @@ arena_alloc_proc := func(data: *void, size: i64): *void {
 
 arena_free_proc := func(data: *void, ptr: *void) {
     // Arena doesn't support individual frees - no-op
-    // return
 }
 
 arena_allocator := func(arena: *Arena): Allocator {

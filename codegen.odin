@@ -480,8 +480,11 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
     
     case .Return:
         ret := node.payload.(Node_Return)
-        strings.write_string(&ctx_cg.output_buf, "return ")
-        codegen_node(ctx_cg, ret.value)
+        strings.write_string(&ctx_cg.output_buf, "return")
+        if ret.value != nil {
+            strings.write_string(&ctx_cg.output_buf, " ")
+            codegen_node(ctx_cg, ret.value)
+        }
         strings.write_string(&ctx_cg.output_buf, ";\n")
 
     case .Print:
