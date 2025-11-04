@@ -13,6 +13,7 @@ Node_Kind :: enum {
     Assignment,
     Bin_Op,
     Cast,
+    Del,
     Expr_Statement,
     Field_Access,
     Fn_Call,
@@ -25,6 +26,7 @@ Node_Kind :: enum {
     Index,
     Len,
     Literal_Arr,
+    Literal_Nil,
     Literal_Number,
     Literal_String,
     Print,
@@ -91,6 +93,7 @@ Node_Assign         :: struct { target: ^Node, value: ^Node }
 Node_Bin_Op         :: struct { left, right: ^Node, op: Token }
 Node_Call           :: struct { callee: ^Node, args: [dynamic]^Node }
 Node_Cast           :: struct { expr: ^Node, target_type: Type_Info }
+Node_Del            :: struct { pointer: ^Node, allocator: ^Node }
 Node_Field_Access   :: struct { object: ^Node, field_name: string }
 Node_Fn_Def         :: struct { params: [dynamic]Fn_Param, body: [dynamic]^Node, return_type: Type_Info, is_external: bool}
 Node_For_C          :: struct { init: ^Node, condition: ^Node, post: ^Node, body: [dynamic]^Node }
@@ -100,6 +103,7 @@ Node_If             :: struct { condition: ^Node, if_body: [dynamic]^Node, else_
 Node_Import         :: struct { path: string, alias: Maybe(string) }
 Node_Index          :: struct { object, index: ^Node }
 Node_Len            :: struct { value: ^Node }
+Node_Literal_Nil    :: struct {}
 Node_Literal_Number :: struct { content: Token }
 Node_Literal_String :: struct { content: Token }
 Node_Print          :: struct { content: ^Node }
@@ -129,11 +133,13 @@ Node :: struct {
         Node_Fn_Def,
         Node_For_C,
         Node_For_In,
+        Node_Del,
         Node_Identifier,
         Node_Import,
         Node_Index,
         Node_If,
         Node_Len,
+        Node_Literal_Nil,
         Node_Literal_Number,
         Node_Literal_String,
         Node_Print,
@@ -362,6 +368,25 @@ parse_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.
         expr_stmt.node_kind = .Expr_Statement
         expr_stmt.payload = Node_Expr_Statement{expr = expr}
         return expr_stmt, nil
+
+    case .KW_Del:
+        span_start := ps.idx
+        parser_advance(ps) // eat 'free'
+        parser_consume(ps, .Left_Paren) or_return
+        ptr := parse_expression(ps, parent, allocator) or_return
+        parser_consume(ps, .Comma) or_return
+        alloc := parse_expression(ps, parent, allocator) or_return
+        parser_consume(ps, .Right_Paren) or_return
+        return new_clone(Node{
+            node_kind = .Del,
+            parent = parent,
+            span = Span{start = span_start, end = ps.idx - 1},
+            payload = Node_Del{
+                pointer=ptr,
+                allocator=alloc,
+            },
+        }, allocator), nil
+
     case .KW_For: return parse_for_statement(ps, parent, allocator)
     case .KW_If: return parse_if_statement(ps, parent, allocator)
     case .KW_Print: return parse_print_statement(ps, parent, allocator)
@@ -770,6 +795,7 @@ parse_primary :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
         return type_node, nil
     case .Lit_Number: return parse_literal_number(ps, parent, allocator)
     case .Lit_String: return parse_literal_string(ps, parent, allocator)
+    case .Lit_Nil: return parse_literal_nil(ps, parent, allocator)
     case .KW_Arr: return parse_literal_array(ps, parent, allocator)
     case:
         fmt.println(ps.current_token)
@@ -872,6 +898,20 @@ parse_literal_string :: proc(ps: ^Parsing_State, parent: ^Node, allocator := con
     lit_node.node_kind = .Literal_String
     lit_node.parent = parent
     lit_node.payload = Node_Literal_String{content = tok}
+    
+    parser_advance(ps)
+    lit_node.span = Span{start = span_start, end = ps.idx - 1}
+    
+    return lit_node, nil
+}
+
+parse_literal_nil :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Parse_Error) {
+    span_start := ps.idx
+    
+    lit_node := new(Node, allocator)
+    lit_node.node_kind = .Literal_Nil
+    lit_node.parent = parent
+    lit_node.payload = Node_Literal_Nil{}
     
     parser_advance(ps)
     lit_node.span = Span{start = span_start, end = ps.idx - 1}
@@ -1170,10 +1210,22 @@ parse_type :: proc(ps: ^Parsing_State, allocator: mem.Allocator) -> (res:Type_In
         return Struct_Type{fields = fields}, nil
     }
 
-    // User-defined type name (identifier)
+    // User-defined type name (identifier or qualified name like pkg.Type)
     if ps.current_token.kind == .Iden {
         type_name := ps.current_token.source
         parser_advance(ps)
+        
+        // Check for qualified name: pkg.Type
+        if ps.current_token.kind == .Dot {
+            parser_advance(ps) // eat '.'
+            if ps.current_token.kind != .Iden {
+                return nil, "Expected type name after '.'"
+            }
+            // Construct qualified name as "pkg.Type"
+            type_name = fmt.tprintf("%s.%s", type_name, ps.current_token.source)
+            parser_advance(ps)
+        }
+        
         return Named_Type{name = type_name}, nil
     } 
 

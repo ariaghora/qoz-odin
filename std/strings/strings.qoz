@@ -1,6 +1,7 @@
 import "std:libc"
+import "std:mem"
 
-string_concat := func(a: string, b: string): string {
+string_concat := func(a: string, b: string, Allocator: mem.Allocator): string {
     new_len := a.len + b.len
     new_data := libc.malloc(new_len) as *i8
     

@@ -78,6 +78,32 @@ semantic_lookup_symbol :: proc(ctx: ^Semantic_Context, name: string) -> (Symbol,
     return {}, false
 }
 
+// Resolve a potentially qualified type name (e.g., "mem.Allocator" or "string")
+resolve_named_type :: proc(ctx: ^Semantic_Context, named: Named_Type) -> (Type_Info, bool) {
+    // Check if it's a qualified name (contains dot)
+    if dot_idx := strings.index(named.name, "."); dot_idx != -1 {
+        pkg_alias := named.name[:dot_idx]
+        type_name := named.name[dot_idx+1:]
+        
+        // Look up the package
+        if pkg_dir, is_pkg := ctx.import_aliases[pkg_alias]; is_pkg {
+            if pkg_info, has_pkg := ctx.packages[pkg_dir]; has_pkg {
+                if symbol, found := pkg_info.symbols[type_name]; found {
+                    return symbol.type, true
+                }
+            }
+        }
+        return {}, false
+    }
+    
+    // It's a simple name, look it up normally
+    if sym, ok := semantic_lookup_symbol(ctx, named.name); ok {
+        return sym.type, true
+    }
+    
+    return {}, false
+}
+
 semantic_analyze_project :: proc(
     asts: map[string]^Node,
     sorted_packages: []string,
@@ -105,30 +131,35 @@ semantic_analyze_project :: proc(
     semantic_push_scope(&ctx)
     semantic_define_symbol(&ctx, "string", string_struct, Span{})
 
-    // Pass 1: Collect all top-level declarations
-    // - Walks through global scope only (Program node and top-level Var_Defs)
-    // - Registers all global symbols (functions, types, global variables) in symbol table
+    // Pass 1: Collect all top-level declarations per package
+    // - Each package gets its own isolated symbol table
+    // - Walks through each package's files, registering symbols (functions, types, globals)
     // - Determines types syntactically without analyzing function bodies or initializers
-    // - Enables forward references: functions can call other functions defined later
-    // - Does NOT recurse into function bodies, only collects their signatures
-    // - After this pass, all global names are known and can be referenced
-    // Multi-package: processes all packages in dependency order
+    // - Enables forward references within the same package
+    // - Does NOT recurse into function bodies, only collects signatures
+    // - Symbols are only accessible within their own package unless explicitly qualified
+    // - Cross-package symbols stored separately in ctx.packages map
+    // - Processes packages in dependency order to ensure imported packages are collected first
+    // - After this pass, all package-level names are known and can be referenced via qualification
     for pkg_dir in sorted_packages {
+        pkg_scope := new(Scope, allocator)
+        pkg_scope.symbols = make(map[string]Symbol, allocator)
+        
+        // Temporarily make this the current scope
+        old_scope := ctx.current_scope
+        ctx.current_scope = pkg_scope
+        
         for file_path, ast in asts {
-            file_dir := filepath.dir(file_path, context.temp_allocator)
-            if file_dir == pkg_dir {
+            if filepath.dir(file_path, allocator) == pkg_dir {
                 collect_declarations(&ctx, ast, pkg_dir, entry_package)
             }
         }
-
-        // After collecting this package, save its symbols
-        pkg_symbols := make(map[string]Symbol, allocator)
-        for name, symbol in ctx.current_scope.symbols {
-            if symbol.pkg_dir == pkg_dir {
-                pkg_symbols[name] = symbol
-            }
-        }
-        ctx.packages[pkg_dir] = Package_Symbols{symbols = pkg_symbols}
+        
+        // Save package symbols separately
+        ctx.packages[pkg_dir] = Package_Symbols{symbols = pkg_scope.symbols}
+        
+        // Restore scope
+        ctx.current_scope = old_scope
     }
 
     // Pass 2: Full semantic analysis and validation
@@ -231,9 +262,51 @@ extract_alias_from_path :: proc(import_path: string) -> string {
     return filepath.base(path)
 }
 
+// Qualify unqualified type names with package prefix
+qualify_type :: proc(ctx: ^Semantic_Context, t: Type_Info, pkg_name: string, allocator: mem.Allocator) -> Type_Info {
+    #partial switch typ in t {
+    case Named_Type:
+        // If already qualified, leave it
+        if strings.contains(typ.name, ".") {
+            return t
+        }
+        // Don't qualify built-in types (string is defined globally)
+        if typ.name == "string" {
+            return t
+        }
+        // Qualify with package name
+        qualified_name := fmt.tprintf("%s.%s", pkg_name, typ.name)
+        return Named_Type{name = qualified_name}
+    case Pointer_Type:
+        qualified_pointee := qualify_type(ctx, typ.pointee^, pkg_name, allocator)
+        return Pointer_Type{pointee = new_clone(qualified_pointee, allocator)}
+    case Array_Type:
+        qualified_elem := qualify_type(ctx, typ.element_type^, pkg_name, allocator)
+        return Array_Type{element_type = new_clone(qualified_elem, allocator), size = typ.size}
+    case Function_Type:
+        qualified_params := make([]Type_Info, len(typ.params), allocator)
+        for param, i in typ.params {
+            qualified_params[i] = qualify_type(ctx, param, pkg_name, allocator)
+        }
+        qualified_return := qualify_type(ctx, typ.return_type^, pkg_name, allocator)
+        return Function_Type{params = qualified_params, return_type = new_clone(qualified_return, allocator)}
+    case Struct_Type:
+        qualified_fields := make([dynamic]Struct_Field, allocator)
+        for field in typ.fields {
+            qualified_field_type := qualify_type(ctx, field.type, pkg_name, allocator)
+            append(&qualified_fields, Struct_Field{name = field.name, type = qualified_field_type})
+        }
+        return Struct_Type{fields = qualified_fields}
+    case:
+        return t
+    }
+}
+
 // Pass 1: Collect declarations without analyzing bodies
 collect_declarations :: proc(ctx: ^Semantic_Context, node: ^Node, pkg_dir, project_root: string) {
     if node == nil do return
+    
+    pkg_name := filepath.base(pkg_dir)
     
     #partial switch node.node_kind {
     case .Program:
@@ -271,12 +344,18 @@ collect_declarations :: proc(ctx: ^Semantic_Context, node: ^Node, pkg_dir, proje
             fn_def := var_def.content.payload.(Node_Fn_Def)
             param_types := make([]Type_Info, len(fn_def.params), ctx.allocator)
             for param, i in fn_def.params {
-                param_types[i] = param.type
+                // Qualify parameter types with package name if needed
+                qualified_param_type := qualify_type(ctx, param.type, pkg_name, ctx.allocator)
+                param_types[i] = qualified_param_type
             }
+            // Qualify return type
+            qualified_return := qualify_type(ctx, fn_def.return_type, pkg_name, ctx.allocator)
             declared_type = Function_Type{
                 params = param_types,
-                return_type = new_clone(fn_def.return_type, ctx.allocator),
+                return_type = new_clone(qualified_return, ctx.allocator),
             }
+            // Store qualified type in the node for codegen
+            var_def.content.inferred_type = declared_type
         
         case .Type_Expr:
             type_expr := var_def.content.payload.(Node_Type_Expr)
@@ -379,6 +458,39 @@ check_node :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
         node.inferred_type = target_type
         return target_type
 
+    case .Del:
+        del_node := node.payload.(Node_Del)
+        ptr_type := check_node(ctx, del_node.pointer)
+        allocator_type := check_node(ctx, del_node.allocator)
+        
+        // Validate first argument - must be pointer, string, or array
+        valid_first_arg := false
+        #partial switch t in ptr_type {
+        case Pointer_Type:
+            valid_first_arg = true
+        case Array_Type:
+            valid_first_arg = true
+        case Named_Type:
+            if t.name == "string" {
+                valid_first_arg = true
+            }
+        }
+        
+        if !valid_first_arg {
+            add_error(ctx, del_node.pointer.span, "del() requires pointer, string, or array type, got %v", ptr_type)
+        }
+        
+        // Validate allocator type (should be mem.Allocator or compatible)
+        if named, is_named := allocator_type.(Named_Type); is_named {
+            if named.name != "mem.Allocator" {
+                add_error(ctx, del_node.allocator.span, "del() requires mem.Allocator, got %v", allocator_type)
+            }
+        } else {
+            add_error(ctx, del_node.allocator.span, "del() requires mem.Allocator, got %v", allocator_type)
+        }
+        
+        return .Void
+
     case .Field_Access:
         field_access := node.payload.(Node_Field_Access)
 
@@ -403,25 +515,25 @@ check_node :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
         
         actual_type := object_type
         if named, is_named := object_type.(Named_Type); is_named {
-            sym, ok := semantic_lookup_symbol(ctx, named.name)
+            resolved, ok := resolve_named_type(ctx, named)
             if !ok {
                 add_error(ctx, node.span, "Undefined type '%s'", named.name)
                 node.inferred_type = Primitive_Type.Void
                 return Primitive_Type.Void
             }
-            actual_type = sym.type
+            actual_type = resolved
         }
 
         if ptr_type, is_ptr := actual_type.(Pointer_Type); is_ptr {
             actual_type = ptr_type.pointee^
             if named, is_named := actual_type.(Named_Type); is_named {
-                sym, ok := semantic_lookup_symbol(ctx, named.name)
+                resolved, ok := resolve_named_type(ctx, named)
                 if !ok {
                     add_error(ctx, node.span, "Undefined type '%s'", named.name)
                     node.inferred_type = Primitive_Type.Void
                     return Primitive_Type.Void
                 }
-                actual_type = sym.type
+                actual_type = resolved
             }
         }
         
@@ -788,14 +900,14 @@ check_node :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
     case .Struct_Literal:
         struct_lit := node.payload.(Node_Struct_Literal)
         
-        sym, ok := semantic_lookup_symbol(ctx, struct_lit.type_name)
+        resolved_type, ok := resolve_named_type(ctx, Named_Type{name = struct_lit.type_name})
         if !ok {
             add_error(ctx, node.span, "Undefined type '%s'", struct_lit.type_name)
             node.inferred_type = Primitive_Type.Void
             return Primitive_Type.Void
         }
         
-        struct_type, is_struct := sym.type.(Struct_Type)
+        struct_type, is_struct := resolved_type.(Struct_Type)
         if !is_struct {
             add_error(ctx, node.span, "'%s' is not a struct type", struct_lit.type_name)
             node.inferred_type = Primitive_Type.Void
@@ -899,9 +1011,25 @@ check_node :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
         node.inferred_type = result
         return result
     
+    case .Literal_Nil:
+        // nil is a pointer to void
+        void_type: Type_Info = Primitive_Type.Void
+        result := Pointer_Type{pointee = new_clone(void_type, ctx.allocator)}
+        node.inferred_type = result
+        return result
+    
     case .Identifier:
         iden := node.payload.(Node_Identifier)
         if sym, ok := semantic_lookup_symbol(ctx, iden.name); ok {
+            // Check if symbol is from a different package
+            if sym.pkg_dir != "" && sym.pkg_dir != ctx.current_package {
+                // Symbol is from another package - must be qualified
+                add_error(ctx, node.span, "Cannot access '%s' from package '%s' without qualification", 
+                    iden.name, filepath.base(sym.pkg_dir))
+                node.inferred_type = Primitive_Type.I32
+                return Primitive_Type.I32
+            }
+            
             node.inferred_type = sym.type
             return sym.type
         }
@@ -1092,10 +1220,10 @@ check_infinite_size_impl :: proc(ctx: ^Semantic_Context, struct_name: string, fi
         }
         seen[t.name] = true
         
-        sym, ok := semantic_lookup_symbol(ctx, t.name)
+        resolved, ok := resolve_named_type(ctx, t)
         if !ok do return false
         
-        return check_infinite_size_impl(ctx, struct_name, sym.type, seen)
+        return check_infinite_size_impl(ctx, struct_name, resolved, seen)
     
     case Pointer_Type:
         return false
@@ -1119,7 +1247,7 @@ check_infinite_size_impl :: proc(ctx: ^Semantic_Context, struct_name: string, fi
 validate_type_exists :: proc(ctx: ^Semantic_Context, t: Type_Info, span: Span) -> bool {
     #partial switch typ in t {
     case Named_Type:
-        _, ok := semantic_lookup_symbol(ctx, typ.name)
+        _, ok := resolve_named_type(ctx, typ)
         if !ok {
             add_error(ctx, span, "Undefined type '%s'", typ.name)
             return false

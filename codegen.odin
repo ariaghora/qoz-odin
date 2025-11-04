@@ -13,6 +13,7 @@ Codegen_Context :: struct {
     loop_counter: int,
     in_for_header: bool, 
     current_pkg_name: string,
+    skip_struct_defs: bool, // Set to true when struct defs already generated
 }
 
 MANGLE_PREFIX :: "qoz__"
@@ -35,7 +36,33 @@ codegen :: proc(asts: map[string]^Node, sorted_packages: []string, ctx_sem: ^Sem
     strings.write_string(&ctx_cg.output_buf, "\n\n")
     strings.write_string(&ctx_cg.output_buf, "#include <stdio.h>\n")
 
-    // Pass 1: Forward declarations for ALL packages
+    // Pass 1: Struct forward declarations for ALL packages
+    for pkg_dir in sorted_packages {
+        ctx_cg.current_pkg_name = filepath.base(pkg_dir)
+        for file_path, ast in asts {
+            file_dir := filepath.dir(file_path, context.temp_allocator)
+            if file_dir == pkg_dir {
+                codegen_struct_forward_decl(&ctx_cg, ast)
+            }
+        }
+    }
+    
+    strings.write_string(&ctx_cg.output_buf, "\n")
+    
+    // Pass 2: Struct definitions for ALL packages (complete typedefs with bodies)
+    for pkg_dir in sorted_packages {
+        ctx_cg.current_pkg_name = filepath.base(pkg_dir)
+        for file_path, ast in asts {
+            file_dir := filepath.dir(file_path, context.temp_allocator)
+            if file_dir == pkg_dir {
+                codegen_struct_defs(&ctx_cg, ast)
+            }
+        }
+    }
+    
+    strings.write_string(&ctx_cg.output_buf, "\n")
+    
+    // Pass 3: Function forward declarations for ALL packages
     for pkg_dir in sorted_packages {
         ctx_cg.current_pkg_name = filepath.base(pkg_dir)
         for file_path, ast in asts {
@@ -48,7 +75,8 @@ codegen :: proc(asts: map[string]^Node, sorted_packages: []string, ctx_sem: ^Sem
     
     strings.write_string(&ctx_cg.output_buf, "\n")
     
-    // Pass 2: Implementations for ALL packages
+    // Pass 4: Function implementations for ALL packages (skip struct defs)
+    ctx_cg.skip_struct_defs = true
     for pkg_dir in sorted_packages {
         ctx_cg.current_pkg_name = filepath.base(pkg_dir)
         for file_path, ast in asts {
@@ -68,6 +96,85 @@ indented :: proc(content: string, n_space: int) -> string {
 
 codegen_indent :: proc(ctx_cg: ^Codegen_Context, level: int) {
     strings.write_string(&ctx_cg.output_buf, strings.repeat(" ", ctx_cg.indent_level * 4, context.temp_allocator))
+}
+
+// Walk AST and generate only struct forward declarations (typedef struct X X;)
+codegen_struct_forward_decl :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
+    #partial switch node.node_kind {
+    case .Program:
+        for stmt in node.payload.(Node_Statement_List).nodes {
+            codegen_struct_forward_decl(ctx_cg, stmt)
+        }
+    case .Var_Def:
+        var_def := node.payload.(Node_Var_Def)
+        
+        if var_def.content.node_kind == .Type_Expr {
+            type_expr := var_def.content.payload.(Node_Type_Expr)
+            
+            if _, is_struct := type_expr.type_info.(Struct_Type); is_struct {
+                strings.write_string(&ctx_cg.output_buf, "typedef struct ")
+                strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX)
+                strings.write_string(&ctx_cg.output_buf, ctx_cg.current_pkg_name)
+                strings.write_string(&ctx_cg.output_buf, "__")
+                strings.write_string(&ctx_cg.output_buf, var_def.name)
+                strings.write_string(&ctx_cg.output_buf, " ")
+                strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX)
+                strings.write_string(&ctx_cg.output_buf, ctx_cg.current_pkg_name)
+                strings.write_string(&ctx_cg.output_buf, "__")
+                strings.write_string(&ctx_cg.output_buf, var_def.name)
+                strings.write_string(&ctx_cg.output_buf, ";\n")
+            }
+        }
+    }
+}
+
+// Walk AST and generate only struct type definitions
+codegen_struct_defs :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
+    #partial switch node.node_kind {
+    case .Program:
+        for stmt in node.payload.(Node_Statement_List).nodes {
+            codegen_struct_defs(ctx_cg, stmt)
+        }
+    case .Var_Def:
+        var_def := node.payload.(Node_Var_Def)
+        
+        if var_def.content.node_kind == .Type_Expr {
+            // Struct typedef
+            type_expr := var_def.content.payload.(Node_Type_Expr)
+                
+            if struct_type, is_struct := type_expr.type_info.(Struct_Type); is_struct {
+                strings.write_string(&ctx_cg.output_buf, "typedef struct ")
+                strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX)
+                strings.write_string(&ctx_cg.output_buf, ctx_cg.current_pkg_name)
+                strings.write_string(&ctx_cg.output_buf, "__")
+                strings.write_string(&ctx_cg.output_buf, var_def.name) 
+                strings.write_string(&ctx_cg.output_buf, " {\n")
+                ctx_cg.indent_level += 1
+                
+                for field in struct_type.fields {
+                    codegen_indent(ctx_cg, ctx_cg.indent_level)
+
+                    if _, is_fn := field.type.(Function_Type); is_fn {
+                        codegen_type(ctx_cg, field.type, field.name)
+                    } else {
+                        codegen_type(ctx_cg, field.type)
+                        strings.write_string(&ctx_cg.output_buf, " ")
+                        strings.write_string(&ctx_cg.output_buf, field.name)
+                    }
+
+                    strings.write_string(&ctx_cg.output_buf, ";\n")
+                }
+                
+                ctx_cg.indent_level -= 1
+                strings.write_string(&ctx_cg.output_buf, "} ")
+                strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX)
+                strings.write_string(&ctx_cg.output_buf, ctx_cg.current_pkg_name)
+                strings.write_string(&ctx_cg.output_buf, "__")
+                strings.write_string(&ctx_cg.output_buf, var_def.name)
+                strings.write_string(&ctx_cg.output_buf, ";\n\n")
+            }
+        }
+    }
 }
 
 codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
@@ -281,7 +388,14 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         }
         // 2) Only mangle if it's from global scope (scope 0)
         if iden.name in ctx_cg.ctx_sem.global_symbols {
-            fmt.sbprintf(&ctx_cg.output_buf, "%s%s", MANGLE_PREFIX, iden.name)
+            // Look up the symbol to get its package info
+            sym, found := semantic_lookup_symbol(ctx_cg.ctx_sem, iden.name)
+            pkg_name := ctx_cg.current_pkg_name  // Default to current package
+            if found && sym.pkg_dir != "" {
+                // Use the symbol's package if available
+                pkg_name = filepath.base(sym.pkg_dir)
+            }
+            fmt.sbprintf(&ctx_cg.output_buf, "%s%s__%s", MANGLE_PREFIX, pkg_name, iden.name)
             return
         }
         
@@ -331,6 +445,9 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         lit := node.payload.(Node_Literal_Number)
         src := lit.content.source
         strings.write_string(&ctx_cg.output_buf, src)
+    
+    case .Literal_Nil:
+        strings.write_string(&ctx_cg.output_buf, "NULL")
     
     case .Literal_String:
         lit := node.payload.(Node_Literal_String)
@@ -401,12 +518,24 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         
         // Emit type name for compound literal
         strings.write_string(&ctx_cg.output_buf, "(")
-        // Look up the type to emit the correct C name
-        if struct_lit.type_name == "string" {
-            strings.write_string(&ctx_cg.output_buf, "Qoz_String")
+        // Use inferred_type if available, otherwise fall back to struct_lit.type_name
+        type_to_generate: Type_Info
+        if inferred, ok := node.inferred_type.?; ok {
+            // If it's a Named_Type and not qualified, qualify it with current package
+            if named, is_named := inferred.(Named_Type); is_named {
+                if !strings.contains(named.name, ".") && ctx_cg.current_pkg_name != "" {
+                    // Qualify with current package
+                    type_to_generate = Named_Type{name = fmt.tprintf("%s.%s", ctx_cg.current_pkg_name, named.name)}
+                } else {
+                    type_to_generate = inferred
+                }
+            } else {
+                type_to_generate = inferred
+            }
         } else {
-            strings.write_string(&ctx_cg.output_buf, struct_lit.type_name)
+            type_to_generate = Named_Type{name = struct_lit.type_name}
         }
+        codegen_type(ctx_cg, type_to_generate)
         strings.write_string(&ctx_cg.output_buf, ")")
         
         // Then the initializer list
@@ -436,9 +565,23 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
 
             if fn_def.is_external do return
 
+            // Look up qualified type from current package's symbol table
+            qualified_fn_type: Maybe(Function_Type)
+            // Find the package dir that matches current package name
+            for pkg_dir, pkg_info in ctx_cg.ctx_sem.packages {
+                if filepath.base(pkg_dir) == ctx_cg.current_pkg_name {
+                    if sym, found := pkg_info.symbols[var_def.name]; found {
+                        if fn_type, is_fn := sym.type.(Function_Type); is_fn {
+                            qualified_fn_type = fn_type
+                            break
+                        }
+                    }
+                }
+            }
+
             ctx_cg.func_nesting_depth += 1
             ctx_cg.indent_level += 1
-            codegen_func_signature(ctx_cg, var_def.name, fn_def)
+            codegen_func_signature(ctx_cg, var_def.name, fn_def, qualified_fn_type)
             strings.write_string(&ctx_cg.output_buf, " {\n")
             for stmt in fn_def.body {
                 codegen_indent(ctx_cg, ctx_cg.indent_level)
@@ -454,12 +597,16 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
             ctx_cg.func_nesting_depth -= 1
             ctx_cg.indent_level -= 1
         } else if var_def.content.node_kind == .Type_Expr {
-            // Struct typedef
+            // Struct typedef - skip if already generated in Pass 2
+            if ctx_cg.skip_struct_defs do return
+            
             type_expr := var_def.content.payload.(Node_Type_Expr)
                 
             if struct_type, is_struct := type_expr.type_info.(Struct_Type); is_struct {
                 strings.write_string(&ctx_cg.output_buf, "typedef struct ")
-                strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX) 
+                strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX)
+                strings.write_string(&ctx_cg.output_buf, ctx_cg.current_pkg_name)
+                strings.write_string(&ctx_cg.output_buf, "__")
                 strings.write_string(&ctx_cg.output_buf, var_def.name) 
                 strings.write_string(&ctx_cg.output_buf, " {\n")
                 ctx_cg.indent_level += 1
@@ -480,7 +627,9 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
                 
                 ctx_cg.indent_level -= 1
                 strings.write_string(&ctx_cg.output_buf, "} ")
-                strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX) 
+                strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX)
+                strings.write_string(&ctx_cg.output_buf, ctx_cg.current_pkg_name)
+                strings.write_string(&ctx_cg.output_buf, "__")
                 strings.write_string(&ctx_cg.output_buf, var_def.name)
                 strings.write_string(&ctx_cg.output_buf, ";\n\n")
             }
@@ -506,6 +655,39 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
                 strings.write_string(&ctx_cg.output_buf, ";\n")
             }
         }
+    
+    case .Del:
+        // del(ptr, allocator) - for now just call free on the pointer
+        // TODO: Use allocator's free function once we support function pointers in structs
+        del_node := node.payload.(Node_Del)
+        
+        // Check what we're freeing
+        ptr_type := del_node.pointer.inferred_type.? or_else Primitive_Type.Void
+        
+        #partial switch t in ptr_type {
+        case Named_Type:
+            if t.name == "string" {
+                // Free string's internal data
+                strings.write_string(&ctx_cg.output_buf, "free((void*)")
+                codegen_node(ctx_cg, del_node.pointer)
+                strings.write_string(&ctx_cg.output_buf, ".data);\n")
+            }
+        case Pointer_Type:
+            // Direct pointer free
+            strings.write_string(&ctx_cg.output_buf, "free(")
+            codegen_node(ctx_cg, del_node.pointer)
+            strings.write_string(&ctx_cg.output_buf, ");\n")
+        case Array_Type:
+            // TODO: Free array elements if they contain pointers
+            strings.write_string(&ctx_cg.output_buf, "free(")
+            codegen_node(ctx_cg, del_node.pointer)
+            strings.write_string(&ctx_cg.output_buf, ");\n")
+        case:
+            strings.write_string(&ctx_cg.output_buf, "free(")
+            codegen_node(ctx_cg, del_node.pointer)
+            strings.write_string(&ctx_cg.output_buf, ");\n")
+        }
+        
     case: fmt.panicf("Internal error: cannot generate code for node %v", node.node_kind)
     }
 }
@@ -551,11 +733,13 @@ codegen_type :: proc(ctx_cg: ^Codegen_Context, type: Type_Info, name: string = "
         panic("Internal error: FIXME(Aria): Cannot inline anonymous struct type")
     case Named_Type:
         // Special case for built-in string
-        if t.name == "string" {
+        if t.name == "string" || t.name == "strings.string" {
             strings.write_string(&ctx_cg.output_buf, "Qoz_String")
         } else {
+            // Replace dots with double underscores for qualified names (e.g., mem.Allocator -> mem__Allocator)
+            mangled_name, _ := strings.replace_all(t.name, ".", "__", context.temp_allocator)
             strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX)
-            strings.write_string(&ctx_cg.output_buf, t.name)
+            strings.write_string(&ctx_cg.output_buf, mangled_name)
         }
     case: fmt.panicf("Internal error: cannot generate code for type %v", t)
     }
@@ -570,7 +754,21 @@ codegen_forward_decl :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
                 if var_def.content.node_kind == .Fn_Def {
                     // function signature generation
                     // type func_name(..params)
-                    codegen_func_signature(ctx_cg, var_def.name, var_def.content.payload.(Node_Fn_Def))
+                    // Look up qualified type from current package's symbol table
+                    fn_def := var_def.content.payload.(Node_Fn_Def)
+                    qualified_fn_type: Maybe(Function_Type)
+                    // Find the package dir that matches current package name
+                    for pkg_dir, pkg_info in ctx_cg.ctx_sem.packages {
+                        if filepath.base(pkg_dir) == ctx_cg.current_pkg_name {
+                            if sym, found := pkg_info.symbols[var_def.name]; found {
+                                if fn_type, is_fn := sym.type.(Function_Type); is_fn {
+                                    qualified_fn_type = fn_type
+                                    break
+                                }
+                            }
+                        }
+                    }
+                    codegen_func_signature(ctx_cg, var_def.name, fn_def, qualified_fn_type)
                     strings.write_string(&ctx_cg.output_buf, ";\n")
                 }
 
@@ -580,9 +778,13 @@ codegen_forward_decl :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
                     if _, is_struct := type_expr.type_info.(Struct_Type); is_struct {
                         strings.write_string(&ctx_cg.output_buf, "typedef struct ")
                         strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX)
+                        strings.write_string(&ctx_cg.output_buf, ctx_cg.current_pkg_name)
+                        strings.write_string(&ctx_cg.output_buf, "__")
                         strings.write_string(&ctx_cg.output_buf, var_def.name)
                         strings.write_string(&ctx_cg.output_buf, " ")
                         strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX)
+                        strings.write_string(&ctx_cg.output_buf, ctx_cg.current_pkg_name)
+                        strings.write_string(&ctx_cg.output_buf, "__")
                         strings.write_string(&ctx_cg.output_buf, var_def.name)
                         strings.write_string(&ctx_cg.output_buf, ";\n")
                     }
@@ -592,14 +794,22 @@ codegen_forward_decl :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
     }
 }
 
-codegen_func_signature :: proc(ctx_cg: ^Codegen_Context, fn_name: string, node: Node_Fn_Def) {
+codegen_func_signature :: proc(ctx_cg: ^Codegen_Context, fn_name: string, node: Node_Fn_Def, qualified_type: Maybe(Function_Type) = nil) {
     // Special case for main, we alter the signature to match strict C main requirement
     if fn_name == "main" {
         strings.write_string(&ctx_cg.output_buf, "int32_t main(void)")
         return
     }
 
-    codegen_type(ctx_cg, node.return_type)
+    // Use qualified type if available, otherwise fall back to node's type
+    return_type := node.return_type
+    param_types := node.params
+    if fn_type, ok := qualified_type.?; ok {
+        return_type = fn_type.return_type^
+        // Note: params still come from node for names, but types from qualified_type
+    }
+
+    codegen_type(ctx_cg, return_type)
     strings.write_string(&ctx_cg.output_buf, " ")
 
     // Mangle unless external
@@ -619,7 +829,12 @@ codegen_func_signature :: proc(ctx_cg: ^Codegen_Context, fn_name: string, node: 
         strings.write_string(&ctx_cg.output_buf, "void")
     } else {
         for param, i in node.params {
-            codegen_type(ctx_cg, param.type)
+            // Use qualified param type if available
+            param_type := param.type
+            if fn_type, ok := qualified_type.?; ok && i < len(fn_type.params) {
+                param_type = fn_type.params[i]
+            }
+            codegen_type(ctx_cg, param_type)
             strings.write_string(&ctx_cg.output_buf, " ")
             strings.write_string(&ctx_cg.output_buf, param.name)
             if i < len(node.params)-1 do strings.write_string(&ctx_cg.output_buf, ", ")

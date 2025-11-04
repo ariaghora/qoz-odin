@@ -1,12 +1,18 @@
-import "std:strings"
 import "./math"
+import "std:libc"
+import "std:mem"
+import str "std:strings"
 
 main := func() {
+    alloc := mem.default_allocator()
+
     word1 := "Hello, "
     word2 := "World!"
-    greeting := strings.string_concat(word1, word2)
+    greeting := str.string_concat(word1, word2, alloc)
     print(greeting)
 
     x := math.add(3, 4)
     print(x)
+
+    del(greeting, alloc)
 }
