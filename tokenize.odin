@@ -61,6 +61,17 @@ skip_whitespace :: proc(t: ^Tokenizer) {
     }
 }
 
+skip_comment :: proc(t: ^Tokenizer) {
+    // Skip the two slashes
+    tokenizer_advance(t)
+    tokenizer_advance(t)
+    
+    // Skip until end of line or end of file
+    for current_char(t) != '\n' && t.offset < len(t.source) {
+        tokenizer_advance(t)
+    }
+}
+
 make_tok :: proc(t: ^Tokenizer, kind: Token_Kind, source: string) {
     append(&t.tokens, Token{
         source = source,
@@ -194,7 +205,12 @@ tokenize :: proc(source: string, allocator := context.allocator) -> (tokens: [dy
         case '+': make_tok(&t, .Plus, "+")
         case '-': make_tok(&t, .Minus, "-")
         case '*': make_tok(&t, .Star, "*")
-        case '/': make_tok(&t, .Slash, "/")
+        case '/':
+            if peek(&t, source) == '/' {
+                skip_comment(&t)
+            } else {
+                make_tok(&t, .Slash, "/")
+            }
         case '%': make_tok(&t, .Percent, "%")
         case '&': make_tok(&t, .Amp, "&")
         case ';': make_tok(&t, .Semicolon, ";")
