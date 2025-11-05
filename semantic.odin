@@ -591,13 +591,9 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
             return source_type
         }
         
-        // Untyped integers can be cast to any numeric or pointer type
+        // Untyped integers can be cast to typed numeric types only
         if is_untyped_int(source_type) {
             if is_typed_int(target_type) || is_typed_float(target_type) {
-                node.inferred_type = target_type
-                return target_type
-            }
-            if _, is_ptr := target_type.(Pointer_Type); is_ptr {
                 node.inferred_type = target_type
                 return target_type
             }
@@ -608,11 +604,19 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
         
         valid := false
         if source_is_ptr && target_is_ptr {
+            // Pointer to pointer casts are allowed (type punning)
             valid = true
         } else if source_prim, ok := source_type.(Primitive_Type); ok {
             if target_prim, ok2 := target_type.(Primitive_Type); ok2 {
+                // Numeric to numeric casts
                 valid = (source_prim == .I32 || source_prim == .I64 || source_prim == .F32 || source_prim == .F64) &&
                         (target_prim == .I32 || target_prim == .I64 || target_prim == .F32 || target_prim == .F64)
+            }
+            // Integer to pointer is NOT allowed - too dangerous
+        } else if source_is_ptr {
+            if target_prim, ok := target_type.(Primitive_Type); ok {
+                // Pointer to integer is allowed (for inspection/arithmetic)
+                valid = (target_prim == .I32 || target_prim == .I64)
             }
         }
         
