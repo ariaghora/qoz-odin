@@ -35,6 +35,7 @@ Node_Kind :: enum {
     Literal_Number,
     Literal_String,
     Print,
+    Println,
     Program,
     Return,
     Size_Of,
@@ -121,7 +122,8 @@ Node_Len            :: struct { value: ^Node }
 Node_Literal_Nil    :: struct {}
 Node_Literal_Number :: struct { content: Token }
 Node_Literal_String :: struct { content: Token }
-Node_Print          :: struct { content: ^Node }
+Node_Print          :: struct { args: [dynamic]^Node }
+Node_Println        :: struct { args: [dynamic]^Node }
 Node_Return         :: struct { value: ^Node } 
 Node_Statement_List :: struct { nodes: [dynamic]^Node }
 Node_Un_Op          :: struct { operand: ^Node, op: Token }
@@ -158,6 +160,7 @@ Node :: struct {
         Node_Literal_Number,
         Node_Literal_String,
         Node_Print,
+        Node_Println,
         Node_Return,
         Node_Size_Of,
         Node_Statement_List,
@@ -448,6 +451,7 @@ parse_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.
     case .KW_For: return parse_for_statement(ps, parent, allocator)
     case .KW_If: return parse_if_statement(ps, parent, allocator)
     case .KW_Print: return parse_print_statement(ps, parent, allocator)
+    case .KW_Println: return parse_println_statement(ps, parent, allocator)
     case .KW_Return: return parse_return_statement(ps, parent, allocator)
     case .KW_Size_Of: 
         return nil, make_parse_error(ps, fmt.tprintf("Cannot use `%v` here as a statement", ps.current_token.source))
@@ -594,12 +598,57 @@ parse_print_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := co
     print_node.parent = parent
     print_node.span = Span{start = span_start, end = ps.idx}
     
-    content := parse_expression(ps, print_node, allocator) or_return
-    print_node.payload = Node_Print{content = content}
+    // Parse variable number of arguments
+    args := make([dynamic]^Node, allocator)
+    if ps.current_token.kind != .Right_Paren {
+        for {
+            arg := parse_expression(ps, print_node, allocator) or_return
+            append(&args, arg)
+            
+            if ps.current_token.kind != .Comma {
+                break
+            }
+            parser_advance(ps) // consume comma
+        }
+    }
+    
+    print_node.payload = Node_Print{args = args}
     
     parser_consume(ps, .Right_Paren) or_return
     
     return print_node, nil
+}
+
+parse_println_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
+    span_start := ps.idx
+    
+    parser_advance(ps)
+    parser_consume(ps, .Left_Paren) or_return
+    
+    println_node := new(Node, allocator)
+    println_node.node_kind = .Println
+    println_node.parent = parent
+    println_node.span = Span{start = span_start, end = ps.idx}
+    
+    // Parse variable number of arguments
+    args := make([dynamic]^Node, allocator)
+    if ps.current_token.kind != .Right_Paren {
+        for {
+            arg := parse_expression(ps, println_node, allocator) or_return
+            append(&args, arg)
+            
+            if ps.current_token.kind != .Comma {
+                break
+            }
+            parser_advance(ps) // consume comma
+        }
+    }
+    
+    println_node.payload = Node_Println{args = args}
+    
+    parser_consume(ps, .Right_Paren) or_return
+    
+    return println_node, nil
 }
 
 parse_expression :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {

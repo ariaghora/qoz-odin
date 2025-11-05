@@ -460,6 +460,79 @@ codegen_struct_defs :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
     }
 }
 
+codegen_print_impl :: proc(ctx_cg: ^Codegen_Context, args: [dynamic]^Node, add_newline: bool) {
+    if len(args) == 0 {
+        if add_newline {
+            strings.write_string(&ctx_cg.output_buf, "printf(\"\\n\");\n")
+        }
+        return
+    }
+    
+    // Build format string and collect arguments
+    format_parts := make([dynamic]string, context.temp_allocator)
+    
+    for arg in args {
+        expr_type := arg.inferred_type.? or_else panic("Type not annotated")
+        
+        // Determine format specifier
+        format_spec := ""
+        #partial switch t in expr_type {
+        case Primitive_Type:
+            switch t {
+            case .I8, .U8, .I32, .I64: format_spec = "%d"
+            case .F32, .F64: format_spec = "%f"
+            case .Bool: format_spec = "%d"
+            case .Void: panic("Cannot print void")
+            }
+        case Named_Type:
+            if t.name == "string" {
+                format_spec = "%.*s"
+            } else {
+                panic("Cannot print named type")
+            }
+        case Untyped_Int: format_spec = "%d"
+        case Untyped_Float: format_spec = "%f"
+        case:
+            panic("Cannot print this type")
+        }
+        
+        append(&format_parts, format_spec)
+    }
+    
+    // Write printf call
+    strings.write_string(&ctx_cg.output_buf, "printf(\"")
+    for part, i in format_parts {
+        strings.write_string(&ctx_cg.output_buf, part)
+        if i < len(format_parts) - 1 {
+            strings.write_string(&ctx_cg.output_buf, " ")
+        }
+    }
+    if add_newline {
+        strings.write_string(&ctx_cg.output_buf, "\\n")
+    }
+    strings.write_string(&ctx_cg.output_buf, "\"")
+    
+    // Write arguments
+    for arg in args {
+        strings.write_string(&ctx_cg.output_buf, ", ")
+        
+        expr_type := arg.inferred_type.? or_else panic("Type not annotated")
+        
+        // Special handling for string
+        if named, is_named := expr_type.(Named_Type); is_named && named.name == "string" {
+            strings.write_string(&ctx_cg.output_buf, "(int)(")
+            codegen_node(ctx_cg, arg)
+            strings.write_string(&ctx_cg.output_buf, ").len, (")
+            codegen_node(ctx_cg, arg)
+            strings.write_string(&ctx_cg.output_buf, ").data")
+        } else {
+            codegen_node(ctx_cg, arg)
+        }
+    }
+    
+    strings.write_string(&ctx_cg.output_buf, ");\n")
+}
+
 codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
     #partial switch node.node_kind {
     case .Program:
@@ -826,42 +899,11 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
 
     case .Print:
         print := node.payload.(Node_Print)
-        
-        // Get type of expression being printed
-        expr_type := print.content.inferred_type.? or_else panic("Type not annotated")
-
-        // Special handling for string
-        if named, is_named := expr_type.(Named_Type); is_named && named.name == "string" {
-            strings.write_string(&ctx_cg.output_buf, "{ Qoz_String __tmp = ")
-            codegen_node(ctx_cg, print.content)
-            strings.write_string(&ctx_cg.output_buf, "; printf(\"%.*s\\n\", (int)__tmp.len, __tmp.data); }\n")
-            return
-        }
-        
-        // Determine format specifier
-        format_spec := ""
-        switch t in expr_type {
-        case Primitive_Type:
-            switch t {
-            case .I8, .U8, .I32, .I64: format_spec = "%d"
-            case .F32, .F64: format_spec = "%f"
-            case .Bool: format_spec = "%d"
-            case .Void: panic("Cannot print void")
-            }
-        case Function_Type: panic("Cannot print function")
-        case Array_Type: panic("Cannot print array")
-        case Pointer_Type: panic("Cannot print pointer")
-        case Struct_Type: panic("Cannot print pointer")
-        case Named_Type: panic("Cannot print named type")
-        case Untyped_Int: format_spec = "%d"
-        case Untyped_Float: format_spec = "%f"
-        }
-        
-        strings.write_string(&ctx_cg.output_buf, "printf(\"")
-        strings.write_string(&ctx_cg.output_buf, format_spec)
-        strings.write_string(&ctx_cg.output_buf, "\\n\", ")
-        codegen_node(ctx_cg, print.content)
-        strings.write_string(&ctx_cg.output_buf, ");\n")
+        codegen_print_impl(ctx_cg, print.args, false)
+    
+    case .Println:
+        println := node.payload.(Node_Println)
+        codegen_print_impl(ctx_cg, println.args, true)
 
     case .Size_Of:
         sizeof_op := node.payload.(Node_Size_Of)

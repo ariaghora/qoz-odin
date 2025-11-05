@@ -18,38 +18,44 @@ Person := struct {
 }
 
 main := func() {
-    print("Hello, welcome to QOZ Language Tour!")
+    banner("Hello world! Welcome to QOZ Language Tour.")
 
-    // You can omit type annotation as "untyped integer" by default, which is compatible with i32, i64, and other typed integers.
+    // You can omit type annotation as "untyped integer" by default, which is compatible
+    // with i32, i64, and other typed integers.
     x := 10
-    // To you can specify type annotation explicitly like this
+    // To you can specify explicit type annotation explicitly like this:
     y : i32 = 20
     // alternatively, you can typecast it
     // y := 20 as i32
     x_plus_y := x + y
+    println("x + y =", x_plus_y)
 
+    banner("Struct Example")
+
+    // You can create struct instances like this
     person_alice := Person{name: "Alice", age: 30}
     // alternative:
     // person_alice : Person = {name: "Alice", age: 30}
     person_bob := get_bob_info()
+    println("Person Information:")
+    println("Name:", person_alice.name, ", Age:", person_alice.age)
+    println("Name:", person_bob.name, ", Age:", person_bob.age)
+    
 
-    print(person_alice.name)
-    print(person_alice.age)
-
+    banner("Memory Management In Qoz")
     // Allocators are central to QOZ's memory management
+    // Qoz provides different types of allocators. For example, check out examples/arena_alloc/main.qoz for
+    // arena allocator usage.
     alloc := mem.default_allocator() // Default allocator is heap allocator with libc's malloc free underneath
     first_name := "Charlie "
     last_name := "Brown"
     full_name := strings.string_concat(first_name, last_name, alloc)
-    print(full_name)
-    // Qoz provides different types of allocators. For example, check out examples/arena_alloc/main.qoz for
-    // arena allocator usage.
+    println(full_name)
 
+
+    banner("Static Array Example")
     // You can create a static array like this. The size must be a compile-time constant.
     fruits := arr<string, 3>{"Apple", "Banana", "Cherry"}
-    for fruit in fruits {
-        print(fruit)
-    }
 
     // You can create an array of structs or other more complex types as well.
     points := arr<Vec2D, 3>{
@@ -64,41 +70,48 @@ main := func() {
     //     Vec2D{x: 5.0, y: 6.0},
     // }
 
+
+    banner("Loop In Qoz")
+
+    // The first style is a for-in loop, which iterates over each element in the array.
+    for fruit in fruits {
+        println(fruit)
+    }
+
     // C-style for loop is also supported. Here, you can use len() function to get the length of the array.
     // The len() function works with static arrays, vectors, strings, and maps.
     // TODO(Aria): implement vector and map
     for i := 0; i < len(points); i += 1 {
-        print(points[i].x)
-        print(", ")
-        print(points[i].y)
+        println(points[i].x, points[i].y)
     }
+
+    banner("Function as First-Class Citizens")
 
     // You can pass functions as parameters.
     // TODO(Aria): support anonymous functions as arguments. However, the anonymous function or nested function
     //             will not be implemented as a closure, and thus, will not capture the outer scope variables.
     sum := operation(10, 5, add)
     difference := operation(10, 5, subtract)
-    print("Sum: ")
-    print(sum)
-    print("Difference: ")
-    print(difference)
+    println("Sum:", sum)
+    println("Difference:", difference)
+
     // Consequently, it is also possible to use function type as struct members.
     fp := FunctionWrapper{func_ptr: f}
     result := fp.func_ptr(7, 3)
-    print("Result from function pointer: ")
-    print(result)
+    println("Result from function pointer:", result)
+
+    banner("Control Flow Example")
 
     my_lucky_number := 42
     if my_lucky_number == 42 {
-        print("You found the lucky number!\n")
+        println("You found the lucky number!\n")
     } else {
-        print("Try again!\n")
+        println("Try again!\n")
     }
 
-    print("What is the GCD of 48 and 18?")
+    println("What is the GCD of 48 and 18?")
     gcd_result := gcd_recursive(48, 18)
-    print("GCD is: ")
-    print(gcd_result)
+    println("GCD is:", gcd_result)
 }
 
 //| 
@@ -111,10 +124,8 @@ Vec2D := struct {
     y: f64,
 }
 
-
-add      := func(x: i32, y: i32): i32 { return x + y }
-subtract := func(x: i32, y: i32): i32 { return x - y }
-
+add       := func(x: i32, y: i32): i32 { return x + y }
+subtract  := func(x: i32, y: i32): i32 { return x - y }
 operation := func(a: i32, b: i32, f: func(i32, i32): i32): i32 {
     return f(a, b)
 }
@@ -132,4 +143,17 @@ gcd_recursive := func(a: i32, b: i32): i32 {
 f := func(x: i32, y: i32): i32 { return x + y }
 FunctionWrapper := struct {
     func_ptr: func(i32, i32): i32,
+}
+
+banner := func(msg: string) {
+    println()
+    for i := 0; i < len(msg) + 4; i += 1 {
+        print("*")
+    }
+    println()
+    println("*", msg, "*")
+    for i := 0; i < len(msg) + 4; i += 1 {
+        print("*")
+    }
+    println("\n")
 }

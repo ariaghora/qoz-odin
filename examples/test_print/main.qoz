@@ -1,0 +1,24 @@
+main := func() {
+    // Test print with no newline
+    print("Hello")
+    print(" ")
+    print("World")
+    print("\n")
+    
+    // Test println with newline
+    println("This is println")
+    println("Multiple", "arguments", "work")
+    
+    // Test with numbers
+    x := 42
+    y := 3.14
+    println("x =", x, "and y =", y)
+    
+    // Test empty println
+    println()
+    
+    // Test mixed types
+    name := "Alice"
+    age := 30
+    println("Name:", name, "Age:", age)
+}

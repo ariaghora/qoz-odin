@@ -13,7 +13,7 @@ Token_Kind :: enum {
     Left_Brace, Right_Brace,
     Left_Bracket, Right_Bracket,
     Lit_Number, Lit_String, Lit_Nil,
-    KW_Fn, KW_External, KW_If, KW_Else, KW_Print, KW_Return, KW_As,
+    KW_Fn, KW_External, KW_If, KW_Else, KW_Print, KW_Println, KW_Return, KW_As,
     KW_I8, KW_U8, KW_I32, KW_I64, KW_F32, KW_F64, KW_Void, 
     KW_Arr, KW_Map, KW_For, KW_In, KW_Struct,
     KW_Size_Of, KW_Len, KW_Del,
@@ -115,6 +115,7 @@ make_id_or_kw :: proc(t: ^Tokenizer) {
     case "if":       tok_kind = .KW_If
     case "else":     tok_kind = .KW_Else
     case "print":    tok_kind = .KW_Print
+    case "println":  tok_kind = .KW_Println
     case "return":   tok_kind = .KW_Return
     case "nil":      tok_kind = .Lit_Nil
     case "i8":       tok_kind = .KW_I8

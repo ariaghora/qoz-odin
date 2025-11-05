@@ -1058,8 +1058,18 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
         return array_type
 
     case .Print:
-        content_type := check_node(ctx, node.payload.(Node_Print).content)
-        return content_type
+        print_node := node.payload.(Node_Print)
+        for arg in print_node.args {
+            check_node(ctx, arg)
+        }
+        return Primitive_Type.Void
+    
+    case .Println:
+        println_node := node.payload.(Node_Println)
+        for arg in println_node.args {
+            check_node(ctx, arg)
+        }
+        return Primitive_Type.Void
 
     case .Return:
         ret := node.payload.(Node_Return)
