@@ -8,7 +8,13 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 
+Compiler_Command :: enum {
+	Build,
+	Run,
+}
+
 Compiler_Options :: struct {
+	command:          Compiler_Command,
 	entry_dir:        string,
 	output_file:      string,
 	optimization:     string,  // "0", "1", "2", "3"
@@ -33,6 +39,7 @@ print_semantic_errors :: proc(errors: [dynamic]Semantic_Error, tokens_map: map[s
 
 parse_cli_args :: proc() -> (Compiler_Options, bool) {
 	opts := Compiler_Options{
+		command = .Build,
 		optimization = "3",
 	}
 
@@ -42,6 +49,25 @@ parse_cli_args :: proc() -> (Compiler_Options, bool) {
 	}
 
 	i := 1
+	
+	// First argument: command (build or run) or help
+	arg := os.args[i]
+	if arg == "-h" || arg == "--help" {
+		print_usage()
+		return opts, false
+	} else if arg == "build" {
+		opts.command = .Build
+		i += 1
+	} else if arg == "run" {
+		opts.command = .Run
+		i += 1
+	} else {
+		fmt.eprintfln("Error: Command required. Use 'build' or 'run'")
+		print_usage()
+		return opts, false
+	}
+	
+	// Parse remaining arguments
 	for i < len(os.args) {
 		arg := os.args[i]
 		
@@ -94,7 +120,11 @@ parse_cli_args :: proc() -> (Compiler_Options, bool) {
 }
 
 print_usage :: proc() {
-	fmt.eprintln("Usage: qoz [OPTIONS] <entry_package_dir>")
+	fmt.eprintln("Usage: qoz <command> [OPTIONS] <entry_package_dir>")
+	fmt.eprintln()
+	fmt.eprintln("Commands:")
+	fmt.eprintln("  build                  Compile and create executable (default)")
+	fmt.eprintln("  run                    Compile, run, then remove executable")
 	fmt.eprintln()
 	fmt.eprintln("Options:")
 	fmt.eprintln("  -o, --output <file>    Set output executable name (default: directory basename)")
@@ -223,7 +253,41 @@ main :: proc() {
 		if opts.verbose {
 			fmt.println("Compilation successful")
 		}
-		fmt.printfln("Compiled successfully: ./%s", opts.output_file)
+		
+		if opts.command == .Build {
+			fmt.printfln("Compiled successfully: ./%s", opts.output_file)
+		} else if opts.command == .Run {
+			// Run the executable
+			if opts.verbose {
+				fmt.printfln("Running ./%s", opts.output_file)
+			}
+			
+			run_state, run_stdout, run_stderr, run_err := os2.process_exec({
+				command = []string{fmt.tprintf("./%s", opts.output_file)},
+			}, context.temp_allocator)
+			
+			if run_err != nil {
+				fmt.eprintfln("Failed to run executable: %v", run_err)
+				os.remove(opts.output_file)
+				os.exit(1)
+			}
+			
+			// Print output from the program
+			if len(run_stdout) > 0 {
+				fmt.print(string(run_stdout))
+			}
+			if len(run_stderr) > 0 {
+				fmt.eprint(string(run_stderr))
+			}
+			
+			// Remove the executable after running
+			os.remove(opts.output_file)
+			
+			// Exit with the same code as the program
+			if run_state.exit_code != 0 {
+				os.exit(run_state.exit_code)
+			}
+		}
 	} else {
 		fmt.eprintfln("Compilation failed with exit code %d", state.exit_code)
 		if len(stderr) > 0 {
