@@ -1,10 +1,14 @@
-import "std:strings"
+import "std:strings" 
+// It is possible to alias imported modules for easier access:
+// import str "std:strings"
+// Then, you can use, e.g., str.string_concat instead of strings.string_concat
+
 // Import statement is not necessarily in the top of the file.
 // It can be placed anywhere in the file as long as it is on the top level scope.
 // However, it is a good practice to put all import statements at the top of the file.
 import "std:mem" 
 
-get_bob_info :=func(): Person {
+get_bob_info := func(): Person {
     return {name: "Bob", age: 25}
 }
 
@@ -13,18 +17,20 @@ Person := struct {
     age: i32,
 }
 
-FunctionPointer := struct {
-    func_ptr: func(i32, i32): i32,
-}
-
-f := func(x: i32, y: i32): i32 {
-    return x + y
-}
-
 main := func() {
-    print("Hello, QOZ Language Tour!")
+    print("Hello, welcome to QOZ Language Tour!")
+
+    // You can omit type annotation as "untyped integer" by default, which is compatible with i32, i64, and other typed integers.
+    x := 10
+    // To you can specify type annotation explicitly like this
+    y : i32 = 20
+    // alternatively, you can typecast it
+    // y := 20 as i32
+    x_plus_y := x + y
 
     person_alice := Person{name: "Alice", age: 30}
+    // alternative:
+    // person_alice : Person = {name: "Alice", age: 30}
     person_bob := get_bob_info()
 
     print(person_alice.name)
@@ -36,53 +42,93 @@ main := func() {
     last_name := "Brown"
     full_name := strings.string_concat(first_name, last_name, alloc)
     print(full_name)
+    // Qoz provides different types of allocators. For example, check out examples/arena_alloc/main.qoz for
+    // arena allocator usage.
 
+    // You can create a static array like this. The size must be a compile-time constant.
+    fruits := arr<string, 3>{"Apple", "Banana", "Cherry"}
+    for fruit in fruits {
+        print(fruit)
+    }
+
+    // You can create an array of structs or other more complex types as well.
     points := arr<Vec2D, 3>{
         {x: 1.0, y: 2.0},
         {x: 3.0, y: 4.0},
         {x: 5.0, y: 6.0},
     }
-    // It is also possible to be more explicit
+    // It is also possible to be more explicit:
     // points := arr<Vec2D, 3>{
     //     Vec2D{x: 1.0, y: 2.0},
     //     Vec2D{x: 3.0, y: 4.0},
     //     Vec2D{x: 5.0, y: 6.0},
     // }
 
-    for point in points {
-        print(point.x)
+    // C-style for loop is also supported. Here, you can use len() function to get the length of the array.
+    // The len() function works with static arrays, vectors, strings, and maps.
+    // TODO(Aria): implement vector and map
+    for i := 0 as i64; i < len(points); i = i + 1 {
+        print(points[i].x)
         print(", ")
-        print(point.y)
+        print(points[i].y)
     }
 
-    // Function as first-class citizens
+    // You can pass functions as parameters.
+    // TODO(Aria): support anonymous functions as arguments. However, the anonymous function or nested function
+    //             will not be implemented as a closure, and thus, will not capture the outer scope variables.
     sum := operation(10, 5, add)
     difference := operation(10, 5, subtract)
     print("Sum: ")
     print(sum)
     print("Difference: ")
     print(difference)
-
-    fp := FunctionPointer{func_ptr: f}
+    // Consequently, it is also possible to use function type as struct members.
+    fp := FunctionWrapper{func_ptr: f}
     result := fp.func_ptr(7, 3)
     print("Result from function pointer: ")
     print(result)
+
+    my_lucky_number := 42
+    if my_lucky_number == 42 {
+        print("You found the lucky number!\n")
+    } else {
+        print("Try again!\n")
+    }
+
+    print("What is the GCD of 48 and 18?")
+    gcd_result := gcd_recursive(48, 18)
+    print("GCD is: ")
+    print(gcd_result)
 }
+
+//| 
+//| Struct and function definitions can be placed after the function that uses it.
+//+------------------------------------------------------------------------------
+
+Vec2D := struct {
+    x: f64,
+    y: f64,
+}
+
+
+add      := func(x: i32, y: i32): i32 { return x + y }
+subtract := func(x: i32, y: i32): i32 { return x - y }
 
 operation := func(a: i32, b: i32, f: func(i32, i32): i32): i32 {
     return f(a, b)
 }
 
-add := func(x: i32, y: i32): i32 {
-    return x + y
+
+gcd_recursive := func(a: i32, b: i32): i32 {
+    if b == 0 {
+        return a
+    } else {
+        return gcd_recursive(b, a % b)
+    }
 }
 
-subtract := func(x: i32, y: i32): i32 {
-    return x - y
-}
-
-// Struct definition can be placed after the function that uses it.
-Vec2D := struct {
-    x: f64,
-    y: f64,
+// Do some fun with function inside a struct
+f := func(x: i32, y: i32): i32 { return x + y }
+FunctionWrapper := struct {
+    func_ptr: func(i32, i32): i32,
 }
