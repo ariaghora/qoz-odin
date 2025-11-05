@@ -18,6 +18,7 @@ Node_Kind :: enum {
     Assignment,
     Bin_Op,
     Cast,
+    Defer,
     Del,
     Expr_Statement,
     Field_Access,
@@ -109,6 +110,7 @@ Node_Assign         :: struct {
 Node_Bin_Op         :: struct { left, right: ^Node, op: Token }
 Node_Call           :: struct { callee: ^Node, args: [dynamic]^Node }
 Node_Cast           :: struct { expr: ^Node, target_type: Type_Info }
+Node_Defer          :: struct { body: [dynamic]^Node }
 Node_Del            :: struct { pointer: ^Node, allocator: ^Node }
 Node_Field_Access   :: struct { object: ^Node, field_name: string }
 Node_Fn_Def         :: struct { params: [dynamic]Fn_Param, body: [dynamic]^Node, return_type: Type_Info, is_external: bool}
@@ -145,6 +147,7 @@ Node :: struct {
         Node_Bin_Op,
         Node_Call,
         Node_Cast,
+        Node_Defer,
         Node_Expr_Statement,
         Node_Field_Access,
         Node_Fn_Def,
@@ -448,6 +451,7 @@ parse_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.
             },
         }, allocator), nil
 
+    case .KW_Defer: return parse_defer_statement(ps, parent, allocator)
     case .KW_For: return parse_for_statement(ps, parent, allocator)
     case .KW_If: return parse_if_statement(ps, parent, allocator)
     case .KW_Print: return parse_print_statement(ps, parent, allocator)
@@ -585,6 +589,40 @@ parse_size_of_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := 
     parser_consume(ps, .Right_Paren) or_return
     
     return size_of_node, nil
+}
+
+parse_defer_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
+    span_start := ps.idx
+    
+    parser_advance(ps) // consume 'defer'
+    
+    defer_node := new(Node, allocator)
+    defer_node.node_kind = .Defer
+    defer_node.parent = parent
+    defer_node.span = Span{start = span_start, end = ps.idx}
+    
+    body := make([dynamic]^Node, allocator)
+    
+    // Check if it's a block: defer { ... }
+    if ps.current_token.kind == .Left_Brace {
+        parser_advance(ps) // consume '{'
+        
+        // Parse statements until we hit '}'
+        for ps.current_token.kind != .Right_Brace && ps.current_token.kind != .EOF {
+            stmt := parse_statement(ps, defer_node, allocator) or_return
+            append(&body, stmt)
+        }
+        
+        parser_consume(ps, .Right_Brace) or_return
+    } else {
+        // Single statement: defer print(x)
+        stmt := parse_statement(ps, defer_node, allocator) or_return
+        append(&body, stmt)
+    }
+    
+    defer_node.payload = Node_Defer{body = body}
+    
+    return defer_node, nil
 }
 
 parse_print_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {

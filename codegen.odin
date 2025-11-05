@@ -16,6 +16,7 @@ Codegen_Context :: struct {
     skip_struct_defs: bool,
     generated_array_wrappers: map[string]bool, // Track which array wrapper structs we've generated
     current_function_locals: map[string]bool, // Track parameters and local variables in current function
+    defer_stack: [dynamic][dynamic]^Node, // Stack of defer lists per scope
 }
 
 MANGLE_PREFIX :: "qoz__"
@@ -460,6 +461,21 @@ codegen_struct_defs :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
     }
 }
 
+codegen_emit_defers :: proc(ctx_cg: ^Codegen_Context) {
+    if len(ctx_cg.defer_stack) == 0 do return
+    
+    defer_list := ctx_cg.defer_stack[len(ctx_cg.defer_stack) - 1]
+    
+    // Execute defers in reverse order (LIFO)
+    for i := len(defer_list) - 1; i >= 0; i -= 1 {
+        defer_node := defer_list[i].payload.(Node_Defer)
+        for stmt in defer_node.body {
+            codegen_indent(ctx_cg, ctx_cg.indent_level)
+            codegen_node(ctx_cg, stmt)
+        }
+    }
+}
+
 codegen_print_impl :: proc(ctx_cg: ^Codegen_Context, args: [dynamic]^Node, add_newline: bool) {
     if len(args) == 0 {
         if add_newline {
@@ -888,8 +904,19 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         fmt.sbprintf(&ctx_cg.output_buf, "%d", len(str_content))
         strings.write_string(&ctx_cg.output_buf, "}")
     
+    case .Defer:
+        // Collect defer, don't emit yet
+        defer_node := node.payload.(Node_Defer)
+        if len(ctx_cg.defer_stack) > 0 {
+            append(&ctx_cg.defer_stack[len(ctx_cg.defer_stack) - 1], node)
+        }
+    
     case .Return:
         ret := node.payload.(Node_Return)
+        
+        // Emit all defers in current scope in reverse order
+        codegen_emit_defers(ctx_cg)
+        
         strings.write_string(&ctx_cg.output_buf, "return")
         if ret.value != nil {
             strings.write_string(&ctx_cg.output_buf, " ")
@@ -986,12 +1013,19 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
                 ctx_cg.current_function_locals[param.name] = true
             }
             
+            // Push a new defer scope for this function
+            append(&ctx_cg.defer_stack, make([dynamic]^Node, ctx_cg.ctx_sem.allocator))
+            
             codegen_func_signature(ctx_cg, var_def.name, fn_def, qualified_fn_type)
             strings.write_string(&ctx_cg.output_buf, " {\n")
             for stmt in fn_def.body {
                 codegen_indent(ctx_cg, ctx_cg.indent_level)
                 codegen_node(ctx_cg, stmt)
             }
+            
+            // Emit defers before function exit
+            codegen_emit_defers(ctx_cg)
+            
             // Special case: add return 0 to main 
             if var_def.name == "main" {
                 codegen_indent(ctx_cg, ctx_cg.indent_level)
@@ -999,6 +1033,10 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
             }
 
             strings.write_string(&ctx_cg.output_buf, "}\n\n")
+            
+            // Pop defer scope
+            pop(&ctx_cg.defer_stack)
+            
             ctx_cg.func_nesting_depth -= 1
             ctx_cg.indent_level -= 1
         } else if var_def.content.node_kind == .Type_Expr {

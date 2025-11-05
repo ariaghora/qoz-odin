@@ -1070,6 +1070,23 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
             check_node(ctx, arg)
         }
         return Primitive_Type.Void
+    
+    case .Defer:
+        defer_node := node.payload.(Node_Defer)
+        
+        // Check that defer is inside a function
+        _, in_function := ctx.current_function_return_type.?
+        if !in_function {
+            add_error(ctx, node.span, "Defer statement outside function")
+            return Primitive_Type.Void
+        }
+        
+        // Check all statements in the defer body
+        for stmt in defer_node.body {
+            check_node(ctx, stmt)
+        }
+        
+        return Primitive_Type.Void
 
     case .Return:
         ret := node.payload.(Node_Return)
