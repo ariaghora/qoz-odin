@@ -15,6 +15,7 @@ Codegen_Context :: struct {
     current_pkg_name: string,
     skip_struct_defs: bool,
     generated_array_wrappers: map[string]bool, // Track which array wrapper structs we've generated
+    current_function_locals: map[string]bool, // Track parameters and local variables in current function
 }
 
 MANGLE_PREFIX :: "qoz__"
@@ -680,7 +681,13 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
             return
         }
         
-        // 2) Check if it's a package-level symbol (needs mangling)
+        // 2) Check if it's a local variable or parameter (no mangling)
+        if iden.name in ctx_cg.current_function_locals {
+            strings.write_string(&ctx_cg.output_buf, iden.name)
+            return
+        }
+        
+        // 3) Check if it's a package-level symbol (needs mangling)
         // Look in current package's symbols
         pkg_dir := ""
         for dir, pkg_info in ctx_cg.ctx_sem.packages {
@@ -911,6 +918,13 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
 
             ctx_cg.func_nesting_depth += 1
             ctx_cg.indent_level += 1
+            
+            // Track parameters and local variables in this function
+            clear(&ctx_cg.current_function_locals)
+            for param in fn_def.params {
+                ctx_cg.current_function_locals[param.name] = true
+            }
+            
             codegen_func_signature(ctx_cg, var_def.name, fn_def, qualified_fn_type)
             strings.write_string(&ctx_cg.output_buf, " {\n")
             for stmt in fn_def.body {
@@ -967,6 +981,11 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
             //| Regular case
             //+-------------
             var_type := node.inferred_type.(Type_Info)
+
+            // Track local variable in current function
+            if ctx_cg.func_nesting_depth > 0 {
+                ctx_cg.current_function_locals[var_def.name] = true
+            }
 
             codegen_type(ctx_cg, node.inferred_type.(Type_Info))
             strings.write_string(&ctx_cg.output_buf, " ")
@@ -1187,9 +1206,15 @@ codegen_func_signature :: proc(ctx_cg: ^Codegen_Context, fn_name: string, node: 
             if fn_type, ok := qualified_type.?; ok && i < len(fn_type.params) {
                 param_type = fn_type.params[i]
             }
-            codegen_type(ctx_cg, param_type)
-            strings.write_string(&ctx_cg.output_buf, " ")
-            strings.write_string(&ctx_cg.output_buf, param.name)
+            
+            // For function pointer types, the name must be inside the type declaration
+            if _, is_fn_ptr := param_type.(Function_Type); is_fn_ptr {
+                codegen_type(ctx_cg, param_type, param.name)
+            } else {
+                codegen_type(ctx_cg, param_type)
+                strings.write_string(&ctx_cg.output_buf, " ")
+                strings.write_string(&ctx_cg.output_buf, param.name)
+            }
             if i < len(node.params)-1 do strings.write_string(&ctx_cg.output_buf, ", ")
         }
     }

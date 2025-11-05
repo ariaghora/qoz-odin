@@ -13,6 +13,14 @@ Person := struct {
     age: i32,
 }
 
+FunctionPointer := struct {
+    func_ptr: func(i32, i32): i32,
+}
+
+f := func(x: i32, y: i32): i32 {
+    return x + y
+}
+
 main := func() {
     print("Hello, QOZ Language Tour!")
 
@@ -54,6 +62,11 @@ main := func() {
     print(sum)
     print("Difference: ")
     print(difference)
+
+    fp := FunctionPointer{func_ptr: f}
+    result := fp.func_ptr(7, 3)
+    print("Result from function pointer: ")
+    print(result)
 }
 
 operation := func(a: i32, b: i32, f: func(i32, i32): i32): i32 {
