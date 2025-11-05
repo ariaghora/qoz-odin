@@ -907,6 +907,46 @@ parse_struct_literal :: proc(ps: ^Parsing_State, type_name: string, parent: ^Nod
     return struct_node, nil
 }
 
+parse_untyped_struct_literal :: proc(ps: ^Parsing_State, parent: ^Node, span_start: int, allocator := context.allocator) -> (res:^Node, err:Maybe(Parse_Error)) {
+    // Left brace already consumed, parse field initializations
+    field_inits := make([dynamic]Struct_Field_Init, allocator)
+    
+    for ps.current_token.kind != .Right_Brace {
+        if ps.current_token.kind == .EOF {
+            return nil, make_parse_error(ps, "Unexpected EOF in struct literal")
+        }
+        
+        if ps.current_token.kind != .Iden do return nil, make_parse_error(ps, "Expected field name")
+        
+        field_name := ps.current_token.source
+        parser_advance(ps)
+        parser_consume(ps, .Colon) or_return
+        
+        // Parse field value
+        field_value := parse_expression(ps, parent, allocator) or_return
+        append(&field_inits, Struct_Field_Init{name = field_name, value = field_value})
+        
+        if ps.current_token.kind == .Comma {
+            parser_advance(ps)
+        } else if ps.current_token.kind != .Right_Brace {
+            return nil, make_parse_error(ps, "Expected ',' or '}' in struct literal")
+        }
+    }
+    
+    parser_consume(ps, .Right_Brace) or_return
+    
+    struct_node := new(Node, allocator)
+    struct_node.node_kind = .Struct_Literal
+    struct_node.parent = parent
+    struct_node.span = Span{start = span_start, end = ps.idx - 1}
+    struct_node.payload = Node_Struct_Literal{
+        type_name = "",  // Empty = to be inferred
+        field_inits = field_inits,
+    }
+    
+    return struct_node, nil
+}
+
 parse_literal_number :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     span_start := ps.idx
     tok := ps.current_token
@@ -1102,7 +1142,15 @@ parse_untyped_compound_literal :: proc(ps: ^Parsing_State, parent: ^Node, alloca
     
     parser_consume(ps, .Left_Brace) or_return
     
-    // Parse elements (could be expressions or nested compound literals)
+    // Peek ahead to determine if this is a struct literal or array literal
+    // Struct literal pattern: { identifier : value, ... }
+    // Array literal pattern: { expression, ... }
+    if ps.current_token.kind == .Iden && ps.idx + 1 < len(ps.tokens) && ps.tokens[ps.idx + 1].kind == .Colon {
+        // It's a struct literal without type name
+        return parse_untyped_struct_literal(ps, parent, span_start, allocator)
+    }
+    
+    // Parse as array literal
     elements := make([dynamic]^Node, allocator)
     for ps.current_token.kind != .Right_Brace {
         elem := parse_expression(ps, parent, allocator) or_return

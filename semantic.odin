@@ -693,8 +693,15 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
         object_type := check_node(ctx, index_node.object)
         index_type := check_node(ctx, index_node.index)
         
-        if index_prim, is_prim := index_type.(Primitive_Type); !is_prim || 
-        (index_prim != .I32 && index_prim != .I64) {
+        // Accept untyped integers, I32, or I64
+        is_valid_index := false
+        if _, is_untyped := index_type.(Untyped_Int); is_untyped {
+            is_valid_index = true
+        } else if index_prim, is_prim := index_type.(Primitive_Type); is_prim {
+            is_valid_index = (index_prim == .I32 || index_prim == .I64)
+        }
+        
+        if !is_valid_index {
             add_error(ctx, index_node.index.span, "Index must be integer")
         }
         
@@ -726,8 +733,8 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
         // Just validate it, don't redefine
         if already_defined && existing_sym.pkg_dir != "" {
             // Symbol was collected in pass 1, just validate
-            value_type := check_node(ctx, var_def.content)
             actual_type := existing_sym.type
+            value_type := check_node(ctx, var_def.content, actual_type)
             
             if !types_compatible(actual_type, value_type) {
                 add_error(ctx, node.span, "Type mismatch: declared as %v but initialized with %v", 
@@ -759,7 +766,14 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
             #partial switch var_def.content.node_kind {
             case .Struct_Literal:
                 struct_lit := var_def.content.payload.(Node_Struct_Literal)
-                declared_type = Named_Type{name = struct_lit.type_name}
+                if struct_lit.type_name != "" {
+                    declared_type = Named_Type{name = struct_lit.type_name}
+                } else if explicit, has_explicit := var_def.explicit_type.?; has_explicit {
+                    declared_type = explicit
+                } else {
+                    // No type provided, can't infer
+                    declared_type = check_node(ctx, var_def.content)
+                }
             
             case:
                 if explicit, has_explicit := var_def.explicit_type.?; has_explicit {
@@ -775,7 +789,7 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
             
             // Validate initializer (only if not already checked during inference)
             if _, has_explicit := var_def.explicit_type.?; has_explicit {
-                value_type := check_node(ctx, var_def.content)
+                value_type := check_node(ctx, var_def.content, declared_type)
                 if !types_compatible(declared_type, value_type) {
                     add_error(ctx, node.span, "Type mismatch: declared as %v but initialized with %v", 
                         declared_type, value_type)
@@ -1028,16 +1042,34 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
     case .Struct_Literal:
         struct_lit := node.payload.(Node_Struct_Literal)
         
-        resolved_type, ok := resolve_named_type(ctx, Named_Type{name = struct_lit.type_name})
+        // Infer type name from expected_type if not provided
+        type_name := struct_lit.type_name
+        if type_name == "" {
+            if expected_type == nil {
+                add_error(ctx, node.span, "Cannot infer struct literal type without context")
+                node.inferred_type = Primitive_Type.Void
+                return Primitive_Type.Void
+            }
+            
+            if named, is_named := expected_type.(Named_Type); is_named {
+                type_name = named.name
+            } else {
+                add_error(ctx, node.span, "Cannot infer struct literal type: expected %v", expected_type)
+                node.inferred_type = Primitive_Type.Void
+                return Primitive_Type.Void
+            }
+        }
+        
+        resolved_type, ok := resolve_named_type(ctx, Named_Type{name = type_name})
         if !ok {
-            add_error(ctx, node.span, "Undefined type '%s'", struct_lit.type_name)
+            add_error(ctx, node.span, "Undefined type '%s'", type_name)
             node.inferred_type = Primitive_Type.Void
             return Primitive_Type.Void
         }
         
         struct_type, is_struct := resolved_type.(Struct_Type)
         if !is_struct {
-            add_error(ctx, node.span, "'%s' is not a struct type", struct_lit.type_name)
+            add_error(ctx, node.span, "'%s' is not a struct type", type_name)
             node.inferred_type = Primitive_Type.Void
             return Primitive_Type.Void
         }
@@ -1087,7 +1119,7 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
             }
         }
         
-        result := Named_Type{name = struct_lit.type_name}
+        result := Named_Type{name = type_name}  // Use inferred type_name
         node.inferred_type = result
         return result
         

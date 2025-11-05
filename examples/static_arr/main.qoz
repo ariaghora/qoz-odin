@@ -20,19 +20,19 @@ get_array_of_arrays := func(): arr<arr<i32, 3>, 2> {
 }
 
 get_point := func(): Point {
-    return Point{ x: 10, y: 20 }
+    return { x: 10, y: 20 }
 }
 
 get_points := func(): arr<Point, 3> {
     return {
-        Point{ x: 1, y: 2 },
-        Point{ x: 3, y: 4 },
-        Point{ x: 5, y: 6 },
+        { x: 1, y: 2 },
+        { x: 3, y: 4 },
+        { x: 5, y: 6 },
     }
 }
 
 get_container := func(): Container {
-    return Container{
+    return {
         values: { 7, 8, 9 },
         count: 3,
     }
