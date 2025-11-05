@@ -681,6 +681,14 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
 
         object_type := check_node(ctx, field_access.object)
         
+        // Track the package name if this is a qualified type
+        pkg_name := ""
+        if named, is_named := object_type.(Named_Type); is_named {
+            if dot_idx := strings.index(named.name, "."); dot_idx != -1 {
+                pkg_name = named.name[:dot_idx]
+            }
+        }
+        
         actual_type := object_type
         if named, is_named := object_type.(Named_Type); is_named {
             resolved, ok := resolve_named_type(ctx, named)
@@ -714,8 +722,13 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
         
         for field in struct_type.fields {
             if field.name == field_access.field_name {
-                node.inferred_type = field.type
-                return field.type
+                field_type := field.type
+                // If the struct came from another package, qualify the field type
+                if pkg_name != "" {
+                    field_type = qualify_type(ctx, field_type, pkg_name, ctx.allocator)
+                }
+                node.inferred_type = field_type
+                return field_type
             }
         }
         

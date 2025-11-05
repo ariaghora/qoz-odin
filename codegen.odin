@@ -438,7 +438,15 @@ codegen_struct_defs :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
                 for field in struct_type.fields {
                     codegen_indent(ctx_cg, ctx_cg.indent_level)
 
-                    if _, is_fn := field.type.(Function_Type); is_fn {
+                    // Resolve the field type to handle type aliases
+                    resolved_field_type := field.type
+                    if named_type, is_named := field.type.(Named_Type); is_named {
+                        if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named_type, ctx_cg.current_pkg_name); ok {
+                            resolved_field_type = resolved
+                        }
+                    }
+
+                    if _, is_fn := resolved_field_type.(Function_Type); is_fn {
                         codegen_type(ctx_cg, field.type, field.name)
                     } else {
                         codegen_type(ctx_cg, field.type)
@@ -1099,7 +1107,15 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
                 for field in struct_type.fields {
                     codegen_indent(ctx_cg, ctx_cg.indent_level)
 
-                    if _, is_fn := field.type.(Function_Type); is_fn {
+                    // Resolve the field type to handle type aliases
+                    resolved_field_type := field.type
+                    if named_type, is_named := field.type.(Named_Type); is_named {
+                        if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named_type, ctx_cg.current_pkg_name); ok {
+                            resolved_field_type = resolved
+                        }
+                    }
+
+                    if _, is_fn := resolved_field_type.(Function_Type); is_fn {
                         codegen_type(ctx_cg, field.type, field.name)
                     } else {
                         codegen_type(ctx_cg, field.type)
