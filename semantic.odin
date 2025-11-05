@@ -651,7 +651,7 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
         
         // Validate allocator type (should be mem.Allocator or compatible)
         if named, is_named := allocator_type.(Named_Type); is_named {
-            if named.name != "mem.Allocator" {
+            if named.name != "mem.Allocator" { // TODO(Aria): THIS IS FUCKING UGLY
                 add_error(ctx, del_node.allocator.span, "del() requires mem.Allocator, got %v", allocator_type)
             }
         } else {
