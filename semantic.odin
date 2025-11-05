@@ -999,7 +999,7 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
 
         if ret.value != nil {
             ret_type := check_node(ctx, ret.value, expected_ret_type)
-            if !types_equal(ret_type, expected_ret_type) {
+            if !types_compatible(expected_ret_type, ret_type) {
                 add_error(ctx, node.span, "Return type mismatch: expected %v, got %v", expected_ret_type, ret_type)
             }
         } else {
@@ -1151,13 +1151,23 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
 
     case .Un_Op:
         unop := node.payload.(Node_Un_Op)
-        operand_type := check_node(ctx, unop.operand)
+        operand_type := check_node(ctx, unop.operand, expected_type)
         
         #partial switch unop.op.kind {
         case .Plus, .Minus:
+            // Handle untyped integers and floats
+            if is_untyped_int(operand_type) {
+                node.inferred_type = operand_type
+                return operand_type
+            }
+            if is_untyped_float(operand_type) {
+                node.inferred_type = operand_type
+                return operand_type
+            }
+            
             prim, ok := operand_type.(Primitive_Type)
-            if prim == .Void {
-                add_error(ctx, node.span, "Cannot apply unary operator to void")
+            if !ok || prim == .Void {
+                add_error(ctx, node.span, "Cannot apply unary operator to %v", operand_type)
                 node.inferred_type = Primitive_Type.I32
                 return Primitive_Type.I32
             }

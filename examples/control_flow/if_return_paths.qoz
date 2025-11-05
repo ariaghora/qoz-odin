@@ -17,12 +17,10 @@ guess := func(number: i32): i32 {
     return 1
 }
 
-main := func(): i32 {
+main := func() {
    print(guess(10))
    print(guess(0))
    print(guess(-10))
 
    print(gcd(48, 18))
-
-   return 0
 }
