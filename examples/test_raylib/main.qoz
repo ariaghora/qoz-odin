@@ -1,5 +1,4 @@
 import rl "vendor:raylib"
-import "std:libc"
 
 main := func() {
     title := "Raylib Test"
