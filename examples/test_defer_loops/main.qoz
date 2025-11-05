@@ -1,0 +1,43 @@
+test_defer_in_loop := func() {
+    println("=== Defer in loop ===")
+    for i := 0; i < 3; i += 1 {
+        println("Loop iteration", i)
+        defer println("  Defer from a loop iteration")
+    }
+    println("After loop")
+}
+
+test_defer_in_if := func() {
+    println("=== Defer in if ===")
+    x := 5
+    
+    if x > 0 {
+        defer println("  Defer from if block (x > 0)")
+    }
+    
+    if x < 0 {
+        defer println("  This should NOT print")
+    }
+    
+    println("After if statements")
+}
+
+test_combined := func() {
+    println("=== Combined: defer in loop with if ===")
+    for i := 0; i < 5; i += 1 {
+        if i % 2 == 0 {
+            defer println("  Defer from even iteration")
+        }
+    }
+    println("After loop")
+}
+
+main := func() {
+    test_defer_in_loop()
+    println()
+    
+    test_defer_in_if()
+    println()
+    
+    test_combined()
+}

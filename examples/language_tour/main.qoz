@@ -49,7 +49,16 @@ main := func() {
     alloc := mem.default_allocator() // Default allocator is heap allocator with libc's malloc free underneath
     first_name := "Charlie "
     last_name := "Brown"
-    full_name := strings.string_concat(first_name, last_name, alloc)
+
+    full_name := strings.string_concat(first_name, last_name, alloc) // this allocates memory!
+    // Qoz supports defer statement to schedule cleanup tasks at the end of the scope.
+    // Note that this is dfferent from Go's defer which executes at the end of the
+    // enclosing function, NOT scope.
+    defer {
+        del(full_name, alloc) 
+    }
+    // or one liner:
+    // defer del(full_name, alloc)
     println(full_name)
 
 
@@ -128,7 +137,9 @@ Vec2D := struct {
 
 add       := func(x: i32, y: i32): i32 { return x + y }
 subtract  := func(x: i32, y: i32): i32 { return x - y }
-operation := func(a: i32, b: i32, f: func(i32, i32): i32): i32 {
+
+BinaryOp  := alias func(i32, i32): i32
+operation := func(a: i32, b: i32, f: BinaryOp): i32 {
     return f(a, b)
 }
 

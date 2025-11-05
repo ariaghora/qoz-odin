@@ -692,12 +692,22 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         
         strings.write_string(&ctx_cg.output_buf, ") {\n")
         
+        // Push new defer scope for loop body
+        append(&ctx_cg.defer_stack, make([dynamic]^Node, ctx_cg.ctx_sem.allocator))
+        
         ctx_cg.indent_level += 1
         for stmt in for_c.body {
             codegen_indent(ctx_cg, ctx_cg.indent_level)
             codegen_node(ctx_cg, stmt)
         }
+        
+        // Emit defers before exiting loop body (while still at correct indent level)
+        codegen_emit_defers(ctx_cg)
+        
         ctx_cg.indent_level -= 1
+        
+        // Pop defer scope after emitting
+        pop(&ctx_cg.defer_stack)
         
         codegen_indent(ctx_cg, ctx_cg.indent_level)
         strings.write_string(&ctx_cg.output_buf, "}\n")
@@ -722,6 +732,9 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         fmt.sbprintf(&ctx_cg.output_buf, "%d", loop_idx)
         strings.write_string(&ctx_cg.output_buf, "++) {\n")
         
+        // Push new defer scope for loop body
+        append(&ctx_cg.defer_stack, make([dynamic]^Node, ctx_cg.ctx_sem.allocator))
+        
         ctx_cg.indent_level += 1
         
         codegen_indent(ctx_cg, ctx_cg.indent_level)
@@ -739,7 +752,14 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
             codegen_node(ctx_cg, stmt)
         }
         
+        // Emit defers before exiting loop body
+        codegen_emit_defers(ctx_cg)
+        
         ctx_cg.indent_level -= 1
+        
+        // Pop defer scope
+        pop(&ctx_cg.defer_stack)
+        
         codegen_indent(ctx_cg, ctx_cg.indent_level)
         strings.write_string(&ctx_cg.output_buf, "}\n")
 
@@ -750,12 +770,22 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         codegen_node(ctx_cg, if_node.condition)
         strings.write_string(&ctx_cg.output_buf, ") {\n")
 
+        // Push new defer scope for if body
+        append(&ctx_cg.defer_stack, make([dynamic]^Node, ctx_cg.ctx_sem.allocator))
+        
         ctx_cg.indent_level += 1
         for stmt in if_node.if_body {
             codegen_indent(ctx_cg, ctx_cg.indent_level) 
             codegen_node(ctx_cg, stmt)
         }
+        
+        // Emit defers before exiting if body
+        codegen_emit_defers(ctx_cg)
+        
         ctx_cg.indent_level -= 1
+
+        // Pop defer scope
+        pop(&ctx_cg.defer_stack)
 
         codegen_indent(ctx_cg, ctx_cg.indent_level)
         strings.write_string(&ctx_cg.output_buf, "}")
@@ -766,12 +796,24 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
                 codegen_node(ctx_cg, if_node.else_body[0]) 
             } else {
                 strings.write_string(&ctx_cg.output_buf, " else {\n")
+                
+                // Push new defer scope for else body
+                append(&ctx_cg.defer_stack, make([dynamic]^Node, ctx_cg.ctx_sem.allocator))
+                
                 ctx_cg.indent_level += 1
                 for stmt in if_node.else_body {
                     codegen_indent(ctx_cg, ctx_cg.indent_level)
                     codegen_node(ctx_cg, stmt)
                 }
+                
+                // Emit defers before exiting else body
+                codegen_emit_defers(ctx_cg)
+                
                 ctx_cg.indent_level -= 1
+                
+                // Pop defer scope
+                pop(&ctx_cg.defer_stack)
+                
                 codegen_indent(ctx_cg, ctx_cg.indent_level)
                 strings.write_string(&ctx_cg.output_buf, "}\n")
             }
