@@ -1,0 +1,33 @@
+import rl "vendor:raylib"
+import "std:libc"
+
+
+main := func(): void {
+    title := "Raylib Test"
+    title_ptr := title.data as *i8
+    
+    rl.InitWindow(800, 600, title_ptr)
+    defer rl.CloseWindow()
+
+    // Draw a blue background with a red circle
+    skyblue := rl.Color{r: 135, g: 206, b: 235, a: 255}
+    red := rl.Color{r: 255, g: 0, b: 0, a: 255}
+    
+    // Render a few frames to ensure drawing is complete
+    for i := 0; i < 5; i += 1 {
+        rl.BeginDrawing()
+        rl.ClearBackground(skyblue)
+        rl.DrawCircle(400, 300, 100.0, red)
+        rl.EndDrawing()
+    }
+    
+    // Wait a moment then take screenshot
+    rl.WaitTime(0.1)
+    
+    filename := "screenshot.png"
+    filename_ptr := filename.data as *i8
+    rl.TakeScreenshot(filename_ptr)
+    
+    // Wait so we can see the window
+    // rl.WaitTime(1.0)
+}

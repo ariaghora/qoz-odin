@@ -41,6 +41,7 @@ Semantic_Context :: struct {
     current_package: string,              // Which package we're analyzing
     current_file: string,                 // Which file we're analyzing
     import_aliases: map[string]string,    // alias -> package_dir
+    link_directives: [dynamic]string,     // Collected link paths for linker
 }
 
 semantic_push_scope :: proc(ctx: ^Semantic_Context) {
@@ -151,6 +152,7 @@ semantic_analyze_project :: proc(
         global_symbols = make(map[string]bool, allocator),
         packages = make(map[string]Package_Symbols, allocator),
         import_aliases = make(map[string]string, allocator),
+        link_directives = make([dynamic]string, allocator),
     }
 
     fields := make([dynamic]Struct_Field, allocator)
@@ -428,6 +430,25 @@ validate_allocator_struct :: proc(ctx: ^Semantic_Context, allocator_type: Type_I
 }
 
 @(private="file")
+normalize_struct_literal_type_name :: proc(ctx: ^Semantic_Context, type_name: string, struct_lit: ^Node_Struct_Literal) -> string {
+    // Normalize qualified names like "rl.Color" -> "raylib.Color"
+    result := type_name
+    if dot_idx := strings.index(type_name, "."); dot_idx != -1 {
+        pkg_alias := type_name[:dot_idx]
+        unqualified_name := type_name[dot_idx+1:]
+        if pkg_dir, is_pkg := ctx.import_aliases[pkg_alias]; is_pkg {
+            pkg_name := filepath.base(pkg_dir)
+            result = fmt.tprintf("%s.%s", pkg_name, unqualified_name)
+            // Update the struct literal node so codegen uses the correct name
+            if struct_lit != nil {
+                struct_lit.type_name = result
+            }
+        }
+    }
+    return result
+}
+
+@(private="file")
 extract_alias_from_path :: proc(import_path: string) -> string {
     path := import_path
     
@@ -553,7 +574,9 @@ collect_declarations :: proc(ctx: ^Semantic_Context, node: ^Node, pkg_dir, proje
         case .Struct_Literal:
             // Can determine type from literal syntactically
             struct_lit := var_def.content.payload.(Node_Struct_Literal)
-            declared_type = Named_Type{name = struct_lit.type_name}
+            type_name := normalize_struct_literal_type_name(ctx, struct_lit.type_name, &struct_lit)
+            var_def.content.payload = struct_lit
+            declared_type = Named_Type{name = type_name}
         
         case:
             // Check for explicit type annotation
@@ -586,6 +609,16 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
         // Already processed during parse phase for dependency resolution
         // Multi-package semantic analysis comes later
         return Primitive_Type.Void
+    
+    case .Link:
+        if !is_top_level_scope(ctx) {
+            add_error(ctx, node.span, "Link statements are only allowed at the top level")
+        }
+        // Collect link directive for use during compilation
+        link_node := node.payload.(Node_Link)
+        append(&ctx.link_directives, link_node.path)
+        return Primitive_Type.Void
+    
     case .Program: 
         for stmt in node.payload.(Node_Statement_List).nodes {
             check_node(ctx, stmt)
@@ -982,7 +1015,9 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
             case .Struct_Literal:
                 struct_lit := var_def.content.payload.(Node_Struct_Literal)
                 if struct_lit.type_name != "" {
-                    declared_type = Named_Type{name = struct_lit.type_name}
+                    type_name := normalize_struct_literal_type_name(ctx, struct_lit.type_name, &struct_lit)
+                    var_def.content.payload = struct_lit
+                    declared_type = Named_Type{name = type_name}
                 } else if explicit, has_explicit := var_def.explicit_type.?; has_explicit {
                     declared_type = explicit
                 } else {
@@ -1385,7 +1420,11 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
             }
         }
         
-        result := Named_Type{name = type_name}  // Use inferred type_name
+        // Normalize qualified names for codegen
+        result_type_name := normalize_struct_literal_type_name(ctx, type_name, &struct_lit)
+        node.payload = struct_lit
+        
+        result := Named_Type{name = result_type_name}
         node.inferred_type = result
         return result
         

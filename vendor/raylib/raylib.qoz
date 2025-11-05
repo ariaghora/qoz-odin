@@ -1,0 +1,29 @@
+link "vendor/raylib/libraylib.a"
+link "framework:IOKit"
+link "framework:Cocoa"
+link "framework:OpenGL"
+
+Image := struct {
+    data:    *void,
+    width:   i32,
+    height:  i32,
+    mipmaps: i32,
+    format:  i32,
+}
+
+Color := struct {
+    r: i8,
+    g: i8,
+    b: i8,
+    a: i8,
+}
+
+InitWindow          := func(width: i32, height: i32, title: *i8): void external
+CloseWindow         := func(): void external
+BeginDrawing        := func(): void external
+EndDrawing          := func(): void external
+ClearBackground     := func(color: Color): void external
+DrawCircle          := func(centerX: i32, centerY: i32, radius: f32, color: Color): void external
+TakeScreenshot      := func(fileName: *i8): void external
+WindowShouldClose   := func(): i32 external
+WaitTime            := func(seconds: f64): void external

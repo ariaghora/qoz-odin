@@ -239,9 +239,38 @@ main :: proc() {
 	
 	defer os.remove(output_c_file)
 
+	// Build compiler command with link flags
 	opt_flag := fmt.tprintf("-O%s", opts.optimization)
+	compiler_args := make([dynamic]string, context.temp_allocator)
+	append(&compiler_args, "clang", "-std=c11", opt_flag, "-o", opts.output_file, output_c_file)
+	
+	// Add link directives as linker flags
+	for link_directive in ctx_sem.link_directives {
+		if strings.has_prefix(link_directive, "framework:") {
+			// Framework: framework:Name -> -framework Name
+			framework_name := strings.trim_prefix(link_directive, "framework:")
+			append(&compiler_args, "-framework", framework_name)
+		} else if strings.has_suffix(link_directive, ".a") {
+			// Static library: just add the path as-is
+			append(&compiler_args, link_directive)
+		} else if strings.has_suffix(link_directive, ".dylib") {
+			// Dynamic library: -L<dir> -lname
+			dir := filepath.dir(link_directive, context.temp_allocator)
+			base := filepath.base(link_directive)
+			name := strings.trim_prefix(strings.trim_suffix(base, ".dylib"), "lib")
+			append(&compiler_args, fmt.tprintf("-L%s", dir), fmt.tprintf("-l%s", name))
+		} else {
+			// Raw linker flag (like -lm, -pthread, etc.)
+			append(&compiler_args, link_directive)
+		}
+	}
+	
+	if opts.verbose {
+		fmt.printfln("Compiler command: %v", compiler_args[:])
+	}
+	
 	state, stdout, stderr, err := os2.process_exec({
-		command = []string{"clang", "-std=c11", opt_flag, "-o", opts.output_file, output_c_file},
+		command = compiler_args[:],
 	}, context.temp_allocator)
 
 	if err != nil {

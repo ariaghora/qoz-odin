@@ -2,3 +2,7 @@
 qoz-odin
 output
 *.exe
+*.a
+*.dylib
+
+*.png

@@ -31,6 +31,7 @@ Node_Kind :: enum {
     Import,
     Index,
     Len,
+    Link,
     Literal_Arr,
     Literal_Nil,
     Literal_Number,
@@ -121,6 +122,7 @@ Node_If             :: struct { condition: ^Node, if_body: [dynamic]^Node, else_
 Node_Import         :: struct { path: string, alias: Maybe(string) }
 Node_Index          :: struct { object, index: ^Node }
 Node_Len            :: struct { value: ^Node }
+Node_Link           :: struct { path: string }
 Node_Literal_Nil    :: struct {}
 Node_Literal_Number :: struct { content: Token }
 Node_Literal_String :: struct { content: Token }
@@ -159,6 +161,7 @@ Node :: struct {
         Node_Index,
         Node_If,
         Node_Len,
+        Node_Link,
         Node_Literal_Nil,
         Node_Literal_Number,
         Node_Literal_String,
@@ -232,6 +235,17 @@ resolve_import_path :: proc(current_file_dir: string, project_root: string, impo
         // e.g., std:strings → $QOZ_ROOT/std/strings
         rel_path := import_path[4:]  // Remove "std:"
         return filepath.join({qoz_root, "std", rel_path}, context.temp_allocator)
+    }
+    
+    if strings.has_prefix(import_path, "vendor:") {
+        qoz_root := os.get_env("QOZ_ROOT", context.temp_allocator)
+        if qoz_root == "" {
+            panic("QOZ_ROOT environment variable not set")
+        }
+        
+        // e.g., vendor:raylib → $QOZ_ROOT/vendor/raylib
+        rel_path := import_path[7:]  // Remove "vendor:"
+        return filepath.join({qoz_root, "vendor", rel_path}, context.temp_allocator)
     }
     
     // Check for relative import
@@ -368,6 +382,26 @@ parse_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.
             payload = Node_Import{
                 path = path,
                 alias = alias,
+            },
+        }, allocator), nil
+
+    case .KW_Link:
+        span_start := ps.idx
+        parser_advance(ps) // eat 'link'
+        
+        if ps.current_token.kind != .Lit_String {
+            return nil, make_parse_error(ps, fmt.tprintf("Expected link path (string), got %v", ps.current_token.kind))
+        }
+        
+        path := strings.trim(ps.current_token.source, "\"")
+        parser_advance(ps)
+        
+        return new_clone(Node{
+            node_kind = .Link,
+            parent = parent,
+            span = Span{start = span_start, end = ps.idx - 1},
+            payload = Node_Link{
+                path = path,
             },
         }, allocator), nil
 
@@ -932,6 +966,19 @@ parse_postfix :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
             }
             left.parent = index_node
             left = index_node
+        
+        case .Left_Brace:
+            // Check if it's a struct literal: TypeExpr{ field: value, ... }
+            next_idx := ps.idx + 1
+            if next_idx < len(ps.tokens) && 
+                ps.tokens[next_idx].kind == .Iden &&
+                next_idx + 1 < len(ps.tokens) &&
+                ps.tokens[next_idx + 1].kind == .Colon {
+                // It's a struct literal with a type expression
+                return parse_struct_literal_with_type_expr(ps, left, parent, allocator)
+            }
+            // Otherwise not a struct literal, return what we have
+            return left, nil
             
         case:
             return left, nil
@@ -1037,6 +1084,26 @@ parse_struct_literal :: proc(ps: ^Parsing_State, type_name: string, parent: ^Nod
     }
     
     return struct_node, nil
+}
+
+// Helper to extract type name from type expression node (handles both Identifier and Field_Access)
+get_type_name_from_node :: proc(node: ^Node, allocator := context.allocator) -> string {
+    #partial switch node.node_kind {
+    case .Identifier:
+        iden := node.payload.(Node_Identifier)
+        return iden.name
+    case .Field_Access:
+        field_access := node.payload.(Node_Field_Access)
+        // Recursively build qualified name like "pkg.Type"
+        object_name := get_type_name_from_node(field_access.object, allocator)
+        return fmt.aprintf("%s.%s", object_name, field_access.field_name)
+    }
+    return ""
+}
+
+parse_struct_literal_with_type_expr :: proc(ps: ^Parsing_State, type_expr: ^Node, parent: ^Node, allocator := context.allocator) -> (res:^Node, err:Maybe(Parse_Error)) {
+    type_name := get_type_name_from_node(type_expr, allocator)
+    return parse_struct_literal(ps, type_name, parent, allocator)
 }
 
 parse_untyped_struct_literal :: proc(ps: ^Parsing_State, parent: ^Node, span_start: int, allocator := context.allocator) -> (res:^Node, err:Maybe(Parse_Error)) {

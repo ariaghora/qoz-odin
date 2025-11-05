@@ -565,6 +565,7 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         }
 
     case .Import: // NOTE(Aria): Imports are metadata for the compiler, no C code generated
+    case .Link:   // NOTE(Aria): Link directives are metadata for the compiler, no C code generated
     case .Expr_Statement:
         codegen_node(ctx_cg, node.payload.(Node_Expr_Statement).expr)
         strings.write_string(&ctx_cg.output_buf, ";\n")
