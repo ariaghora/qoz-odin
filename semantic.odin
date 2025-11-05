@@ -6,10 +6,11 @@ import "core:fmt"
 import "core:mem"
 
 Symbol :: struct {
-    name:       string,
-    type:       Type_Info,
-    defined_at: Span,
-    pkg_dir:    string,
+    name:         string,
+    type:         Type_Info,
+    defined_at:   Span,
+    pkg_dir:      string,
+    external_name: Maybe(string),  // For external functions with different C symbol names
 }
 
 Scope :: struct {
@@ -57,13 +58,13 @@ semantic_pop_scope :: proc(ctx: ^Semantic_Context) {
     delete(old.symbols)
 }
 
-semantic_define_symbol :: proc(ctx: ^Semantic_Context, name: string, type: Type_Info, span: Span, pkg_dir := "") -> bool {
+semantic_define_symbol :: proc(ctx: ^Semantic_Context, name: string, type: Type_Info, span: Span, pkg_dir := "", external_name: Maybe(string) = nil) -> bool {
     scope := ctx.current_scope
     if name in ctx.current_scope.symbols {
         add_error(ctx, span, "Symbol '%s' already defined in this scope", name)
         return false
     }
-    ctx.current_scope.symbols[name] = Symbol { name=name, type=type, defined_at=span, pkg_dir=pkg_dir }
+    ctx.current_scope.symbols[name] = Symbol { name=name, type=type, defined_at=span, pkg_dir=pkg_dir, external_name=external_name }
     if scope.parent == nil {
         ctx.global_symbols[name] = true
     }
@@ -553,6 +554,7 @@ collect_declarations :: proc(ctx: ^Semantic_Context, node: ^Node, pkg_dir, proje
         }
         
         declared_type: Maybe(Type_Info)
+        external_name: Maybe(string)
         
         #partial switch var_def.content.node_kind {
         case .Fn_Def:
@@ -566,6 +568,7 @@ collect_declarations :: proc(ctx: ^Semantic_Context, node: ^Node, pkg_dir, proje
                 return_type = new_clone(fn_def.return_type, ctx.allocator),
             }
             var_def.content.inferred_type = declared_type
+            external_name = fn_def.external_name
         
         case .Type_Expr:
             type_expr := var_def.content.payload.(Node_Type_Expr)
@@ -586,7 +589,7 @@ collect_declarations :: proc(ctx: ^Semantic_Context, node: ^Node, pkg_dir, proje
         }
         
         if type, ok := declared_type.?; ok {
-            semantic_define_symbol(ctx, var_def.name, type, node.span, pkg_dir)
+            semantic_define_symbol(ctx, var_def.name, type, node.span, pkg_dir, external_name)
         }
     }
 }

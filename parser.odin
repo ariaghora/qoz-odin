@@ -114,7 +114,7 @@ Node_Cast           :: struct { expr: ^Node, target_type: Type_Info }
 Node_Defer          :: struct { body: [dynamic]^Node }
 Node_Del            :: struct { pointer: ^Node, allocator: ^Node }
 Node_Field_Access   :: struct { object: ^Node, field_name: string }
-Node_Fn_Def         :: struct { params: [dynamic]Fn_Param, body: [dynamic]^Node, return_type: Type_Info, is_external: bool}
+Node_Fn_Def         :: struct { params: [dynamic]Fn_Param, body: [dynamic]^Node, return_type: Type_Info, is_external: bool, external_name: Maybe(string)}
 Node_For_C          :: struct { init: ^Node, condition: ^Node, post: ^Node, body: [dynamic]^Node }
 Node_For_In         :: struct { iterator: string, iterable: ^Node, body: [dynamic]^Node }
 Node_Identifier     :: struct { name:string }
@@ -1237,9 +1237,22 @@ parse_fn_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.all
     }
 
     is_external := false
+    external_name: Maybe(string)
     if ps.current_token.kind == .KW_External {
         is_external = true
         parser_advance(ps)
+        
+        // Check for external("symbol_name") syntax
+        if ps.current_token.kind == .Left_Paren {
+            parser_advance(ps)
+            if ps.current_token.kind == .Lit_String {
+                external_name = ps.current_token.source[1:len(ps.current_token.source)-1] // Strip quotes
+                parser_advance(ps)
+            } else {
+                return nil, make_parse_error(ps, fmt.tprintfln("Expected string literal after 'external(', found %v", ps.current_token.source))
+            }
+            parser_consume(ps, .Right_Paren) or_return
+        }
     }
 
     fn_node := new(Node, allocator)
@@ -1260,7 +1273,7 @@ parse_fn_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.all
     fn_node.node_kind = .Fn_Def
     fn_node.parent = parent
     fn_node.span = Span{start = span_start, end = ps.idx}
-    fn_node.payload = Node_Fn_Def{params=param_list, body=stmts, return_type=return_type, is_external=is_external}
+    fn_node.payload = Node_Fn_Def{params=param_list, body=stmts, return_type=return_type, is_external=is_external, external_name=external_name}
     fn_node.span.end = ps.idx - 1  
     
     return fn_node, nil

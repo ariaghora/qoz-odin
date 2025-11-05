@@ -634,9 +634,10 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
                 actual_pkg_name := filepath.base(pkg_dir)  
                 symbol_name := field_access.field_name
                 
-                if symbol_name == "main" || symbol_name in ctx_cg.ctx_sem.external_functions {
+                if symbol_name == "main" {
                     strings.write_string(&ctx_cg.output_buf, symbol_name)
                 } else {
+                    // Always mangle package-qualified names
                     fmt.sbprintf(&ctx_cg.output_buf, "%s%s__%s", MANGLE_PREFIX, actual_pkg_name, symbol_name)
                 }
                 return
@@ -1324,6 +1325,20 @@ codegen_forward_decl :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
                     }
                     codegen_func_signature(ctx_cg, var_def.name, fn_def, qualified_fn_type)
                     strings.write_string(&ctx_cg.output_buf, ";\n")
+                    
+                    // Generate #define alias for external functions with external_name
+                    if fn_def.is_external {
+                        if ext_name, has_ext := fn_def.external_name.?; has_ext {
+                            // Mangle the Qoz name according to package
+                            mangled_name: string
+                            if ctx_cg.current_pkg_name != "" {
+                                mangled_name = fmt.tprintf("%s%s__%s", MANGLE_PREFIX, ctx_cg.current_pkg_name, var_def.name)
+                            } else {
+                                mangled_name = fmt.tprintf("%s%s", MANGLE_PREFIX, var_def.name)
+                            }
+                            fmt.sbprintf(&ctx_cg.output_buf, "#define %s %s\n", mangled_name, ext_name)
+                        }
+                    }
                 }
 
                 // Forward declare structs
@@ -1368,7 +1383,12 @@ codegen_func_signature :: proc(ctx_cg: ^Codegen_Context, fn_name: string, node: 
 
     // Mangle unless external
     if node.is_external {
-        strings.write_string(&ctx_cg.output_buf, fn_name)
+        // Declare with the C symbol name (external_name if provided)
+        c_symbol_name := fn_name
+        if ext_name, has_ext := node.external_name.?; has_ext {
+            c_symbol_name = ext_name
+        }
+        strings.write_string(&ctx_cg.output_buf, c_symbol_name)
     } else {
         // Use current package name from context
         if ctx_cg.current_pkg_name != "" {
