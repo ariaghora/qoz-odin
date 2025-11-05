@@ -1008,6 +1008,13 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
 
             codegen_type(ctx_cg, node.inferred_type.(Type_Info))
             strings.write_string(&ctx_cg.output_buf, " ")
+            
+            // Add package prefix for top-level variables
+            if ctx_cg.func_nesting_depth == 0 {
+                strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX)
+                strings.write_string(&ctx_cg.output_buf, ctx_cg.current_pkg_name)
+                strings.write_string(&ctx_cg.output_buf, "__")
+            }
             strings.write_string(&ctx_cg.output_buf, var_def.name)
 
             strings.write_string(&ctx_cg.output_buf, " = ")

@@ -279,6 +279,36 @@ semantic_analyze_project :: proc(
 
 
 @(private="file")
+is_top_level_scope :: proc(ctx: ^Semantic_Context) -> bool {
+    is_package_level := ctx.current_scope.parent != nil && ctx.current_scope.parent.parent == nil
+    is_global_level := ctx.current_scope.parent == nil
+    return is_package_level || is_global_level
+}
+
+@(private="file")
+is_allowed_at_top_level :: proc(type: Type_Info) -> bool {
+    #partial switch t in type {
+    case Primitive_Type:
+        return true
+    case Untyped_Int, Untyped_Float:
+        // Untyped literals are fine - they'll become primitives
+        return true
+    case Named_Type:
+        // Allow string and user-defined types (which are checked separately)
+        return t.name == "string"
+    case Function_Type:
+        return true
+    case Struct_Type:
+        // Type definitions are allowed
+        return true
+    case Array_Type, Pointer_Type:
+        // Mutable globals with complex types are not allowed
+        return false
+    }
+    return false
+}
+
+@(private="file")
 add_error :: proc(ctx: ^Semantic_Context, span: Span, format: string, args: ..any) {
     error := Semantic_Error {
         message = fmt.tprintf(format, ..args),
@@ -431,6 +461,9 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
     
     #partial switch node.node_kind {
     case .Import:
+        if !is_top_level_scope(ctx) {
+            add_error(ctx, node.span, "Import statements are only allowed at the top level")
+        }
         // Already processed during parse phase for dependency resolution
         // Multi-package semantic analysis comes later
         return Primitive_Type.Void
@@ -758,6 +791,14 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
         if already_defined && existing_sym.pkg_dir != "" {
             // Symbol was collected in pass 1, just validate
             actual_type := existing_sym.type
+            
+            // Check if top-level variable has allowed type
+            if is_top_level_scope(ctx) && var_def.content.node_kind != .Fn_Def && var_def.content.node_kind != .Type_Expr {
+                if !is_allowed_at_top_level(actual_type) {
+                    add_error(ctx, node.span, "Top-level variables can only be primitives, strings, or functions. Arrays, pointers, and mutable structs are not allowed at package scope")
+                }
+            }
+            
             value_type := check_node(ctx, var_def.content, actual_type)
             
             if !types_compatible(actual_type, value_type) {
@@ -805,6 +846,13 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
                 } else {
                     // Infer type - check once and reuse
                     declared_type = check_node(ctx, var_def.content)
+                }
+            }
+            
+            // Check if top-level variable has allowed type
+            if is_top_level_scope(ctx) && var_def.content.node_kind != .Fn_Def && var_def.content.node_kind != .Type_Expr {
+                if !is_allowed_at_top_level(declared_type) {
+                    add_error(ctx, node.span, "Top-level variables can only be primitives, strings, or functions. Arrays, pointers, and mutable structs are not allowed at package scope")
                 }
             }
             
