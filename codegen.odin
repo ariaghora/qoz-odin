@@ -150,7 +150,12 @@ codegen_builtin_function :: proc(ctx_cg: ^Codegen_Context, name: string, args: [
 
 codegen :: proc(asts: map[string]^Node, sorted_packages: []string, ctx_sem: ^Semantic_Context, allocator := context.allocator) -> (res: string, err: mem.Allocator_Error) {
     sb := strings.builder_make(allocator) or_return
-    ctx_cg := Codegen_Context { output_buf=sb, indent_level=0, ctx_sem=ctx_sem }
+    ctx_cg := Codegen_Context { 
+        output_buf = sb, 
+        indent_level = 0, 
+        ctx_sem = ctx_sem,
+        generated_array_wrappers = make(map[string]bool, allocator=allocator),
+    }
 
     strings.write_string(&ctx_cg.output_buf, string(#load("qoz_runtime.c")))
     strings.write_string(&ctx_cg.output_buf, "\n\n")
@@ -219,6 +224,7 @@ codegen :: proc(asts: map[string]^Node, sorted_packages: []string, ctx_sem: ^Sem
     // Pass 2.5: Generate array wrapper bodies for struct-based arrays
     // (These can now reference fully defined struct types)
     for pkg_dir in sorted_packages {
+        ctx_cg.current_pkg_name = filepath.base(pkg_dir)
         for file_path, ast in asts {
             file_dir := filepath.dir(file_path, context.temp_allocator)
             if file_dir == pkg_dir {
@@ -302,10 +308,23 @@ codegen_collect_array_wrappers :: proc(ctx_cg: ^Codegen_Context, node: ^Node, na
         if var_def.content.node_kind == .Fn_Def {
             fn_def := var_def.content.payload.(Node_Fn_Def)
             codegen_collect_type_array_names(ctx_cg, fn_def.return_type, names)
+            // Scan function body for local variables with array types
+            for stmt in fn_def.body {
+                codegen_collect_array_wrappers(ctx_cg, stmt, names)
+            }
         } else if var_def.content.node_kind == .Type_Expr {
             // Struct definition
             type_expr := var_def.content.payload.(Node_Type_Expr)
             codegen_collect_type_array_names(ctx_cg, type_expr.type_info, names)
+        } else {
+            // Local variable - check if it has an explicit array type
+            if explicit_type, has_explicit := var_def.explicit_type.?; has_explicit {
+                codegen_collect_type_array_names(ctx_cg, explicit_type, names)
+            }
+            // Also check the inferred type from the initialization expression
+            if inferred_type, has_inferred := var_def.content.inferred_type.?; has_inferred {
+                codegen_collect_type_array_names(ctx_cg, inferred_type, names)
+            }
         }
     }
 }
@@ -341,10 +360,22 @@ codegen_scan_array_returns :: proc(ctx_cg: ^Codegen_Context, node: ^Node, only_p
         if var_def.content.node_kind == .Fn_Def {
             fn_def := var_def.content.payload.(Node_Fn_Def)
             codegen_scan_type_for_arrays(ctx_cg, fn_def.return_type, only_primitives)
+            // Scan function body for local variables with array types
+            for stmt in fn_def.body {
+                codegen_scan_array_returns(ctx_cg, stmt, only_primitives)
+            }
         } else if var_def.content.node_kind == .Type_Expr {
             // Struct definition
             type_expr := var_def.content.payload.(Node_Type_Expr)
             codegen_scan_type_for_arrays(ctx_cg, type_expr.type_info, only_primitives)
+        } else {
+            // Local variable - scan both explicit and inferred types
+            if explicit_type, has_explicit := var_def.explicit_type.?; has_explicit {
+                codegen_scan_type_for_arrays(ctx_cg, explicit_type, only_primitives)
+            }
+            if inferred_type, has_inferred := var_def.content.inferred_type.?; has_inferred {
+                codegen_scan_type_for_arrays(ctx_cg, inferred_type, only_primitives)
+            }
         }
     }
 }

@@ -1,0 +1,75 @@
+import "std:strings"
+// Import statement is not necessarily in the top of the file.
+// It can be placed anywhere in the file as long as it is on the top level scope.
+// However, it is a good practice to put all import statements at the top of the file.
+import "std:mem" 
+
+get_bob_info :=func(): Person {
+    return {name: "Bob", age: 25}
+}
+
+Person := struct {
+    name: string,
+    age: i32,
+}
+
+main := func() {
+    print("Hello, QOZ Language Tour!")
+
+    person_alice := Person{name: "Alice", age: 30}
+    person_bob := get_bob_info()
+
+    print(person_alice.name)
+    print(person_alice.age)
+
+    // Allocators are central to QOZ's memory management
+    alloc := mem.default_allocator() // Default allocator is heap allocator with libc's malloc free underneath
+    first_name := "Charlie "
+    last_name := "Brown"
+    full_name := strings.string_concat(first_name, last_name, alloc)
+    print(full_name)
+
+    points := arr<Vec2D, 3>{
+        {x: 1.0, y: 2.0},
+        {x: 3.0, y: 4.0},
+        {x: 5.0, y: 6.0},
+    }
+    // It is also possible to be more explicit
+    // points := arr<Vec2D, 3>{
+    //     Vec2D{x: 1.0, y: 2.0},
+    //     Vec2D{x: 3.0, y: 4.0},
+    //     Vec2D{x: 5.0, y: 6.0},
+    // }
+
+    for point in points {
+        print(point.x)
+        print(", ")
+        print(point.y)
+    }
+
+    // Function as first-class citizens
+    sum := operation(10, 5, add)
+    difference := operation(10, 5, subtract)
+    print("Sum: ")
+    print(sum)
+    print("Difference: ")
+    print(difference)
+}
+
+operation := func(a: i32, b: i32, f: func(i32, i32): i32): i32 {
+    return f(a, b)
+}
+
+add := func(x: i32, y: i32): i32 {
+    return x + y
+}
+
+subtract := func(x: i32, y: i32): i32 {
+    return x - y
+}
+
+// Struct definition can be placed after the function that uses it.
+Vec2D := struct {
+    x: f64,
+    y: f64,
+}

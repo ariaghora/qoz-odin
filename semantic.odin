@@ -1111,11 +1111,20 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
                         break
                     }
                 }
+            } else if is_untyped_float(value_type) && is_typed_float(field.type) {
+                coerced_type = field.type
+                // Update the field value's inferred type
+                for field_init in struct_lit.field_inits {
+                    if field_init.name == field.name {
+                        field_init.value.inferred_type = field.type
+                        break
+                    }
+                }
             }
             
             if !types_compatible(coerced_type, field.type) {
                 add_error(ctx, node.span, "Field '%s': expected %v, got %v", 
-                    field.name, field.type, value_type)
+                    field.name, field.type, coerced_type)
             }
         }
         
@@ -1199,6 +1208,12 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
         }
     
     case .Literal_Number:
+        lit := node.payload.(Node_Literal_Number)
+        // Check if it's a float literal (contains '.')
+        if strings.contains(lit.content.source, ".") {
+            node.inferred_type = Untyped_Float{}
+            return Untyped_Float{}
+        }
         node.inferred_type = Untyped_Int{}
         return Untyped_Int{}
 

@@ -143,9 +143,26 @@ make_number :: proc(t: ^Tokenizer) {
     start_column := t.column
     
     c := current_char(t)
+    // Read integer part
     for unicode.is_number(c) {
         tokenizer_advance(t)
         c = current_char(t)
+    }
+    
+    // Check for decimal point
+    if c == '.' && t.offset + 1 < len(t.source) {
+        next_char := rune(t.source[t.offset + 1])
+        // Only consume '.' if followed by a digit
+        if unicode.is_number(next_char) {
+            tokenizer_advance(t) // consume '.'
+            c = current_char(t)
+            
+            // Read fractional part
+            for unicode.is_number(c) {
+                tokenizer_advance(t)
+                c = current_char(t)
+            }
+        }
     }
     
     append(&t.tokens, Token{
@@ -163,11 +180,11 @@ make_string :: proc(t: ^Tokenizer) {
     delimiter := current_char(t)
     tokenizer_advance(t)
     c := current_char(t)
-    for c != delimiter && t.offset < len(t.source)-1{
+    for c != delimiter && t.offset < len(t.source){
         tokenizer_advance(t)
         c = current_char(t)
     }
-    if t.offset == len(t.source)-1 do panic("Unexpected EOF, string not closed?")
+    if c != delimiter do panic("Unexpected EOF, string not closed?")
 
     tokenizer_advance(t)
     append(&t.tokens, Token{

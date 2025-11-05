@@ -9,7 +9,7 @@ add := fn(a: i32, b: i32): i32 {
     return a + b
 }
 
-main := fn() {
+main := func() {
     //| Array, all items are of the same type with fixed length
     //+--------------------------------------------------------
     numbers := arr<i32, 5> { 1, 2, 3, 4, 5 }
@@ -20,7 +20,7 @@ main := fn() {
     //+-----------------------------------------
     // allocator = mem.arena_allocator()
     // allocator = mem.tracking_allocator()
-    heap := mem.heap_allocator()
+    heap := mem.default_allocator()
 
     //| Vector, all items are of the same type with dynamic length
     //+-----------------------------------------------------------
