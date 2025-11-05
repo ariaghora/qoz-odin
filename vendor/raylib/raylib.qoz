@@ -1,4 +1,4 @@
-link "vendor/raylib/libraylib.a"
+link "./libraylib.a"
 link "framework:IOKit"
 link "framework:Cocoa"
 link "framework:OpenGL"

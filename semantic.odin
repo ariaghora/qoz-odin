@@ -619,7 +619,18 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
         }
         // Collect link directive for use during compilation
         link_node := node.payload.(Node_Link)
-        append(&ctx.link_directives, link_node.path)
+        
+        // Resolve relative paths relative to the .qoz file location
+        resolved_path := link_node.path
+        if !strings.has_prefix(link_node.path, "framework:") {
+            // If it's a relative path, resolve it relative to the current file
+            if !filepath.is_abs(link_node.path) {
+                file_dir := filepath.dir(ctx.current_file, ctx.allocator)
+                resolved_path = filepath.join({file_dir, link_node.path}, ctx.allocator)
+            }
+        }
+        
+        append(&ctx.link_directives, resolved_path)
         return Primitive_Type.Void
     
     case .Program: 
