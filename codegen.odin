@@ -1242,6 +1242,23 @@ codegen_type :: proc(ctx_cg: ^Codegen_Context, type: Type_Info, name: string = "
             return
         }
         
+        // Check if this is a type alias - if so, resolve and generate the underlying type
+        // But only for non-struct types (primitives, function types, etc.)
+        if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, t, ctx_cg.current_pkg_name); ok {
+            // If resolved to a non-struct, non-named type, it's a pure alias
+            #partial switch r in resolved {
+            case Function_Type, Primitive_Type, Pointer_Type, Array_Type:
+                // This is a type alias to a concrete type, generate the underlying type
+                codegen_type(ctx_cg, resolved, name)
+                return
+            case Struct_Type:
+                // This is a typedef for a struct, keep using the name (don't inline the struct)
+                // Fall through to normal Named_Type handling
+            case Named_Type:
+                // Still named after resolution, fall through
+            }
+        }
+        
         // Check if type name contains a dot (qualified)
         if strings.contains(t.name, ".") {
             // Qualified name like "mem.Allocator" -> "qoz__mem__Allocator"
@@ -1355,8 +1372,16 @@ codegen_func_signature :: proc(ctx_cg: ^Codegen_Context, fn_name: string, node: 
                 param_type = fn_type.params[i]
             }
             
+            // Resolve named types to check if it's actually a function pointer
+            resolved_param_type := param_type
+            if named, is_named := param_type.(Named_Type); is_named {
+                if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named, ctx_cg.current_pkg_name); ok {
+                    resolved_param_type = resolved
+                }
+            }
+            
             // For function pointer types, the name must be inside the type declaration
-            if _, is_fn_ptr := param_type.(Function_Type); is_fn_ptr {
+            if _, is_fn_ptr := resolved_param_type.(Function_Type); is_fn_ptr {
                 codegen_type(ctx_cg, param_type, param.name)
             } else {
                 codegen_type(ctx_cg, param_type)

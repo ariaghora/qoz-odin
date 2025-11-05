@@ -102,7 +102,7 @@ is_typed_float :: proc(t: Type_Info) -> bool {
 }
 
 // Resolve a potentially qualified type name (e.g., "mem.Allocator" or "string")
-resolve_named_type :: proc(ctx: ^Semantic_Context, named: Named_Type) -> (Type_Info, bool) {
+resolve_named_type :: proc(ctx: ^Semantic_Context, named: Named_Type, pkg_name: string = "") -> (Type_Info, bool) {
     // Check if it's a qualified name (contains dot)
     if dot_idx := strings.index(named.name, "."); dot_idx != -1 {
         pkg_alias := named.name[:dot_idx]
@@ -122,6 +122,17 @@ resolve_named_type :: proc(ctx: ^Semantic_Context, named: Named_Type) -> (Type_I
     // It's a simple name, look it up normally
     if sym, ok := semantic_lookup_symbol(ctx, named.name); ok {
         return sym.type, true
+    }
+    
+    // If not found in scope and we have a package name, search in that package's symbols
+    if pkg_name != "" {
+        for pkg_dir, pkg_info in ctx.packages {
+            if filepath.base(pkg_dir) == pkg_name {
+                if symbol, found := pkg_info.symbols[named.name]; found {
+                    return symbol.type, true
+                }
+            }
+        }
     }
     
     return {}, false
@@ -405,6 +416,16 @@ collect_declarations :: proc(ctx: ^Semantic_Context, node: ^Node, pkg_dir, proje
     case .Var_Def:
         var_def := node.payload.(Node_Var_Def)
         
+        // Handle type alias: name := alias Type
+        if var_def.is_alias {
+            if var_def.content.node_kind == .Type_Expr {
+                type_expr := var_def.content.payload.(Node_Type_Expr)
+                // Define the alias as a type in the symbol table
+                semantic_define_symbol(ctx, var_def.name, type_expr.type_info, node.span, pkg_dir)
+            }
+            return
+        }
+        
         if var_def.content.node_kind == .Fn_Def {
             fn_def := var_def.content.payload.(Node_Fn_Def)
             if fn_def.is_external {
@@ -499,7 +520,7 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
             result_type := semantic_binop_type_resolve(target_type, value_type, op_token, node.span, ctx)
             
             // The result must be assignable back to target
-            if !types_compatible(target_type, result_type) {
+            if !types_compatible(target_type, result_type, ctx) {
                 add_error(ctx, node.span, "Cannot assign %v to %v in compound assignment", result_type, target_type)
             }
             
@@ -516,7 +537,7 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
             value_type = target_type
         }
         
-        if !types_compatible(target_type, value_type) {
+        if !types_compatible(target_type, value_type, ctx) {
             add_error(ctx, node.span, "Cannot assign %v to %v", value_type, target_type)
         }
         
@@ -779,6 +800,30 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
     case .Var_Def:
         var_def := node.payload.(Node_Var_Def)
 
+        // Handle type alias: name := alias Type
+        if var_def.is_alias {
+            // The content must be a type expression
+            if var_def.content.node_kind != .Type_Expr {
+                add_error(ctx, node.span, "Alias must be followed by a type expression")
+                node.inferred_type = Primitive_Type.Void
+                return Primitive_Type.Void
+            }
+            
+            type_expr := var_def.content.payload.(Node_Type_Expr)
+            alias_type := type_expr.type_info
+            
+            // Alias was already defined in Pass 1, just return the type
+            if existing_sym, found := semantic_lookup_symbol(ctx, var_def.name); found {
+                node.inferred_type = existing_sym.type
+                return existing_sym.type
+            }
+            
+            // If not found (local alias), define it
+            semantic_define_symbol(ctx, var_def.name, alias_type, node.span)
+            node.inferred_type = alias_type
+            return alias_type
+        }
+
         if var_def.content.node_kind == .Type_Expr {
             ctx.current_struct_name = var_def.name
         }
@@ -801,7 +846,7 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
             
             value_type := check_node(ctx, var_def.content, actual_type)
             
-            if !types_compatible(actual_type, value_type) {
+            if !types_compatible(actual_type, value_type, ctx) {
                 add_error(ctx, node.span, "Type mismatch: declared as %v but initialized with %v", 
                     actual_type, value_type)
             }
@@ -862,7 +907,7 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
             // Validate initializer (only if not already checked during inference)
             if _, has_explicit := var_def.explicit_type.?; has_explicit {
                 value_type := check_node(ctx, var_def.content, declared_type)
-                if !types_compatible(declared_type, value_type) {
+                if !types_compatible(declared_type, value_type, ctx) {
                     add_error(ctx, node.span, "Type mismatch: declared as %v but initialized with %v", 
                         declared_type, value_type)
                 }
@@ -914,13 +959,21 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
 
         callee_type := check_node(ctx, call.callee)
         
+        // Resolve named types (for type aliases like BinaryOp)
+        resolved_callee_type := callee_type
+        if named, is_named := callee_type.(Named_Type); is_named {
+            if resolved, ok := resolve_named_type(ctx, named); ok {
+                resolved_callee_type = resolved
+            }
+        }
+        
         arg_types := make([dynamic]Type_Info, context.temp_allocator)
         for arg in call.args {
             arg_type := check_node(ctx, arg)
             append(&arg_types, arg_type)
         }
         
-        fn_type, ok := callee_type.(Function_Type)
+        fn_type, ok := resolved_callee_type.(Function_Type)
         if !ok {
             add_error(ctx, node.span, "Cannot call non-function")
             node.inferred_type = Primitive_Type.Void
@@ -935,7 +988,7 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
             if i >= len(fn_type.params) do break
             expected := fn_type.params[i]
             
-            if !types_compatible(expected, arg_type) {
+            if !types_compatible(expected, arg_type, ctx) {
                 add_error(ctx, call.args[i].span, "Argument %d: expected %v, got %v", i, expected, arg_type)
             }
         }
@@ -1044,7 +1097,7 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
         }
         
         for elem_type, i in elem_types {
-            if !types_compatible(inferred_elem_type, elem_type) {
+            if !types_compatible(inferred_elem_type, elem_type, ctx) {
                 add_error(ctx, arr_lit.elements[i].span, "Array element %d: expected %v, got %v", 
                     i, inferred_elem_type, elem_type)
             }
@@ -1098,7 +1151,7 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
 
         if ret.value != nil {
             ret_type := check_node(ctx, ret.value, expected_ret_type)
-            if !types_compatible(expected_ret_type, ret_type) {
+            if !types_compatible(expected_ret_type, ret_type, ctx) {
                 add_error(ctx, node.span, "Return type mismatch: expected %v, got %v", expected_ret_type, ret_type)
             }
         } else {
@@ -1221,7 +1274,7 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
                 }
             }
             
-            if !types_compatible(coerced_type, field.type) {
+            if !types_compatible(coerced_type, field.type, ctx) {
                 add_error(ctx, node.span, "Field '%s': expected %v, got %v", 
                     field.name, field.type, coerced_type)
             }
@@ -1398,21 +1451,38 @@ types_equal :: proc(a, b: Type_Info) -> bool {
     return false
 }
 
-types_compatible :: proc(target: Type_Info, source: Type_Info) -> bool {
-    if types_equal(target, source) do return true
+types_compatible :: proc(target: Type_Info, source: Type_Info, ctx: ^Semantic_Context = nil) -> bool {
+    // Resolve named types if context is available
+    resolved_target := target
+    resolved_source := source
+    
+    if ctx != nil {
+        if named_target, is_named := target.(Named_Type); is_named {
+            if resolved, ok := resolve_named_type(ctx, named_target); ok {
+                resolved_target = resolved
+            }
+        }
+        if named_source, is_named := source.(Named_Type); is_named {
+            if resolved, ok := resolve_named_type(ctx, named_source); ok {
+                resolved_source = resolved
+            }
+        }
+    }
+    
+    if types_equal(resolved_target, resolved_source) do return true
     
     // Untyped int can coerce to any typed integer
-    if is_untyped_int(source) && is_typed_int(target) {
+    if is_untyped_int(resolved_source) && is_typed_int(resolved_target) {
         return true
     }
     
     // Untyped float can coerce to any typed float
-    if is_untyped_float(source) && is_typed_float(target) {
+    if is_untyped_float(resolved_source) && is_typed_float(resolved_target) {
         return true
     }
     
-    target_ptr, target_is_ptr := target.(Pointer_Type)
-    source_ptr, source_is_ptr := source.(Pointer_Type)
+    target_ptr, target_is_ptr := resolved_target.(Pointer_Type)
+    source_ptr, source_is_ptr := resolved_source.(Pointer_Type)
     if target_is_ptr && source_is_ptr {
         if prim, ok := target_ptr.pointee.(Primitive_Type); ok && prim == .Void {
             return true

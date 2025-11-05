@@ -129,7 +129,7 @@ Node_Println        :: struct { args: [dynamic]^Node }
 Node_Return         :: struct { value: ^Node } 
 Node_Statement_List :: struct { nodes: [dynamic]^Node }
 Node_Un_Op          :: struct { operand: ^Node, op: Token }
-Node_Var_Def        :: struct { name: string, content: ^Node, explicit_type: Maybe(Type_Info) }
+Node_Var_Def        :: struct { name: string, content: ^Node, explicit_type: Maybe(Type_Info), is_alias: bool }
 Node_Expr_Statement :: struct { expr: ^Node }
 Node_Type_Expr      :: struct { type_info: Type_Info, }
 Node_Size_Of        :: struct { type: ^Node }
@@ -471,24 +471,43 @@ parse_var_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
     parser_advance(ps)
 
     explicit_type: Maybe(Type_Info)
+    is_alias := false
+    
     // Check for explicit type annotation: name: type = expr
     if ps.current_token.kind == .Colon {
         parser_advance(ps)
         explicit_type = parse_type(ps, allocator) or_return
         parser_consume(ps, .Eq) or_return
     } else {
-        // Inferred type: name := expr
+        // Inferred type: name := expr or name := alias type
         parser_consume(ps, .Assign) or_return
+        
+        // Check for alias keyword
+        if ps.current_token.kind == .KW_Alias {
+            is_alias = true
+            parser_advance(ps)
+        }
     }
 
-    expr := parse_expression(ps, parent, allocator) or_return
+    // For alias, parse a type and wrap in Type_Expr node
+    expr: ^Node
+    if is_alias {
+        alias_type := parse_type(ps, allocator) or_return
+        expr = new(Node, allocator)
+        expr.node_kind = .Type_Expr
+        expr.parent = parent
+        expr.span = Span{start = ps.idx-1, end = ps.idx-1}
+        expr.payload = Node_Type_Expr{type_info = alias_type}
+    } else {
+        expr = parse_expression(ps, parent, allocator) or_return
+    }
     
     var_node := new(Node, allocator)
     var_node.node_kind = .Var_Def
     var_node.parent = parent
     var_node.span = Span{start = span_start, end = ps.idx-1}
     // 
-    var_node.payload = Node_Var_Def{name = name_tok.source, content = expr, explicit_type=explicit_type}
+    var_node.payload = Node_Var_Def{name = name_tok.source, content = expr, explicit_type=explicit_type, is_alias=is_alias}
     
     return var_node, nil
 }
