@@ -67,7 +67,7 @@ main := func() {
     // C-style for loop is also supported. Here, you can use len() function to get the length of the array.
     // The len() function works with static arrays, vectors, strings, and maps.
     // TODO(Aria): implement vector and map
-    for i := 0 as i64; i < len(points); i = i + 1 {
+    for i := 0; i < len(points); i += 1 {
         print(points[i].x)
         print(", ")
         print(points[i].y)

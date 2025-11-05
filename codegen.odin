@@ -474,9 +474,28 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
 
     case .Assignment:
         assign := node.payload.(Node_Assign)
-        codegen_node(ctx_cg, assign.target)
-        strings.write_string(&ctx_cg.output_buf, " = ")
-        codegen_node(ctx_cg, assign.value)
+        
+        // For compound assignments, generate: target = target op value
+        if op_kind, has_op := assign.compound_op.?; has_op {
+            codegen_node(ctx_cg, assign.target)
+            strings.write_string(&ctx_cg.output_buf, " = ")
+            codegen_node(ctx_cg, assign.target)
+            
+            #partial switch op_kind {
+            case .Plus:  strings.write_string(&ctx_cg.output_buf, "+")
+            case .Minus: strings.write_string(&ctx_cg.output_buf, "-")
+            case .Star:  strings.write_string(&ctx_cg.output_buf, "*")
+            case .Slash: strings.write_string(&ctx_cg.output_buf, "/")
+            }
+            
+            codegen_node(ctx_cg, assign.value)
+        } else {
+            // Regular assignment
+            codegen_node(ctx_cg, assign.target)
+            strings.write_string(&ctx_cg.output_buf, " = ")
+            codegen_node(ctx_cg, assign.value)
+        }
+        
         if !ctx_cg.in_for_header {
             strings.write_string(&ctx_cg.output_buf, ";\n")
         }

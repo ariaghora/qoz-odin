@@ -458,6 +458,31 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
         target_type := check_node(ctx, assign.target)
         value_type := check_node(ctx, assign.value)
         
+        // For compound assignments (+=, -=, etc.), perform the operation type checking
+        if op_kind, has_op := assign.compound_op.?; has_op {
+            // The operation is: target = target op value
+            // So both target and value must be compatible with the operator
+            op_token := Token{kind = op_kind, source = "", line = 0, column = 0}
+            result_type := semantic_binop_type_resolve(target_type, value_type, op_token, node.span, ctx)
+            
+            // The result must be assignable back to target
+            if !types_compatible(target_type, result_type) {
+                add_error(ctx, node.span, "Cannot assign %v to %v in compound assignment", result_type, target_type)
+            }
+            
+            node.inferred_type = result_type
+            return result_type
+        }
+        
+        // Regular assignment: coerce untyped value to target type if compatible
+        if is_untyped_int(value_type) && is_typed_int(target_type) {
+            assign.value.inferred_type = target_type
+            value_type = target_type
+        } else if is_untyped_float(value_type) && is_typed_float(target_type) {
+            assign.value.inferred_type = target_type
+            value_type = target_type
+        }
+        
         if !types_compatible(target_type, value_type) {
             add_error(ctx, node.span, "Cannot assign %v to %v", value_type, target_type)
         }
@@ -478,11 +503,10 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
             binop.right.inferred_type = left_type
             right_type = left_type
         } else if is_untyped_int(left_type) && is_untyped_int(right_type) {
-            // Both untyped - default to i64
-            binop.left.inferred_type = Primitive_Type.I64
-            binop.right.inferred_type = Primitive_Type.I64
-            left_type = Primitive_Type.I64
-            right_type = Primitive_Type.I64
+            // Both untyped - keep as untyped, will be resolved by context (assignment, etc.)
+            // Don't force to i64 here
+            left_type = Untyped_Int{}
+            right_type = Untyped_Int{}
         }
         
         // Coerce untyped floats
@@ -1289,6 +1313,12 @@ types_equal :: proc(a, b: Type_Info) -> bool {
     case Named_Type:
         b_val, ok := b.(Named_Type)
         return ok && a_val.name==b_val.name
+    case Untyped_Int:
+        _, ok := b.(Untyped_Int)
+        return ok
+    case Untyped_Float:
+        _, ok := b.(Untyped_Float)
+        return ok
     }
     return false
 }
@@ -1325,14 +1355,16 @@ semantic_binop_type_resolve :: proc(t1, t2: Type_Info, op: Token, span: Span, ct
     left_type := t1
     right_type := t2
     
+    both_untyped_int := is_untyped_int(left_type) && is_untyped_int(right_type)
+    both_untyped_float := is_untyped_float(left_type) && is_untyped_float(right_type)
+    
     if is_untyped_int(left_type) && is_typed_int(right_type) {
         left_type = right_type  // Coerce untyped to match typed
     } else if is_typed_int(left_type) && is_untyped_int(right_type) {
         right_type = left_type  // Coerce untyped to match typed
-    } else if is_untyped_int(left_type) && is_untyped_int(right_type) {
-        // Both untyped - default to i64
-        left_type = Primitive_Type.I64
-        right_type = Primitive_Type.I64
+    } else if both_untyped_int {
+        // Both untyped - keep as untyped, let assignment context resolve
+        // Just use the untyped types as-is for now
     }
     
     // Handle untyped float coercion
@@ -1340,17 +1372,29 @@ semantic_binop_type_resolve :: proc(t1, t2: Type_Info, op: Token, span: Span, ct
         left_type = right_type
     } else if is_typed_float(left_type) && is_untyped_float(right_type) {
         right_type = left_type
-    } else if is_untyped_float(left_type) && is_untyped_float(right_type) {
-        left_type = Primitive_Type.F64
-        right_type = Primitive_Type.F64
+    } else if both_untyped_float {
+        // Both untyped float - keep as untyped
     }
     
-    // Handle untyped int with pointer operations
-    if is_untyped_int(left_type) {
-        left_type = Primitive_Type.I64
+    // Handle untyped int with pointer operations - only force to i64 if actually doing pointer arithmetic
+    need_concrete_int := false
+    #partial switch op.kind {
+    case .Plus, .Minus:
+        if _, is_ptr := left_type.(Pointer_Type); is_ptr {
+            need_concrete_int = true
+        }
+        if _, is_ptr := right_type.(Pointer_Type); is_ptr {
+            need_concrete_int = true
+        }
     }
-    if is_untyped_int(right_type) {
-        right_type = Primitive_Type.I64
+    
+    if need_concrete_int {
+        if is_untyped_int(left_type) {
+            left_type = Primitive_Type.I64
+        }
+        if is_untyped_int(right_type) {
+            right_type = Primitive_Type.I64
+        }
     }
     
     #partial switch op.kind {
@@ -1395,6 +1439,22 @@ semantic_binop_type_resolve :: proc(t1, t2: Type_Info, op: Token, span: Span, ct
     #partial switch t in left_type {
     case Primitive_Type:
         return semantic_binop_primitive(t, op, span, ctx)
+    case Untyped_Int:
+        // Comparison operators always return bool
+        #partial switch op.kind {
+        case .Eq_Eq, .Not_Eq, .Lt, .Gt, .Lt_Eq, .Gt_Eq:
+            return Primitive_Type.Bool
+        }
+        // Arithmetic operators keep result as untyped integer - will be resolved by context
+        return Untyped_Int{}
+    case Untyped_Float:
+        // Comparison operators always return bool
+        #partial switch op.kind {
+        case .Eq_Eq, .Not_Eq, .Lt, .Gt, .Lt_Eq, .Gt_Eq:
+            return Primitive_Type.Bool
+        }
+        // Arithmetic operators keep result as untyped float - will be resolved by context
+        return Untyped_Float{}
     case:
         add_error(ctx, span, fmt.tprintf("Cannot use %v in binary operation", t))
         return Primitive_Type.I32

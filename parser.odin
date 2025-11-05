@@ -100,7 +100,11 @@ Fn_Param :: struct { name: string, type: Type_Info, span: Span }
 Struct_Field_Init :: struct { name: string, value: ^Node }
 
 Node_Array_Literal  :: struct { element_type: Type_Info, size: int, elements: [dynamic]^Node }
-Node_Assign         :: struct { target: ^Node, value: ^Node }
+Node_Assign         :: struct { 
+    target: ^Node, 
+    value: ^Node,
+    compound_op: Maybe(Token_Kind), // For +=, -=, etc. Contains the base operator (.Plus, .Minus, etc.)
+}
 Node_Bin_Op         :: struct { left, right: ^Node, op: Token }
 Node_Call           :: struct { callee: ^Node, args: [dynamic]^Node }
 Node_Cast           :: struct { expr: ^Node, target_type: Type_Info }
@@ -370,9 +374,30 @@ parse_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.
 
         // Parse lvalue expression (could be x, x[i], x.field, etc.)
         expr := parse_expression(ps, parent, allocator) or_return
-        if ps.current_token.kind == .Eq {
-            // x = val
-            parser_advance(ps)  // eat '='
+        
+        // Check for assignment or compound assignment
+        is_assignment := false
+        compound_op: Maybe(Token_Kind) = nil
+        
+        #partial switch ps.current_token.kind {
+        case .Eq:
+            is_assignment = true
+        case .Plus_Eq:
+            is_assignment = true
+            compound_op = .Plus
+        case .Minus_Eq:
+            is_assignment = true
+            compound_op = .Minus
+        case .Star_Eq:
+            is_assignment = true
+            compound_op = .Star
+        case .Slash_Eq:
+            is_assignment = true
+            compound_op = .Slash
+        }
+        
+        if is_assignment {
+            parser_advance(ps)  // eat '=' or '+=' etc.
             
             // Validate lvalue
             #partial switch expr.node_kind {
@@ -391,6 +416,7 @@ parse_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.
             assign_node.payload = Node_Assign{
                 target = expr,
                 value = value,
+                compound_op = compound_op,
             }
         
             return assign_node, nil

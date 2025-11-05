@@ -8,6 +8,7 @@ Token_Kind :: enum {
     Eq, Eq_Eq, Not_Eq, Assign, Colon, Semicolon, Comma, Dot,
     Lt, Gt, Lt_Eq, Gt_Eq, Amp, 
     Plus, Minus, Star, Slash, Percent,
+    Plus_Eq, Minus_Eq, Star_Eq, Slash_Eq,
     Left_Paren, Right_Paren,
     Left_Brace, Right_Brace,
     Left_Bracket, Right_Bracket,
@@ -219,12 +220,33 @@ tokenize :: proc(source: string, allocator := context.allocator) -> (tokens: [dy
         case '}': make_tok(&t, .Right_Brace, "}")
         case '[': make_tok(&t, .Left_Bracket, "[")
         case ']': make_tok(&t, .Right_Bracket, "]")
-        case '+': make_tok(&t, .Plus, "+")
-        case '-': make_tok(&t, .Minus, "-")
-        case '*': make_tok(&t, .Star, "*")
+        case '+':
+            if peek(&t, source) == '=' {
+                tokenizer_advance(&t)
+                make_tok(&t, .Plus_Eq, "+=")
+            } else {
+                make_tok(&t, .Plus, "+")
+            }
+        case '-':
+            if peek(&t, source) == '=' {
+                tokenizer_advance(&t)
+                make_tok(&t, .Minus_Eq, "-=")
+            } else {
+                make_tok(&t, .Minus, "-")
+            }
+        case '*':
+            if peek(&t, source) == '=' {
+                tokenizer_advance(&t)
+                make_tok(&t, .Star_Eq, "*=")
+            } else {
+                make_tok(&t, .Star, "*")
+            }
         case '/':
             if peek(&t, source) == '/' {
                 skip_comment(&t)
+            } else if peek(&t, source) == '=' {
+                tokenizer_advance(&t)
+                make_tok(&t, .Slash_Eq, "/=")
             } else {
                 make_tok(&t, .Slash, "/")
             }
