@@ -8,13 +8,13 @@ import "std:strings"
 // However, just keep it at the top unless there is a good reason not to.
 import "std:mem" 
 
-get_bob_info := func(): Person {
-    return {name: "Bob", age: 25}
-}
-
 Person := struct {
     name: string,
     age: i32,
+}
+
+get_bob_info := func(): Person {
+    return {name: "Bob", age: 25}
 }
 
 main := func() {
