@@ -330,6 +330,104 @@ add_error :: proc(ctx: ^Semantic_Context, span: Span, format: string, args: ..an
 }
 
 @(private="file")
+validate_allocator_struct :: proc(ctx: ^Semantic_Context, allocator_type: Type_Info, span: Span) -> bool {
+    named, is_named := allocator_type.(Named_Type)
+    if !is_named {
+        add_error(ctx, span, "del() requires allocator struct, got %v", allocator_type)
+        return false
+    }
+    
+    // Extract package name from qualified type
+    pkg_name := ""
+    if dot_idx := strings.index(named.name, "."); dot_idx != -1 {
+        pkg_name = named.name[:dot_idx]
+    }
+    
+    // Resolve the struct definition
+    resolved_allocator, ok := resolve_named_type(ctx, named)
+    if !ok {
+        add_error(ctx, span, "Cannot resolve allocator type %v", allocator_type)
+        return false
+    }
+    
+    struct_type, is_struct := resolved_allocator.(Struct_Type)
+    if !is_struct {
+        add_error(ctx, span, "del() requires allocator struct, got %v", allocator_type)
+        return false
+    }
+    
+    // Check for required fields: data, alloc, free
+    has_data, has_alloc, has_free := false, false, false
+    
+    for field in struct_type.fields {
+        switch field.name {
+        case "data":
+            // Must be *void
+            if ptr, is_ptr := field.type.(Pointer_Type); is_ptr {
+                if prim, ok := ptr.pointee^.(Primitive_Type); ok && prim == .Void {
+                    has_data = true
+                }
+            }
+        case "alloc":
+            // Must be func(*void, i64): *void
+            field_type := field.type
+            if named_field, is_named := field.type.(Named_Type); is_named {
+                if resolved, ok := resolve_named_type(ctx, named_field, pkg_name); ok {
+                    field_type = resolved
+                }
+            }
+            if fn_type, is_fn := field_type.(Function_Type); is_fn && len(fn_type.params) == 2 {
+                p0_ok, p1_ok, ret_ok := false, false, false
+                if ptr, is_ptr := fn_type.params[0].(Pointer_Type); is_ptr {
+                    if prim, ok := ptr.pointee^.(Primitive_Type); ok && prim == .Void do p0_ok = true
+                }
+                if prim, is_prim := fn_type.params[1].(Primitive_Type); is_prim && prim == .I64 do p1_ok = true
+                if ptr, is_ptr := fn_type.return_type^.(Pointer_Type); is_ptr {
+                    if prim, ok := ptr.pointee^.(Primitive_Type); ok && prim == .Void do ret_ok = true
+                }
+                if p0_ok && p1_ok && ret_ok do has_alloc = true
+            }
+        case "free":
+            // Must be func(*void, *void): void
+            field_type := field.type
+            if named_field, is_named := field.type.(Named_Type); is_named {
+                if resolved, ok := resolve_named_type(ctx, named_field, pkg_name); ok {
+                    field_type = resolved
+                }
+            }
+            if fn_type, is_fn := field_type.(Function_Type); is_fn && len(fn_type.params) == 2 {
+                p0_ok, p1_ok, ret_ok := false, false, false
+                if ptr, is_ptr := fn_type.params[0].(Pointer_Type); is_ptr {
+                    if prim, ok := ptr.pointee^.(Primitive_Type); ok && prim == .Void do p0_ok = true
+                }
+                if ptr, is_ptr := fn_type.params[1].(Pointer_Type); is_ptr {
+                    if prim, ok := ptr.pointee^.(Primitive_Type); ok && prim == .Void do p1_ok = true
+                }
+                if prim, ok := fn_type.return_type^.(Primitive_Type); ok && prim == .Void do ret_ok = true
+                if p0_ok && p1_ok && ret_ok do has_free = true
+            }
+        }
+    }
+    
+    if !has_data || !has_alloc || !has_free {
+        missing := make([dynamic]string, context.temp_allocator)
+        if !has_data do append(&missing, "'data: *void'")
+        if !has_alloc do append(&missing, "'alloc: func(*void, i64): *void'")
+        if !has_free do append(&missing, "'free: func(*void, *void): void'")
+        
+        error_msg := "del() requires allocator with "
+        for m, i in missing {
+            if i > 0 do error_msg = fmt.tprintf("%s, ", error_msg)
+            error_msg = fmt.tprintf("%s%s", error_msg, m)
+        }
+        add_error(ctx, span, error_msg)
+        return false
+    }
+    
+    return true
+}
+
+@(private="file")
 extract_alias_from_path :: proc(import_path: string) -> string {
     path := import_path
     
@@ -635,28 +733,18 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
         // Validate first argument - must be pointer, string, or array
         valid_first_arg := false
         #partial switch t in ptr_type {
-        case Pointer_Type:
-            valid_first_arg = true
-        case Array_Type:
+        case Pointer_Type, Array_Type:
             valid_first_arg = true
         case Named_Type:
-            if t.name == "string" {
-                valid_first_arg = true
-            }
+            if t.name == "string" do valid_first_arg = true
         }
         
         if !valid_first_arg {
             add_error(ctx, del_node.pointer.span, "del() requires pointer, string, or array type, got %v", ptr_type)
         }
         
-        // Validate allocator type (should be mem.Allocator or compatible)
-        if named, is_named := allocator_type.(Named_Type); is_named {
-            if named.name != "mem.Allocator" { // TODO(Aria): THIS IS FUCKING UGLY
-                add_error(ctx, del_node.allocator.span, "del() requires mem.Allocator, got %v", allocator_type)
-            }
-        } else {
-            add_error(ctx, del_node.allocator.span, "del() requires mem.Allocator, got %v", allocator_type)
-        }
+        // Validate allocator - structural typing
+        validate_allocator_struct(ctx, allocator_type, del_node.allocator.span)
         
         return .Void
 
