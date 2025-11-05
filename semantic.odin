@@ -420,7 +420,13 @@ collect_declarations :: proc(ctx: ^Semantic_Context, node: ^Node, pkg_dir, proje
 }
 
 // Pass 2: Full checking with bodies
-check_node :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
+check_node :: proc{check_node_without_context, check_node_with_context}
+
+check_node_without_context :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
+    return check_node_with_context(ctx, node, nil)
+}
+
+check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_type: Type_Info) -> Type_Info {
     if node == nil do return Primitive_Type.Void
     
     #partial switch node.node_kind {
@@ -919,27 +925,48 @@ check_node :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
     case .Literal_Arr:
         arr_lit := node.payload.(Node_Array_Literal)
         
+        // Infer type from context if not explicitly provided
+        inferred_elem_type := arr_lit.element_type
+        inferred_size := arr_lit.size
+        
+        if inferred_elem_type == nil && expected_type != nil {
+            // Try to infer from expected type
+            if exp_arr, is_arr := expected_type.(Array_Type); is_arr {
+                inferred_elem_type = exp_arr.element_type^
+                inferred_size = exp_arr.size
+            } else {
+                add_error(ctx, node.span, "Cannot infer compound literal type: expected %v", expected_type)
+                return Primitive_Type.Void
+            }
+        }
+        
+        if inferred_elem_type == nil {
+            add_error(ctx, node.span, "Cannot infer compound literal type without context")
+            return Primitive_Type.Void
+        }
+        
+        // Check elements with expected element type
         elem_types := make([dynamic]Type_Info, context.temp_allocator)
         for elem in arr_lit.elements {
-            elem_type := check_node(ctx, elem)
+            elem_type := check_node(ctx, elem, inferred_elem_type)
             append(&elem_types, elem_type)
         }
         
-        if len(arr_lit.elements) != arr_lit.size {
+        if len(arr_lit.elements) != inferred_size {
             add_error(ctx, node.span, "Array literal has %d elements but size is %d", 
-                len(arr_lit.elements), arr_lit.size)
+                len(arr_lit.elements), inferred_size)
         }
         
         for elem_type, i in elem_types {
-            if !types_compatible(arr_lit.element_type, elem_type) {
+            if !types_compatible(inferred_elem_type, elem_type) {
                 add_error(ctx, arr_lit.elements[i].span, "Array element %d: expected %v, got %v", 
-                    i, arr_lit.element_type, elem_type)
+                    i, inferred_elem_type, elem_type)
             }
         }
         
         array_type := Array_Type{
-            element_type = new_clone(arr_lit.element_type, ctx.allocator),
-            size = arr_lit.size,
+            element_type = new_clone(inferred_elem_type, ctx.allocator),
+            size = inferred_size,
         }
         node.inferred_type = array_type
         return array_type
@@ -957,8 +984,8 @@ check_node :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
         }
 
         if ret.value != nil {
-            ret_type := check_node(ctx, ret.value)
-            if !types_equal(ret_type, ctx.current_function_return_type.?) {
+            ret_type := check_node(ctx, ret.value, expected_ret_type)
+            if !types_equal(ret_type, expected_ret_type) {
                 add_error(ctx, node.span, "Return type mismatch: expected %v, got %v", expected_ret_type, ret_type)
             }
         } else {
@@ -1015,9 +1042,22 @@ check_node :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
             return Primitive_Type.Void
         }
         
+        // First, find expected types for each field
+        expected_field_types := make(map[string]Type_Info, context.temp_allocator)
+        for field in struct_type.fields {
+            expected_field_types[field.name] = field.type
+        }
+        
+        // Then check each field initialization with expected type
         field_types := make(map[string]Type_Info, context.temp_allocator)
         for field_init in struct_lit.field_inits {
-            value_type := check_node(ctx, field_init.value)
+            expected_type, has_expected := expected_field_types[field_init.name]
+            value_type: Type_Info
+            if has_expected {
+                value_type = check_node(ctx, field_init.value, expected_type)
+            } else {
+                value_type = check_node(ctx, field_init.value)
+            }
             field_types[field_init.name] = value_type
         }
         

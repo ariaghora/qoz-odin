@@ -62,12 +62,27 @@ get_array_wrapper_name :: proc(elem_type: ^Type_Info, size: int) -> string {
     return fmt.tprintf("%sArray_%s_%d", MANGLE_PREFIX, type_name, size)
 }
 
+// Check if a type contains any named struct types
+type_contains_struct :: proc(t: Type_Info) -> bool {
+    #partial switch typ in t {
+    case Named_Type:
+        return true // Could be a struct
+    case Array_Type:
+        return type_contains_struct(typ.element_type^)
+    case Pointer_Type:
+        return type_contains_struct(typ.pointee^)
+    case:
+        return false
+    }
+}
+
 // Generate struct wrapper for array type (needed for returning arrays by value in C)
 // Recursively generates wrappers for nested arrays
-codegen_array_wrapper_struct :: proc(ctx_cg: ^Codegen_Context, arr_type: Array_Type) {
+// only_primitives: if true, only generate wrappers for arrays of primitives (skip struct-based)
+codegen_array_wrapper_struct :: proc(ctx_cg: ^Codegen_Context, arr_type: Array_Type, only_primitives := false) {
     // If element type is also an array, generate its wrapper first
     if nested_arr, is_nested := arr_type.element_type^.(Array_Type); is_nested {
-        codegen_array_wrapper_struct(ctx_cg, nested_arr)
+        codegen_array_wrapper_struct(ctx_cg, nested_arr, only_primitives)
     }
     
     wrapper_name := get_array_wrapper_name(arr_type.element_type, arr_type.size)
@@ -76,6 +91,12 @@ codegen_array_wrapper_struct :: proc(ctx_cg: ^Codegen_Context, arr_type: Array_T
     if wrapper_name in ctx_cg.generated_array_wrappers {
         return
     }
+    
+    // Skip struct-based arrays if only_primitives is true
+    if only_primitives && type_contains_struct(arr_type.element_type^) {
+        return
+    }
+    
     ctx_cg.generated_array_wrappers[wrapper_name] = true
     
     strings.write_string(&ctx_cg.output_buf, "typedef struct ")
@@ -148,6 +169,40 @@ codegen :: proc(asts: map[string]^Node, sorted_packages: []string, ctx_sem: ^Sem
     
     strings.write_string(&ctx_cg.output_buf, "\n")
     
+    // Pass 1.5: Collect and forward-declare all array wrappers
+    array_wrapper_names := make([dynamic]string, context.temp_allocator)
+    forward_decl_map := make(map[string]bool, context.temp_allocator)
+    ctx_cg.generated_array_wrappers = forward_decl_map
+    for pkg_dir in sorted_packages {
+        for file_path, ast in asts {
+            file_dir := filepath.dir(file_path, context.temp_allocator)
+            if file_dir == pkg_dir {
+                codegen_collect_array_wrappers(&ctx_cg, ast, &array_wrapper_names)
+            }
+        }
+    }
+    // Forward declare array wrappers
+    for name in array_wrapper_names {
+        fmt.sbprintf(&ctx_cg.output_buf, "typedef struct %s %s;\n", name, name)
+    }
+    strings.write_string(&ctx_cg.output_buf, "\n")
+    
+    // Reset the map for actual generation
+    ctx_cg.generated_array_wrappers = make(map[string]bool, allocator)
+    
+    // Pass 1.75: Generate array wrapper bodies for primitive types ONLY
+    // (These are needed by struct fields before struct definitions)
+    for pkg_dir in sorted_packages {
+        for file_path, ast in asts {
+            file_dir := filepath.dir(file_path, context.temp_allocator)
+            if file_dir == pkg_dir {
+                codegen_scan_array_returns(&ctx_cg, ast, only_primitives = true)
+            }
+        }
+    }
+    
+    strings.write_string(&ctx_cg.output_buf, "\n")
+    
     // Pass 2: Struct definitions for ALL packages (complete typedefs with bodies)
     for pkg_dir in sorted_packages {
         ctx_cg.current_pkg_name = filepath.base(pkg_dir)
@@ -161,13 +216,13 @@ codegen :: proc(asts: map[string]^Node, sorted_packages: []string, ctx_sem: ^Sem
     
     strings.write_string(&ctx_cg.output_buf, "\n")
     
-    // Pass 2.5: Generate array wrapper structs for functions that return arrays
-    ctx_cg.generated_array_wrappers = make(map[string]bool, allocator)
+    // Pass 2.5: Generate array wrapper bodies for struct-based arrays
+    // (These can now reference fully defined struct types)
     for pkg_dir in sorted_packages {
         for file_path, ast in asts {
             file_dir := filepath.dir(file_path, context.temp_allocator)
             if file_dir == pkg_dir {
-                codegen_scan_array_returns(&ctx_cg, ast)
+                codegen_scan_array_returns(&ctx_cg, ast, only_primitives = false)
             }
         }
     }
@@ -210,20 +265,86 @@ codegen_indent :: proc(ctx_cg: ^Codegen_Context, level: int) {
     strings.write_string(&ctx_cg.output_buf, strings.repeat(" ", ctx_cg.indent_level * 4, context.temp_allocator))
 }
 
-// Scan AST for functions that return arrays and generate wrapper structs
-codegen_scan_array_returns :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
+// Recursively scan a type for arrays and collect wrapper names (no generation)
+codegen_collect_type_array_names :: proc(ctx_cg: ^Codegen_Context, type: Type_Info, names: ^[dynamic]string) {
+    #partial switch t in type {
+    case Array_Type:
+        wrapper_name := get_array_wrapper_name(t.element_type, t.size)
+        if wrapper_name not_in ctx_cg.generated_array_wrappers {
+            append(names, wrapper_name)
+            ctx_cg.generated_array_wrappers[wrapper_name] = true
+        }
+        // Recurse for nested arrays
+        codegen_collect_type_array_names(ctx_cg, t.element_type^, names)
+    case Pointer_Type:
+        codegen_collect_type_array_names(ctx_cg, t.pointee^, names)
+    case Struct_Type:
+        for field in t.fields {
+            codegen_collect_type_array_names(ctx_cg, field.type, names)
+        }
+    case Function_Type:
+        codegen_collect_type_array_names(ctx_cg, t.return_type^, names)
+        for param in t.params {
+            codegen_collect_type_array_names(ctx_cg, param, names)
+        }
+    }
+}
+
+// Collect all array wrapper names without generating
+codegen_collect_array_wrappers :: proc(ctx_cg: ^Codegen_Context, node: ^Node, names: ^[dynamic]string) {
     #partial switch node.node_kind {
     case .Program:
         for stmt in node.payload.(Node_Statement_List).nodes {
-            codegen_scan_array_returns(ctx_cg, stmt)
+            codegen_collect_array_wrappers(ctx_cg, stmt, names)
         }
     case .Var_Def:
         var_def := node.payload.(Node_Var_Def)
         if var_def.content.node_kind == .Fn_Def {
             fn_def := var_def.content.payload.(Node_Fn_Def)
-            if arr_type, is_array := fn_def.return_type.(Array_Type); is_array {
-                codegen_array_wrapper_struct(ctx_cg, arr_type)
-            }
+            codegen_collect_type_array_names(ctx_cg, fn_def.return_type, names)
+        } else if var_def.content.node_kind == .Type_Expr {
+            // Struct definition
+            type_expr := var_def.content.payload.(Node_Type_Expr)
+            codegen_collect_type_array_names(ctx_cg, type_expr.type_info, names)
+        }
+    }
+}
+
+// Recursively scan a type for arrays and generate wrappers
+codegen_scan_type_for_arrays :: proc(ctx_cg: ^Codegen_Context, type: Type_Info, only_primitives := false) {
+    #partial switch t in type {
+    case Array_Type:
+        codegen_array_wrapper_struct(ctx_cg, t, only_primitives)
+    case Pointer_Type:
+        codegen_scan_type_for_arrays(ctx_cg, t.pointee^, only_primitives)
+    case Struct_Type:
+        for field in t.fields {
+            codegen_scan_type_for_arrays(ctx_cg, field.type, only_primitives)
+        }
+    case Function_Type:
+        codegen_scan_type_for_arrays(ctx_cg, t.return_type^, only_primitives)
+        for param in t.params {
+            codegen_scan_type_for_arrays(ctx_cg, param, only_primitives)
+        }
+    }
+}
+
+// Scan AST for functions that return arrays and generate wrapper structs
+codegen_scan_array_returns :: proc(ctx_cg: ^Codegen_Context, node: ^Node, only_primitives := false) {
+    #partial switch node.node_kind {
+    case .Program:
+        for stmt in node.payload.(Node_Statement_List).nodes {
+            codegen_scan_array_returns(ctx_cg, stmt, only_primitives)
+        }
+    case .Var_Def:
+        var_def := node.payload.(Node_Var_Def)
+        if var_def.content.node_kind == .Fn_Def {
+            fn_def := var_def.content.payload.(Node_Fn_Def)
+            codegen_scan_type_for_arrays(ctx_cg, fn_def.return_type, only_primitives)
+        } else if var_def.content.node_kind == .Type_Expr {
+            // Struct definition
+            type_expr := var_def.content.payload.(Node_Type_Expr)
+            codegen_scan_type_for_arrays(ctx_cg, type_expr.type_info, only_primitives)
         }
     }
 }

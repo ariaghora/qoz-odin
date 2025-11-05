@@ -829,6 +829,7 @@ parse_primary :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
     case .Lit_String: return parse_literal_string(ps, parent, allocator)
     case .Lit_Nil: return parse_literal_nil(ps, parent, allocator)
     case .KW_Arr: return parse_literal_array(ps, parent, allocator)
+    case .Left_Brace: return parse_untyped_compound_literal(ps, parent, allocator)
     case:
         return nil, make_parse_error(ps, fmt.tprintf("Expected expression at position %d, got %v", ps.idx, ps.current_token.kind))
     }
@@ -1090,6 +1091,40 @@ parse_literal_array :: proc(ps: ^Parsing_State, parent: ^Node, allocator := cont
     arr_node.payload = Node_Array_Literal{
         element_type = elem_type,
         size = size,
+        elements = elements,
+    }
+    
+    return arr_node, nil
+}
+
+parse_untyped_compound_literal :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res:^Node, err:Maybe(Parse_Error)) {
+    span_start := ps.idx
+    
+    parser_consume(ps, .Left_Brace) or_return
+    
+    // Parse elements (could be expressions or nested compound literals)
+    elements := make([dynamic]^Node, allocator)
+    for ps.current_token.kind != .Right_Brace {
+        elem := parse_expression(ps, parent, allocator) or_return
+        append(&elements, elem)
+        
+        if ps.current_token.kind == .Comma {
+            parser_advance(ps)
+        } else if ps.current_token.kind != .Right_Brace {
+            return nil, make_parse_error(ps, "Expected ',' or '}' in compound literal")
+        }
+    }
+    
+    parser_consume(ps, .Right_Brace) or_return
+    
+    // Create an array literal node with nil type (to be inferred during semantic analysis)
+    arr_node := new(Node, allocator)
+    arr_node.node_kind = .Literal_Arr
+    arr_node.parent = parent
+    arr_node.span = Span{start = span_start, end = ps.idx - 1}
+    arr_node.payload = Node_Array_Literal{
+        element_type = nil,  // Will be inferred
+        size = len(elements),
         elements = elements,
     }
     

@@ -1,13 +1,42 @@
-get_array := func(): arr<i32, 5> {
-    return arr<i32, 5> { 1, 2, 3, 4, 5 }
+Point := struct {
+    x: i32
+    y: i32
 }
 
-get_array_of_arrays := func(): arr< arr<i32, 3>, 2> {
-    return arr<arr<i32, 3>, 2> {
-        arr<i32, 3> { 1, 2, 3 },
-        arr<i32, 3> { 4, 5, 6 },
+Container := struct {
+    values: arr<i32, 3>
+    count: i32
+}
+
+get_array := func(): arr<i32, 5> {
+    return { 1, 2, 3, 4, 5 }
+}
+
+get_array_of_arrays := func(): arr<arr<i32, 3>, 2> {
+    return {
+        { 1, 2, 3 },
+        { 4, 5, 6 },
     }
-}   
+}
+
+get_point := func(): Point {
+    return Point{ x: 10, y: 20 }
+}
+
+get_points := func(): arr<Point, 3> {
+    return {
+        Point{ x: 1, y: 2 },
+        Point{ x: 3, y: 4 },
+        Point{ x: 5, y: 6 },
+    }
+}
+
+get_container := func(): Container {
+    return Container{
+        values: { 7, 8, 9 },
+        count: 3,
+    }
+}
 
 main := func() {
     array := get_array()
@@ -20,5 +49,20 @@ main := func() {
         for v in inner_array {
             print(v)
         }
+    }
+    
+    point := get_point()
+    print(point.x)
+    print(point.y)
+    
+    points := get_points()
+    for p in points {
+        print(p.x)
+        print(p.y)
+    }
+    
+    container := get_container()
+    for v in container.values {
+        print(v)
     }
 }
