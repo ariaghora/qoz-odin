@@ -8,12 +8,12 @@ main := func() {
     word1 := "Hello, "
     word2 := "Arena!"
     greeting := str.string_concat(word1, word2, alloc)
-    print(greeting)
+    println(greeting)
 
     word3 := "Works "
     word4 := "perfectly!"
     message := str.string_concat(word3, word4, alloc)
-    print(message)
+    println(message)
 
     mem.arena_free(&arena)
 }

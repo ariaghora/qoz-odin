@@ -56,6 +56,7 @@ main := func() {
     banner("Static Array Example")
     // You can create a static array like this. The size must be a compile-time constant.
     fruits := arr<string, 3>{"Apple", "Banana", "Cherry"}
+    println("First fruit:", fruits[0])
 
     // You can create an array of structs or other more complex types as well.
     points := arr<Vec2D, 3>{
@@ -69,6 +70,7 @@ main := func() {
     //     Vec2D{x: 3.0, y: 4.0},
     //     Vec2D{x: 5.0, y: 6.0},
     // }
+    println("First point:", points[0].x, points[0].y)
 
 
     banner("Loop In Qoz")
