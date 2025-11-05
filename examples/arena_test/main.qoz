@@ -4,6 +4,10 @@ import str "std:strings"
 main := func() {
     arena := mem.arena_make(1024)
     alloc := mem.arena_allocator(&arena)
+    defer {
+        println("Freeing arena memory...")
+        mem.arena_free(&arena)
+    }
 
     word1 := "Hello, "
     word2 := "Arena!"
@@ -15,5 +19,4 @@ main := func() {
     message := str.string_concat(word3, word4, alloc)
     println(message)
 
-    mem.arena_free(&arena)
 }
