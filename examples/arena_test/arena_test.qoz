@@ -5,7 +5,6 @@ main := func() {
     arena := mem.arena_make(1024)
     alloc := mem.arena_allocator(&arena)
 
-    // Use arena allocator for string concatenation
     word1 := "Hello, "
     word2 := "Arena!"
     greeting := str.string_concat(word1, word2, alloc)

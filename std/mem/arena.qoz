@@ -27,19 +27,14 @@ arena_alloc_proc := func(data: *void, size: i64): *void {
         print("Arena out of memory!")
         libc.exit(1)
     }
-
-    // Get pointer at current offset
     ptr := arena.buffer + arena.offset
-
-    // Bump the offset
     arena.offset = arena.offset + size
 
     return ptr as *void
 }
 
-arena_free_proc := func(data: *void, ptr: *void) {
-    // Arena doesn't support individual frees - no-op
-}
+// No-op. Arena doesn't support individual frees.
+arena_free_proc := func(data: *void, ptr: *void) { }
 
 arena_allocator := func(arena: *Arena): Allocator {
     return Allocator {

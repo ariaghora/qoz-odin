@@ -1297,7 +1297,6 @@ parse_type :: proc(ps: ^Parsing_State, allocator: mem.Allocator) -> (res:Type_In
         fmt.println(ps.current_token)
         return nil, make_parse_error(ps, fmt.tprintf("Expected type at position %d, got %v", ps.idx, ps.current_token.kind))
     }
-    // TODO(Aria): function type and other types parsing
 
     parser_advance(ps)
 

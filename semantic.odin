@@ -843,11 +843,8 @@ check_node :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
             if i >= len(fn_type.params) do break
             expected := fn_type.params[i]
             
-            arg_prim, arg_ok := arg_type.(Primitive_Type)
-            exp_prim, exp_ok := expected.(Primitive_Type)
-            
-            if arg_ok && exp_ok && arg_prim != exp_prim {
-                add_error(ctx, call.args[i].span, "Argument %d: expected %v, got %v", i, exp_prim, arg_prim)
+            if !types_compatible(expected, arg_type) {
+                add_error(ctx, call.args[i].span, "Argument %d: expected %v, got %v", i, expected, arg_type)
             }
         }
         
@@ -934,7 +931,7 @@ check_node :: proc(ctx: ^Semantic_Context, node: ^Node) -> Type_Info {
         }
         
         for elem_type, i in elem_types {
-            if !types_equal(elem_type, arr_lit.element_type) {
+            if !types_compatible(arr_lit.element_type, elem_type) {
                 add_error(ctx, arr_lit.elements[i].span, "Array element %d: expected %v, got %v", 
                     i, arr_lit.element_type, elem_type)
             }

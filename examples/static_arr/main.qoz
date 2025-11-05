@@ -1,0 +1,24 @@
+get_array := func(): arr<i32, 5> {
+    return arr<i32, 5> { 1, 2, 3, 4, 5 }
+}
+
+get_array_of_arrays := func(): arr< arr<i32, 3>, 2> {
+    return arr<arr<i32, 3>, 2> {
+        arr<i32, 3> { 1, 2, 3 },
+        arr<i32, 3> { 4, 5, 6 },
+    }
+}   
+
+main := func() {
+    array := get_array()
+    for v in array {
+        print(v)
+    }
+    
+    nested := get_array_of_arrays()
+    for inner_array in nested {
+        for v in inner_array {
+            print(v)
+        }
+    }
+}

@@ -13,7 +13,8 @@ Codegen_Context :: struct {
     loop_counter: int,
     in_for_header: bool, 
     current_pkg_name: string,
-    skip_struct_defs: bool, // Set to true when struct defs already generated
+    skip_struct_defs: bool,
+    generated_array_wrappers: map[string]bool, // Track which array wrapper structs we've generated
 }
 
 MANGLE_PREFIX :: "qoz__"
@@ -26,6 +27,104 @@ should_mangle :: proc(name: string, is_external: bool) -> bool {
 
 mangle_name :: proc(name: string) -> string {
     return fmt.tprintf("%s%s", MANGLE_PREFIX, name)
+}
+
+// Generate a unique name for array wrapper struct (handles nested arrays recursively)
+get_array_wrapper_name :: proc(elem_type: ^Type_Info, size: int) -> string {
+    type_name: string
+    #partial switch t in elem_type^ {
+    case Primitive_Type:
+        #partial switch t {
+        case .I8:  type_name = "i8"
+        case .U8:  type_name = "u8"
+        case .I32: type_name = "i32"
+        case .I64: type_name = "i64"
+        case .F32: type_name = "f32"
+        case .F64: type_name = "f64"
+        case: type_name = "unknown"
+        }
+    case Array_Type:
+        // Nested array: recursively get inner array's wrapper name
+        inner_wrapper := get_array_wrapper_name(t.element_type, t.size)
+        // Strip the prefix to avoid double prefixing
+        if strings.has_prefix(inner_wrapper, MANGLE_PREFIX) {
+            type_name = inner_wrapper[len(MANGLE_PREFIX):]
+        } else {
+            type_name = inner_wrapper
+        }
+    case Pointer_Type:
+        type_name = "ptr"
+    case Named_Type:
+        type_name, _ = strings.replace_all(t.name, ".", "_", context.temp_allocator)
+    case:
+        type_name = "unknown"
+    }
+    return fmt.tprintf("%sArray_%s_%d", MANGLE_PREFIX, type_name, size)
+}
+
+// Generate struct wrapper for array type (needed for returning arrays by value in C)
+// Recursively generates wrappers for nested arrays
+codegen_array_wrapper_struct :: proc(ctx_cg: ^Codegen_Context, arr_type: Array_Type) {
+    // If element type is also an array, generate its wrapper first
+    if nested_arr, is_nested := arr_type.element_type^.(Array_Type); is_nested {
+        codegen_array_wrapper_struct(ctx_cg, nested_arr)
+    }
+    
+    wrapper_name := get_array_wrapper_name(arr_type.element_type, arr_type.size)
+    
+    // Check if we already generated this wrapper
+    if wrapper_name in ctx_cg.generated_array_wrappers {
+        return
+    }
+    ctx_cg.generated_array_wrappers[wrapper_name] = true
+    
+    strings.write_string(&ctx_cg.output_buf, "typedef struct ")
+    strings.write_string(&ctx_cg.output_buf, wrapper_name)
+    strings.write_string(&ctx_cg.output_buf, " {\n    ")
+    codegen_type(ctx_cg, arr_type.element_type^)
+    fmt.sbprintf(&ctx_cg.output_buf, " data[%d];\n} ", arr_type.size)
+    strings.write_string(&ctx_cg.output_buf, wrapper_name)
+    strings.write_string(&ctx_cg.output_buf, ";\n\n")
+}
+
+// Returns true if the built-in was handled, false otherwise
+codegen_builtin_function :: proc(ctx_cg: ^Codegen_Context, name: string, args: []^Node) -> bool {
+    switch name {
+    case "len":
+        if len(args) != 1 do return false
+        
+        arg := args[0]
+        arg_type := arg.inferred_type.? or_else panic("Type not inferred for len() argument")
+        
+        #partial switch t in arg_type {
+        case Array_Type:
+            // Array length is compile-time constant
+            fmt.sbprintf(&ctx_cg.output_buf, "%d", t.size)
+        case Named_Type:
+            if t.name == "string" {
+                // String length is runtime field access
+                strings.write_string(&ctx_cg.output_buf, "(")
+                codegen_node(ctx_cg, arg)
+                strings.write_string(&ctx_cg.output_buf, ").len")
+            } else {
+                panic("len() called on invalid type in codegen")
+            }
+        case:
+            panic("len() called on invalid type in codegen")
+        }
+        return true
+    
+    // TODO(Aria): Add more built-ins here:
+    // case "size_of":
+    //     ...
+    //     return true
+    // case "typeof":
+    //     ...
+    //     return true
+    
+    case:
+        return false
+    }
 }
 
 codegen :: proc(asts: map[string]^Node, sorted_packages: []string, ctx_sem: ^Semantic_Context, allocator := context.allocator) -> (res: string, err: mem.Allocator_Error) {
@@ -56,6 +155,19 @@ codegen :: proc(asts: map[string]^Node, sorted_packages: []string, ctx_sem: ^Sem
             file_dir := filepath.dir(file_path, context.temp_allocator)
             if file_dir == pkg_dir {
                 codegen_struct_defs(&ctx_cg, ast)
+            }
+        }
+    }
+    
+    strings.write_string(&ctx_cg.output_buf, "\n")
+    
+    // Pass 2.5: Generate array wrapper structs for functions that return arrays
+    ctx_cg.generated_array_wrappers = make(map[string]bool, allocator)
+    for pkg_dir in sorted_packages {
+        for file_path, ast in asts {
+            file_dir := filepath.dir(file_path, context.temp_allocator)
+            if file_dir == pkg_dir {
+                codegen_scan_array_returns(&ctx_cg, ast)
             }
         }
     }
@@ -96,6 +208,24 @@ indented :: proc(content: string, n_space: int) -> string {
 
 codegen_indent :: proc(ctx_cg: ^Codegen_Context, level: int) {
     strings.write_string(&ctx_cg.output_buf, strings.repeat(" ", ctx_cg.indent_level * 4, context.temp_allocator))
+}
+
+// Scan AST for functions that return arrays and generate wrapper structs
+codegen_scan_array_returns :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
+    #partial switch node.node_kind {
+    case .Program:
+        for stmt in node.payload.(Node_Statement_List).nodes {
+            codegen_scan_array_returns(ctx_cg, stmt)
+        }
+    case .Var_Def:
+        var_def := node.payload.(Node_Var_Def)
+        if var_def.content.node_kind == .Fn_Def {
+            fn_def := var_def.content.payload.(Node_Fn_Def)
+            if arr_type, is_array := fn_def.return_type.(Array_Type); is_array {
+                codegen_array_wrapper_struct(ctx_cg, arr_type)
+            }
+        }
+    }
 }
 
 // Walk AST and generate only struct forward declarations (typedef struct X X;)
@@ -266,14 +396,25 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
 
     case .Fn_Call:
         fn_call := node.payload.(Node_Call)
-        codegen_node(ctx_cg, fn_call.callee)
-        strings.write_string(&ctx_cg.output_buf, "(")
-        for arg, i in fn_call.args {
-            codegen_node(ctx_cg, arg)
-            if i < len(fn_call.args)-1 do strings.write_string(&ctx_cg.output_buf, ", ")
+        
+        // Check if this is a built-in function
+        handled := false
+        if fn_call.callee.node_kind == .Identifier {
+            callee_name := fn_call.callee.payload.(Node_Identifier).name
+            handled = codegen_builtin_function(ctx_cg, callee_name, fn_call.args[:])
         }
         
-        strings.write_string(&ctx_cg.output_buf, ")")
+        // If not a built-in, generate regular function call
+        if !handled {
+            codegen_node(ctx_cg, fn_call.callee)
+            strings.write_string(&ctx_cg.output_buf, "(")
+            for arg, i in fn_call.args {
+                codegen_node(ctx_cg, arg)
+                if i < len(fn_call.args)-1 do strings.write_string(&ctx_cg.output_buf, ", ")
+            }
+            
+            strings.write_string(&ctx_cg.output_buf, ")")
+        }
     
     case .For_C:
         for_c := node.payload.(Node_For_C)
@@ -328,7 +469,7 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         strings.write_string(&ctx_cg.output_buf, for_in.iterator)
         strings.write_string(&ctx_cg.output_buf, " = ")
         codegen_node(ctx_cg, for_in.iterable)
-        strings.write_string(&ctx_cg.output_buf, "[__i")
+        strings.write_string(&ctx_cg.output_buf, ".data[__i")
         fmt.sbprintf(&ctx_cg.output_buf, "%d", loop_idx)
         strings.write_string(&ctx_cg.output_buf, "];\n")
         
@@ -418,10 +559,22 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
     
     case .Index:
         index_node := node.payload.(Node_Index)
-        codegen_node(ctx_cg, index_node.object)
-        strings.write_string(&ctx_cg.output_buf, "[")
-        codegen_node(ctx_cg, index_node.index)
-        strings.write_string(&ctx_cg.output_buf, "]")
+        
+        // Check if we're indexing an array type (which uses wrapper struct)
+        obj_type := index_node.object.inferred_type.? or_else Primitive_Type.Void
+        if _, is_array := obj_type.(Array_Type); is_array {
+            // Access through .data field of wrapper struct
+            codegen_node(ctx_cg, index_node.object)
+            strings.write_string(&ctx_cg.output_buf, ".data[")
+            codegen_node(ctx_cg, index_node.index)
+            strings.write_string(&ctx_cg.output_buf, "]")
+        } else {
+            // Regular pointer/array indexing
+            codegen_node(ctx_cg, index_node.object)
+            strings.write_string(&ctx_cg.output_buf, "[")
+            codegen_node(ctx_cg, index_node.index)
+            strings.write_string(&ctx_cg.output_buf, "]")
+        }
     
     case .Len:
         len_node := node.payload.(Node_Len)
@@ -446,14 +599,20 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
 
     case .Literal_Arr:
         arr_lit := node.payload.(Node_Array_Literal)
-        strings.write_string(&ctx_cg.output_buf, "{")
+        arr_type := node.inferred_type.?.(Array_Type)
+        wrapper_name := get_array_wrapper_name(arr_type.element_type, arr_type.size)
+        
+        // Generate: (WrapperStruct){{elem1, elem2, ...}}
+        strings.write_string(&ctx_cg.output_buf, "(")
+        strings.write_string(&ctx_cg.output_buf, wrapper_name)
+        strings.write_string(&ctx_cg.output_buf, "){{")
         for elem, i in arr_lit.elements {
             codegen_node(ctx_cg, elem)
             if i < len(arr_lit.elements) - 1 {
                 strings.write_string(&ctx_cg.output_buf, ", ")
             }
         }
-        strings.write_string(&ctx_cg.output_buf, "}")
+        strings.write_string(&ctx_cg.output_buf, "}}")
 
     case .Literal_Number:
         lit := node.payload.(Node_Literal_Number)
@@ -661,13 +820,6 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
             strings.write_string(&ctx_cg.output_buf, " ")
             strings.write_string(&ctx_cg.output_buf, var_def.name)
 
-            // If array, add size to declarator
-            if arr_type, is_arr := var_type.(Array_Type); is_arr {
-                strings.write_string(&ctx_cg.output_buf, "[")
-                fmt.sbprintf(&ctx_cg.output_buf, "%d", arr_type.size)
-                strings.write_string(&ctx_cg.output_buf, "]")
-            }
-
             strings.write_string(&ctx_cg.output_buf, " = ")
             codegen_node(ctx_cg, var_def.content)
             if !ctx_cg.in_for_header {
@@ -756,7 +908,9 @@ codegen_type :: proc(ctx_cg: ^Codegen_Context, type: Type_Info, name: string = "
         case: fmt.panicf("Internal error: cannot generate code for type %v", t)
         }
     case Array_Type:
-        codegen_type(ctx_cg, t.element_type^)
+        // Arrays are wrapped in structs for return values
+        wrapper_name := get_array_wrapper_name(t.element_type, t.size)
+        strings.write_string(&ctx_cg.output_buf, wrapper_name)
     case Pointer_Type:
         codegen_type(ctx_cg, t.pointee^)
         strings.write_string(&ctx_cg.output_buf, "*")
