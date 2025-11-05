@@ -1,8 +1,7 @@
 import rl "vendor:raylib"
 import "std:libc"
 
-
-main := func(): void {
+main := func() {
     title := "Raylib Test"
     title_ptr := title.data as *i8
     
