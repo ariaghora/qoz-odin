@@ -11,12 +11,7 @@ Image := struct {
     format:  i32,
 }
 
-Color := struct {
-    r: i8,
-    g: i8,
-    b: i8,
-    a: i8,
-}
+Color := struct { r: i8, g: i8, b: i8, a: i8 }
 
 init_window          := func(width: i32, height: i32, title: cstring): void external("InitWindow")
 close_window         := func(): void external("CloseWindow")
@@ -24,7 +19,8 @@ set_target_fps       := func(fps: i32): void external("SetTargetFPS")
 begin_drawing        := func(): void external("BeginDrawing")
 end_drawing          := func(): void external("EndDrawing")
 clear_background     := func(color: Color): void external("ClearBackground")
-draw_circle          := func(centerX: i32, centerY: i32, radius: f32, color: Color): void external("DrawCircle")
-take_screenshot      := func(fileName: cstring): void external("TakeScreenshot")
+draw_circle          := func(center_x: i32, center_y: i32, radius: f32, color: Color): void external("DrawCircle")
+draw_circle_lines    := func(center_x: i32, center_y: i32, radius: f32, color: Color): void external("DrawCircleLines")
+take_screenshot      := func(file_name: cstring): void external("TakeScreenshot")
 window_should_close  := func(): bool external("WindowShouldClose")
 wait_time            := func(seconds: f64): void external("WaitTime")

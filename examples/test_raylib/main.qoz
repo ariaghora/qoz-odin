@@ -8,11 +8,12 @@ main := func() {
     defer rl.close_window()
     rl.set_target_fps(60)
 
-    skyblue := rl.Color{r: 135, g: 206, b: 235, a: 255}
-    red := rl.Color{r: 255, g: 0, b: 0, a: 255}
-    green := rl.Color{r: 0, g: 255, b: 0, a: 255}
-    blue := rl.Color{r: 0, g: 0, b: 255, a: 255}
-    yellow := rl.Color{r: 255, g: 255, b: 0, a: 255}
+    skyblue := rl.Color{r: 180, g: 200, b: 210, a: 255}
+    black := rl.Color{r: 0, g: 0, b: 0, a: 255}
+    red := rl.Color{r: 220, g: 100, b: 100, a: 255}
+    green := rl.Color{r: 100, g: 200, b: 120, a: 255}
+    blue := rl.Color{r: 100, g: 150, b: 220, a: 255}
+    yellow := rl.Color{r: 230, g: 210, b: 110, a: 255}
     
     // Ball properties
     ball_x := 400
@@ -23,11 +24,9 @@ main := func() {
     current_color := red
     
     while !rl.window_should_close() {
-        // Update ball position
         ball_x = ball_x + speed_x
         ball_y = ball_y + speed_y
         
-        // Bounce off left/right walls
         if ball_x - 50 < 0 {
             ball_x = 50
             speed_x = 0 - speed_x
@@ -39,7 +38,6 @@ main := func() {
             current_color = blue
         }
         
-        // Bounce off top/bottom walls
         if ball_y - 50 < 0 {
             ball_y = 50
             speed_y = 0 - speed_y
@@ -51,10 +49,10 @@ main := func() {
             current_color = red
         }
         
-        // Draw
         rl.begin_drawing()
         rl.clear_background(skyblue)
         rl.draw_circle(ball_x, ball_y, ball_radius, current_color)
+        rl.draw_circle_lines(ball_x, ball_y, ball_radius, black)
         rl.end_drawing()
     }
 }
