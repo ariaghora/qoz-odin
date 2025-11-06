@@ -1,23 +1,63 @@
 import rl "vendor:raylib"
 
 main := func() {
-    title := "Raylib Test"
+    title := "Bouncing Ball"
     title_ptr := title.data as *i8
     
-    rl.init_window(800, 600, title_ptr)
+    width := 800
+    height := 600
+    
+    rl.init_window(width, height, title_ptr)
     defer rl.close_window()
+    rl.set_target_fps(60)
 
     skyblue := rl.Color{r: 135, g: 206, b: 235, a: 255}
     red := rl.Color{r: 255, g: 0, b: 0, a: 255}
+    green := rl.Color{r: 0, g: 255, b: 0, a: 255}
+    blue := rl.Color{r: 0, g: 0, b: 255, a: 255}
+    yellow := rl.Color{r: 255, g: 255, b: 0, a: 255}
+    
+    // Ball properties
+    ball_x := 400
+    ball_y := 300
+    ball_radius := 50.0
+    speed_x := 5
+    speed_y := 3
+    current_color := red
     
     while !rl.window_should_close() {
+        // Update ball position
+        ball_x = ball_x + speed_x
+        ball_y = ball_y + speed_y
+        
+        // Bounce off left/right walls
+        if ball_x - 50 < 0 {
+            ball_x = 50
+            speed_x = 0 - speed_x
+            current_color = green
+        }
+        if ball_x + 50 > width {
+            ball_x = width - 50
+            speed_x = 0 - speed_x
+            current_color = blue
+        }
+        
+        // Bounce off top/bottom walls
+        if ball_y - 50 < 0 {
+            ball_y = 50
+            speed_y = 0 - speed_y
+            current_color = yellow
+        }
+        if ball_y + 50 > height {
+            ball_y = height - 50
+            speed_y = 0 - speed_y
+            current_color = red
+        }
+        
+        // Draw
         rl.begin_drawing()
         rl.clear_background(skyblue)
-        rl.draw_circle(400, 300, 100.0, red)
+        rl.draw_circle(ball_x, ball_y, ball_radius, current_color)
         rl.end_drawing()
     }
-    
-    filename := "screenshot.png"
-    filename_ptr := filename.data as *i8
-    rl.take_screenshot(filename_ptr)
 }

@@ -20,6 +20,7 @@ Color := struct {
 
 init_window          := func(width: i32, height: i32, title: *i8): void external("InitWindow")
 close_window         := func(): void external("CloseWindow")
+set_target_fps       := func(fps: i32): void external("SetTargetFPS")
 begin_drawing        := func(): void external("BeginDrawing")
 end_drawing          := func(): void external("EndDrawing")
 clear_background     := func(color: Color): void external("ClearBackground")
