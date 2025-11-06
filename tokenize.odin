@@ -6,16 +6,16 @@ import "core:unicode"
 
 Token_Kind :: enum {
     Eq, Eq_Eq, Not_Eq, Assign, Colon, Semicolon, Comma, Dot,
-    Lt, Gt, Lt_Eq, Gt_Eq, Amp, 
+    Lt, Gt, Lt_Eq, Gt_Eq, Amp, Not,
     Plus, Minus, Star, Slash, Percent,
-    Plus_Eq, Minus_Eq, Star_Eq, Slash_Eq,
+    Plus_Eq, Minus_Eq, Star_Eq, Slash_Eq, 
     Left_Paren, Right_Paren,
     Left_Brace, Right_Brace,
     Left_Bracket, Right_Bracket,
     Lit_Number, Lit_String, Lit_Nil,
     KW_Fn, KW_External, KW_If, KW_Else, KW_Print, KW_Println, KW_Return, KW_As, KW_Defer, KW_Alias,
-    KW_I8, KW_U8, KW_I32, KW_I64, KW_F32, KW_F64, KW_Void, 
-    KW_Arr, KW_Map, KW_For, KW_In, KW_Struct,
+    KW_I8, KW_U8, KW_I32, KW_I64, KW_F32, KW_F64, KW_Void, KW_Bool, 
+    KW_Arr, KW_Map, KW_For, KW_While, KW_In, KW_Struct,
     KW_Size_Of, KW_Len, KW_Del,
     KW_Import, KW_Link, Iden, EOF,
 }
@@ -128,9 +128,11 @@ make_id_or_kw :: proc(t: ^Tokenizer) {
     case "f32":      tok_kind = .KW_F32
     case "f64":      tok_kind = .KW_F64
     case "void":     tok_kind = .KW_Void
+    case "bool":     tok_kind = .KW_Bool
     case "arr":      tok_kind = .KW_Arr
     case "struct":   tok_kind = .KW_Struct
     case "size_of":  tok_kind = .KW_Size_Of
+    case "while":    tok_kind = .KW_While
     case:            tok_kind = .Iden
     }
     
@@ -230,6 +232,13 @@ tokenize :: proc(source: string, allocator := context.allocator) -> (tokens: [dy
                 make_tok(&t, .Plus_Eq, "+=")
             } else {
                 make_tok(&t, .Plus, "+")
+            }
+        case '!':
+            if peek(&t, source) == '=' {
+                tokenizer_advance(&t)
+                make_tok(&t, .Not_Eq, "!=")
+            } else {
+                make_tok(&t, .Not, "!")
             }
         case '-':
             if peek(&t, source) == '=' {

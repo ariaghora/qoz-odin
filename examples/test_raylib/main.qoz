@@ -10,7 +10,7 @@ main := func() {
     skyblue := rl.Color{r: 135, g: 206, b: 235, a: 255}
     red := rl.Color{r: 255, g: 0, b: 0, a: 255}
     
-    for i := 0; i < 10; i += 1 {
+    while !rl.window_should_close() {
         rl.begin_drawing()
         rl.clear_background(skyblue)
         rl.draw_circle(400, 300, 100.0, red)

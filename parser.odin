@@ -46,6 +46,7 @@ Node_Kind :: enum {
     Type_Expr,
     Un_Op,
     Var_Def,
+    While,
 }
 
 Type_Info :: union {
@@ -117,6 +118,7 @@ Node_Field_Access   :: struct { object: ^Node, field_name: string }
 Node_Fn_Def         :: struct { params: [dynamic]Fn_Param, body: [dynamic]^Node, return_type: Type_Info, is_external: bool, external_name: Maybe(string)}
 Node_For_C          :: struct { init: ^Node, condition: ^Node, post: ^Node, body: [dynamic]^Node }
 Node_For_In         :: struct { iterator: string, iterable: ^Node, body: [dynamic]^Node }
+Node_While          :: struct { condition: ^Node, body: [dynamic]^Node }
 Node_Identifier     :: struct { name:string }
 Node_If             :: struct { condition: ^Node, if_body: [dynamic]^Node, else_body: [dynamic]^Node }
 Node_Import         :: struct { path: string, alias: Maybe(string) }
@@ -174,6 +176,7 @@ Node :: struct {
         Node_Type_Expr,
         Node_Var_Def,
         Node_Un_Op,
+        Node_While,
     }
 }
 
@@ -487,6 +490,7 @@ parse_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.
 
     case .KW_Defer: return parse_defer_statement(ps, parent, allocator)
     case .KW_For: return parse_for_statement(ps, parent, allocator)
+    case .KW_While: return parse_while_statement(ps, parent, allocator)
     case .KW_If: return parse_if_statement(ps, parent, allocator)
     case .KW_Print: return parse_print_statement(ps, parent, allocator)
     case .KW_Println: return parse_println_statement(ps, parent, allocator)
@@ -845,7 +849,11 @@ parse_factor :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.all
 }
 
 parse_unary :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
-    if ps.current_token.kind == .Minus || ps.current_token.kind == .Plus || ps.current_token.kind == .Amp || ps.current_token.kind == .Star {
+    if ps.current_token.kind == .Minus || 
+       ps.current_token.kind == .Plus || 
+       ps.current_token.kind == .Amp || 
+       ps.current_token.kind == .Star || 
+       ps.current_token.kind == .Not {
         op_idx := ps.idx
         op := ps.current_token
         parser_advance(ps)
@@ -1467,6 +1475,34 @@ parse_for_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := cont
     }, allocator), nil
 }
 
+parse_while_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res:^Node, err:Maybe(Parse_Error)) {
+    span_start := ps.idx
+    parser_advance(ps) // eat 'while'
+    
+    condition := parse_expression(ps, parent, allocator) or_return
+    
+    parser_consume(ps, .Left_Brace) or_return
+    body := make([dynamic]^Node, allocator)
+    for ps.current_token.kind != .Right_Brace {
+        if ps.current_token.kind == .EOF {
+            return nil, make_parse_error(ps, "Unexpected EOF in while statement")
+        }
+        stmt := parse_statement(ps, parent, allocator) or_return
+        append(&body, stmt)
+    }
+    parser_consume(ps, .Right_Brace) or_return
+    
+    return new_clone(Node{
+        node_kind = .While,
+        parent = parent,
+        span = Span{start = span_start, end = ps.idx - 1},
+        payload = Node_While{
+            condition = condition,
+            body = body,
+        }
+    }, allocator), nil
+}
+
 parse_type :: proc(ps: ^Parsing_State, allocator: mem.Allocator) -> (res:Type_Info, err:Maybe(Parse_Error)) {
     // Pointer type
     if ps.current_token.kind == .Star {
@@ -1564,6 +1600,7 @@ parse_type :: proc(ps: ^Parsing_State, allocator: mem.Allocator) -> (res:Type_In
     case .KW_I64: prim = .I64
     case .KW_F32: prim = .F32
     case .KW_F64: prim = .F64
+    case .KW_Bool: prim = .Bool
     case .KW_Fn:
         parser_advance(ps)
         parser_consume(ps, .Left_Paren) or_return

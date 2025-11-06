@@ -772,6 +772,33 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         
         codegen_indent(ctx_cg, ctx_cg.indent_level)
         strings.write_string(&ctx_cg.output_buf, "}\n")
+    
+    case .While:
+        while_loop := node.payload.(Node_While)
+        
+        strings.write_string(&ctx_cg.output_buf, "while (")
+        codegen_node(ctx_cg, while_loop.condition)
+        strings.write_string(&ctx_cg.output_buf, ") {\n")
+        
+        // Push new defer scope for loop body
+        append(&ctx_cg.defer_stack, make([dynamic]^Node, ctx_cg.ctx_sem.allocator))
+        
+        ctx_cg.indent_level += 1
+        for stmt in while_loop.body {
+            codegen_indent(ctx_cg, ctx_cg.indent_level)
+            codegen_node(ctx_cg, stmt)
+        }
+        
+        // Emit defers before exiting loop body (while still at correct indent level)
+        codegen_emit_defers(ctx_cg)
+        
+        ctx_cg.indent_level -= 1
+        
+        // Pop defer scope after emitting
+        pop(&ctx_cg.defer_stack)
+        
+        codegen_indent(ctx_cg, ctx_cg.indent_level)
+        strings.write_string(&ctx_cg.output_buf, "}\n")
 
     case .If: 
         if_node := node.payload.(Node_If)
@@ -1241,6 +1268,7 @@ codegen_type :: proc(ctx_cg: ^Codegen_Context, type: Type_Info, name: string = "
         case .I64: strings.write_string(&ctx_cg.output_buf, "int64_t")
         case .F32: strings.write_string(&ctx_cg.output_buf, "float")
         case .F64: strings.write_string(&ctx_cg.output_buf, "double")
+        case .Bool: strings.write_string(&ctx_cg.output_buf, "_Bool")
         case .Void: strings.write_string(&ctx_cg.output_buf, "void")
         case: fmt.panicf("Internal error: cannot generate code for type %v", t)
         }

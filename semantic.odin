@@ -917,6 +917,24 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
         
         semantic_pop_scope(ctx)
         return Primitive_Type.Void
+    
+    case .While:
+        while_loop := node.payload.(Node_While)
+        
+        // Check condition (must be bool)
+        cond_type := check_node(ctx, while_loop.condition)
+        if cond_prim, ok := cond_type.(Primitive_Type); !ok || cond_prim != .Bool {
+            add_error(ctx, while_loop.condition.span, "While loop condition must be bool, got %v", cond_type)
+        }
+        
+        // Check body
+        semantic_push_scope(ctx)
+        for stmt in while_loop.body {
+            check_node(ctx, stmt)
+        }
+        semantic_pop_scope(ctx)
+        
+        return Primitive_Type.Void
 
     case .Index:
         index_node := node.payload.(Node_Index)
@@ -1511,6 +1529,25 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
             result := ptr_type.pointee^
             node.inferred_type = result
             return result
+        case .Not:
+            // Logical NOT - requires boolean operand, returns boolean
+            actual_type := operand_type
+            
+            // Resolve Named_Type to check if it's actually a boolean
+            if named, is_named := operand_type.(Named_Type); is_named {
+                if resolved, ok := resolve_named_type(ctx, named); ok {
+                    actual_type = resolved
+                }
+            }
+            
+            prim, ok := actual_type.(Primitive_Type)
+            if !ok || prim != .Bool {
+                add_error(ctx, node.span, "Logical NOT requires boolean operand, got %v", operand_type)
+                node.inferred_type = Primitive_Type.Bool
+                return Primitive_Type.Bool
+            }
+            node.inferred_type = Primitive_Type.Bool
+            return Primitive_Type.Bool
         case:
             add_error(ctx, node.span, "Unary operator %v not defined", unop.op.kind)
             node.inferred_type = operand_type
