@@ -1,13 +1,10 @@
 import rl "vendor:raylib"
 
 main := func() {
-    title := "Bouncing Ball"
-    title_ptr := title.data as *i8
-    
     width := 800
     height := 600
     
-    rl.init_window(width, height, title_ptr)
+    rl.init_window(width, height, "Bouncing Ball")
     defer rl.close_window()
     rl.set_target_fps(60)
 

@@ -18,13 +18,13 @@ Color := struct {
     a: i8,
 }
 
-init_window          := func(width: i32, height: i32, title: *i8): void external("InitWindow")
+init_window          := func(width: i32, height: i32, title: cstring): void external("InitWindow")
 close_window         := func(): void external("CloseWindow")
 set_target_fps       := func(fps: i32): void external("SetTargetFPS")
 begin_drawing        := func(): void external("BeginDrawing")
 end_drawing          := func(): void external("EndDrawing")
 clear_background     := func(color: Color): void external("ClearBackground")
 draw_circle          := func(centerX: i32, centerY: i32, radius: f32, color: Color): void external("DrawCircle")
-take_screenshot      := func(fileName: *i8): void external("TakeScreenshot")
+take_screenshot      := func(fileName: cstring): void external("TakeScreenshot")
 window_should_close  := func(): bool external("WindowShouldClose")
 wait_time            := func(seconds: f64): void external("WaitTime")

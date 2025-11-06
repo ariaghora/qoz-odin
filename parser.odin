@@ -58,9 +58,10 @@ Type_Info :: union {
     Named_Type,
     Untyped_Int,
     Untyped_Float,
+    Untyped_String,
 }
 
-Primitive_Type :: enum { I8, U8, I32, I64, F32, F64, Bool, Void }
+Primitive_Type :: enum { I8, U8, I32, I64, F32, F64, Bool, Void, Cstring }
 
 Function_Type :: struct {
     params: []Type_Info,
@@ -87,6 +88,7 @@ Named_Type :: struct {
 
 Untyped_Int :: struct {}
 Untyped_Float :: struct {}
+Untyped_String :: struct {}
 
 Span :: struct {
     start: int,
@@ -1601,6 +1603,7 @@ parse_type :: proc(ps: ^Parsing_State, allocator: mem.Allocator) -> (res:Type_In
     case .KW_F32: prim = .F32
     case .KW_F64: prim = .F64
     case .KW_Bool: prim = .Bool
+    case .KW_Cstring: prim = .Cstring
     case .KW_Fn:
         parser_advance(ps)
         parser_consume(ps, .Left_Paren) or_return

@@ -506,6 +506,7 @@ codegen_print_impl :: proc(ctx_cg: ^Codegen_Context, args: [dynamic]^Node, add_n
             case .I8, .U8, .I32, .I64: format_spec = "%d"
             case .F32, .F64: format_spec = "%f"
             case .Bool: format_spec = "%d"
+            case .Cstring: format_spec = "%s"
             case .Void: panic("Cannot print void")
             }
         case Named_Type:
@@ -516,6 +517,7 @@ codegen_print_impl :: proc(ctx_cg: ^Codegen_Context, args: [dynamic]^Node, add_n
             }
         case Untyped_Int: format_spec = "%d"
         case Untyped_Float: format_spec = "%f"
+        case Untyped_String: format_spec = "%.*s"  // Treat like string
         case:
             panic("Cannot print this type")
         }
@@ -542,8 +544,16 @@ codegen_print_impl :: proc(ctx_cg: ^Codegen_Context, args: [dynamic]^Node, add_n
         
         expr_type := arg.inferred_type.? or_else panic("Type not annotated")
         
-        // Special handling for string
+        // Special handling for string and untyped string
+        is_str := false
         if named, is_named := expr_type.(Named_Type); is_named && named.name == "string" {
+            is_str = true
+        }
+        if _, is_untyped_str := expr_type.(Untyped_String); is_untyped_str {
+            is_str = true
+        }
+        
+        if is_str {
             strings.write_string(&ctx_cg.output_buf, "(int)(")
             codegen_node(ctx_cg, arg)
             strings.write_string(&ctx_cg.output_buf, ").len, (")
@@ -637,8 +647,25 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
                 if symbol_name == "main" {
                     strings.write_string(&ctx_cg.output_buf, symbol_name)
                 } else {
-                    // Always mangle package-qualified names
-                    fmt.sbprintf(&ctx_cg.output_buf, "%s%s__%s", MANGLE_PREFIX, actual_pkg_name, symbol_name)
+                    // Check if this is an external function
+                    qualified_symbol_name := fmt.tprintf("%s.%s", actual_pkg_name, symbol_name)
+                    is_external := qualified_symbol_name in ctx_cg.ctx_sem.external_functions
+                    
+                    if is_external {
+                        // Look up the symbol to get the external_name
+                        external_c_name := symbol_name  // Default to symbol name
+                        if pkg_info, pkg_exists := ctx_cg.ctx_sem.packages[pkg_dir]; pkg_exists {
+                            if sym, sym_exists := pkg_info.symbols[symbol_name]; sym_exists {
+                                if ext_name, has_ext := sym.external_name.?; has_ext {
+                                    external_c_name = ext_name
+                                }
+                            }
+                        }
+                        strings.write_string(&ctx_cg.output_buf, external_c_name)
+                    } else {
+                        // Regular package symbols get mangled
+                        fmt.sbprintf(&ctx_cg.output_buf, "%s%s__%s", MANGLE_PREFIX, actual_pkg_name, symbol_name)
+                    }
                 }
                 return
             }
@@ -677,10 +704,35 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         
         // If not a built-in, generate regular function call
         if !handled {
+            // Get function type to check parameter types
+            callee_type := fn_call.callee.inferred_type.? or_else Primitive_Type.Void
+            fn_type, is_fn := callee_type.(Function_Type)
+            
             codegen_node(ctx_cg, fn_call.callee)
             strings.write_string(&ctx_cg.output_buf, "(")
             for arg, i in fn_call.args {
-                codegen_node(ctx_cg, arg)
+                // Check if we need to convert string to cstring
+                arg_type := arg.inferred_type.? or_else Primitive_Type.Void
+                needs_conversion := false
+                
+                if is_fn && i < len(fn_type.params) {
+                    param_type := fn_type.params[i]
+                    // Check if arg is string and param expects cstring
+                    // (Allows passing string variables to cstring parameters for FFI convenience)
+                    if is_string_type(arg_type) && is_cstring_type(param_type) {
+                        needs_conversion = true
+                    }
+                }
+                
+                if needs_conversion {
+                    // Emit .data to get underlying C string
+                    strings.write_string(&ctx_cg.output_buf, "(")
+                    codegen_node(ctx_cg, arg)
+                    strings.write_string(&ctx_cg.output_buf, ").data")
+                } else {
+                    codegen_node(ctx_cg, arg)
+                }
+                
                 if i < len(fn_call.args)-1 do strings.write_string(&ctx_cg.output_buf, ", ")
             }
             
@@ -976,12 +1028,27 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
             str_content = str_content[1:len(str_content)-1]
         }
         
-        // Emit compound literal
-        strings.write_string(&ctx_cg.output_buf, "(Qoz_String){.data = \"")
-        strings.write_string(&ctx_cg.output_buf, str_content)
-        strings.write_string(&ctx_cg.output_buf, "\", .len = ")
-        fmt.sbprintf(&ctx_cg.output_buf, "%d", len(str_content))
-        strings.write_string(&ctx_cg.output_buf, "}")
+        // Check inferred type - if cstring, emit C string literal, otherwise Qoz_String
+        inferred_type := node.inferred_type.? or_else Untyped_String{}
+        
+        is_cstring := false
+        if prim, ok := inferred_type.(Primitive_Type); ok && prim == .Cstring {
+            is_cstring = true
+        }
+        
+        if is_cstring {
+            // Emit C string literal directly
+            strings.write_string(&ctx_cg.output_buf, "\"")
+            strings.write_string(&ctx_cg.output_buf, str_content)
+            strings.write_string(&ctx_cg.output_buf, "\"")
+        } else {
+            // Emit Qoz_String compound literal
+            strings.write_string(&ctx_cg.output_buf, "(Qoz_String){.data = \"")
+            strings.write_string(&ctx_cg.output_buf, str_content)
+            strings.write_string(&ctx_cg.output_buf, "\", .len = ")
+            fmt.sbprintf(&ctx_cg.output_buf, "%d", len(str_content))
+            strings.write_string(&ctx_cg.output_buf, "}")
+        }
     
     case .Defer:
         // Collect defer, don't emit yet
@@ -1269,6 +1336,7 @@ codegen_type :: proc(ctx_cg: ^Codegen_Context, type: Type_Info, name: string = "
         case .F32: strings.write_string(&ctx_cg.output_buf, "float")
         case .F64: strings.write_string(&ctx_cg.output_buf, "double")
         case .Bool: strings.write_string(&ctx_cg.output_buf, "_Bool")
+        case .Cstring: strings.write_string(&ctx_cg.output_buf, "const char*")
         case .Void: strings.write_string(&ctx_cg.output_buf, "void")
         case: fmt.panicf("Internal error: cannot generate code for type %v", t)
         }
@@ -1324,6 +1392,9 @@ codegen_type :: proc(ctx_cg: ^Codegen_Context, type: Type_Info, name: string = "
         strings.write_string(&ctx_cg.output_buf, "int64_t")
     case Untyped_Float:
         strings.write_string(&ctx_cg.output_buf, "double")
+    case Untyped_String:
+        // Default to Qoz_String for untyped strings
+        strings.write_string(&ctx_cg.output_buf, "Qoz_String")
     case: fmt.panicf("Internal error: cannot generate code for type %v", t)
     }
     

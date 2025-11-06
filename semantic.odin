@@ -91,6 +91,25 @@ is_untyped_float :: proc(t: Type_Info) -> bool {
     return ok
 }
 
+is_untyped_string :: proc(t: Type_Info) -> bool {
+    _, ok := t.(Untyped_String)
+    return ok
+}
+
+is_string_type :: proc(t: Type_Info) -> bool {
+    if named, ok := t.(Named_Type); ok && named.name == "string" {
+        return true
+    }
+    return false
+}
+
+is_cstring_type :: proc(t: Type_Info) -> bool {
+    if prim, ok := t.(Primitive_Type); ok && prim == .Cstring {
+        return true
+    }
+    return false
+}
+
 is_typed_int :: proc(t: Type_Info) -> bool {
     p, ok := t.(Primitive_Type)
     if !ok do return false
@@ -549,7 +568,14 @@ collect_declarations :: proc(ctx: ^Semantic_Context, node: ^Node, pkg_dir, proje
         if var_def.content.node_kind == .Fn_Def {
             fn_def := var_def.content.payload.(Node_Fn_Def)
             if fn_def.is_external {
-                ctx.external_functions[var_def.name] = true
+                // Store with qualified package name for cross-package lookups
+                if pkg_dir != "" {
+                    pkg_name := filepath.base(pkg_dir)
+                    qualified_name := fmt.tprintf("%s.%s", pkg_name, var_def.name)
+                    ctx.external_functions[qualified_name] = true
+                } else {
+                    ctx.external_functions[var_def.name] = true
+                }
             }
         }
         
@@ -1055,6 +1081,11 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
                 } else {
                     // No type provided, can't infer
                     declared_type = check_node(ctx, var_def.content)
+                    
+                    // Default untyped strings to string type
+                    if _, is_untyped_str := declared_type.(Untyped_String); is_untyped_str {
+                        declared_type = Named_Type{name = "string"}
+                    }
                 }
             
             case:
@@ -1063,6 +1094,11 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
                 } else {
                     // Infer type - check once and reuse
                     declared_type = check_node(ctx, var_def.content)
+                    
+                    // Default untyped strings to string type
+                    if _, is_untyped_str := declared_type.(Untyped_String); is_untyped_str {
+                        declared_type = Named_Type{name = "string"}
+                    }
                 }
             }
             
@@ -1139,12 +1175,6 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
             }
         }
         
-        arg_types := make([dynamic]Type_Info, context.temp_allocator)
-        for arg in call.args {
-            arg_type := check_node(ctx, arg)
-            append(&arg_types, arg_type)
-        }
-        
         fn_type, ok := resolved_callee_type.(Function_Type)
         if !ok {
             add_error(ctx, node.span, "Cannot call non-function")
@@ -1156,12 +1186,23 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
             add_error(ctx, node.span, "Expected %d arguments, got %d", len(fn_type.params), len(call.args))
         }
         
-        for arg_type, i in arg_types {
-            if i >= len(fn_type.params) do break
-            expected := fn_type.params[i]
+        // Check each argument with expected parameter type
+        arg_types := make([dynamic]Type_Info, context.temp_allocator)
+        for arg, i in call.args {
+            expected_param_type: Type_Info = nil
+            if i < len(fn_type.params) {
+                expected_param_type = fn_type.params[i]
+            }
             
-            if !types_compatible(expected, arg_type, ctx) {
-                add_error(ctx, call.args[i].span, "Argument %d: expected %v, got %v", i, expected, arg_type)
+            // Pass expected type for coercion (e.g., untyped string -> cstring)
+            arg_type := check_node(ctx, arg, expected_param_type)
+            append(&arg_types, arg_type)
+            
+            if i < len(fn_type.params) {
+                expected := fn_type.params[i]
+                if !types_compatible(expected, arg_type, ctx) {
+                    add_error(ctx, arg.span, "Argument %d: expected %v, got %v", i, expected, arg_type)
+                }
             }
         }
         
@@ -1565,9 +1606,21 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
         return Untyped_Int{}
 
     case .Literal_String:
-        result := Named_Type{name = "string"}
-        node.inferred_type = result
-        return result
+        // String literals are untyped - can convert to string or cstring
+        // If expected type is provided, coerce to that type
+        if expected_type != nil {
+            if is_cstring_type(expected_type) {
+                node.inferred_type = Primitive_Type.Cstring
+                return Primitive_Type.Cstring
+            } else if is_string_type(expected_type) {
+                result := Named_Type{name = "string"}
+                node.inferred_type = result
+                return result
+            }
+        }
+        // Otherwise, return untyped
+        node.inferred_type = Untyped_String{}
+        return Untyped_String{}
     
     case .Literal_Nil:
         // nil is a pointer to void
@@ -1642,6 +1695,9 @@ types_equal :: proc(a, b: Type_Info) -> bool {
     case Untyped_Float:
         _, ok := b.(Untyped_Float)
         return ok
+    case Untyped_String:
+        _, ok := b.(Untyped_String)
+        return ok
     }
     return false
 }
@@ -1674,6 +1730,13 @@ types_compatible :: proc(target: Type_Info, source: Type_Info, ctx: ^Semantic_Co
     // Untyped float can coerce to any typed float
     if is_untyped_float(resolved_source) && is_typed_float(resolved_target) {
         return true
+    }
+    
+    // Untyped string can coerce to string or cstring
+    if is_untyped_string(resolved_source) {
+        if is_string_type(resolved_target) || is_cstring_type(resolved_target) {
+            return true
+        }
     }
     
     target_ptr, target_is_ptr := resolved_target.(Pointer_Type)
