@@ -370,6 +370,70 @@ codegen_builtin_function :: proc(ctx_cg: ^Codegen_Context, name: string, args: [
         
         return true
     
+    case "format":
+        // format(fmt: string literal, args: ..., alloc: mem.Allocator): string
+        if len(args) < 2 do return false
+        
+        // First arg must be string literal
+        if args[0].node_kind != .Literal_String do return false
+        
+        fmt_lit := args[0].payload.(Node_Literal_String)
+        fmt_str := fmt_lit.content.source
+        
+        // Last arg is allocator
+        alloc_arg := args[len(args) - 1]
+        format_args := args[1:len(args) - 1]
+        
+        // Generate: ({ int _size = snprintf(NULL, 0, fmt, ...); char* _buf = alloc.alloc(alloc.data, _size + 1); snprintf(_buf, _size + 1, fmt, ...); (Qoz_String){.data = _buf, .len = _size}; })
+        
+        strings.write_string(&ctx_cg.output_buf, "({ int _fmt_size = snprintf(NULL, 0, ")
+        // Emit format string as C string literal
+        strings.write_string(&ctx_cg.output_buf, "\"")
+        // Escape the format string for C
+        for i in 0..<len(fmt_str) {
+            switch fmt_str[i] {
+            case '\n': strings.write_string(&ctx_cg.output_buf, "\\n")
+            case '\t': strings.write_string(&ctx_cg.output_buf, "\\t")
+            case '\r': strings.write_string(&ctx_cg.output_buf, "\\r")
+            case '\\': strings.write_string(&ctx_cg.output_buf, "\\\\")
+            case '"': strings.write_string(&ctx_cg.output_buf, "\\\"")
+            case: strings.write_string(&ctx_cg.output_buf, fmt_str[i:i+1])
+            }
+        }
+        strings.write_string(&ctx_cg.output_buf, "\"")
+        
+        // Emit format arguments
+        for arg in format_args {
+            strings.write_string(&ctx_cg.output_buf, ", ")
+            codegen_node(ctx_cg, arg)
+        }
+        strings.write_string(&ctx_cg.output_buf, "); char* _fmt_buf = (char*)")
+        codegen_node(ctx_cg, alloc_arg)
+        strings.write_string(&ctx_cg.output_buf, ".alloc(")
+        codegen_node(ctx_cg, alloc_arg)
+        strings.write_string(&ctx_cg.output_buf, ".data, _fmt_size + 1); snprintf(_fmt_buf, _fmt_size + 1, \"")
+        // Emit format string again
+        for i in 0..<len(fmt_str) {
+            switch fmt_str[i] {
+            case '\n': strings.write_string(&ctx_cg.output_buf, "\\n")
+            case '\t': strings.write_string(&ctx_cg.output_buf, "\\t")
+            case '\r': strings.write_string(&ctx_cg.output_buf, "\\r")
+            case '\\': strings.write_string(&ctx_cg.output_buf, "\\\\")
+            case '"': strings.write_string(&ctx_cg.output_buf, "\\\"")
+            case: strings.write_string(&ctx_cg.output_buf, fmt_str[i:i+1])
+            }
+        }
+        strings.write_string(&ctx_cg.output_buf, "\"")
+        
+        // Emit format arguments again
+        for arg in format_args {
+            strings.write_string(&ctx_cg.output_buf, ", ")
+            codegen_node(ctx_cg, arg)
+        }
+        strings.write_string(&ctx_cg.output_buf, "); (Qoz_String){.data = (const char*)_fmt_buf, .len = _fmt_size}; })")
+        
+        return true
+    
     // TODO(Aria): Add more built-ins here:
     // case "size_of":
     //     ...

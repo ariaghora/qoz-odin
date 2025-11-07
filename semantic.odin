@@ -1319,6 +1319,161 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
                 node.inferred_type = Primitive_Type.Void
                 return Primitive_Type.Void
             }
+            
+            if callee_name == "format" {
+                // format(fmt: string literal, args: ..., alloc: mem.Allocator): string
+                if len(call.args) < 2 {
+                    add_error(ctx, node.span, "format() requires at least 2 arguments (format string and allocator)")
+                    node.inferred_type = Primitive_Type.Void
+                    return Primitive_Type.Void
+                }
+                
+                // First argument must be a string literal
+                if call.args[0].node_kind != .Literal_String {
+                    add_error(ctx, call.args[0].span, "format() first argument must be a string literal")
+                    node.inferred_type = Primitive_Type.Void
+                    return Primitive_Type.Void
+                }
+                
+                fmt_lit := call.args[0].payload.(Node_Literal_String)
+                fmt_str := fmt_lit.content.source
+                
+                // Last argument must be an allocator
+                alloc_arg := call.args[len(call.args) - 1]
+                alloc_type := check_node(ctx, alloc_arg)
+                if !validate_allocator_struct(ctx, alloc_type, alloc_arg.span) {
+                    add_error(ctx, alloc_arg.span, "format() last argument must be an allocator")
+                    node.inferred_type = Primitive_Type.Void
+                    return Primitive_Type.Void
+                }
+                
+                // Parse format specifiers and validate against arguments
+                format_args := call.args[1:len(call.args) - 1]  // Exclude fmt string and allocator
+                
+                // Parse format specifiers and extract expected types
+                expected_types := make([dynamic]Type_Info, 0, len(format_args), ctx.allocator)
+                i := 0
+                for i < len(fmt_str) {
+                    if fmt_str[i] == '%' {
+                        if i + 1 < len(fmt_str) && fmt_str[i + 1] == '%' {
+                            i += 2  // Skip %%
+                            continue
+                        }
+                        
+                        // Found a format specifier, parse it
+                        i += 1  // Skip %
+                        
+                        // Skip flags, width, precision
+                        for i < len(fmt_str) && strings.contains("0123456789.-+ #hlLzjt", fmt_str[i:i+1]) {
+                            i += 1
+                        }
+                        
+                        // Extract type specifier
+                        if i < len(fmt_str) {
+                            spec_char := fmt_str[i]
+                            i += 1
+                            
+                            // Map format specifier to expected type
+                            expected_type: Type_Info
+                            switch spec_char {
+                            case 'd', 'i':  // Signed integer
+                                expected_type = Primitive_Type.I32  // Default to i32, but accept i64 too
+                            case 'u':  // Unsigned integer
+                                expected_type = Primitive_Type.U8  // Default to u8, but accept u32, u64 too
+                            case 'x', 'X', 'o':  // Hexadecimal/octal
+                                expected_type = Primitive_Type.I32  // Accept integer types
+                            case 'f', 'g', 'e', 'E':  // Floating point
+                                expected_type = Primitive_Type.F64  // Default to f64, but accept f32 too
+                            case 's':  // String
+                                expected_type = Named_Type{name = "string"}
+                            case 'p':  // Pointer
+                                void_type: Type_Info = Primitive_Type.Void
+                                expected_type = Pointer_Type{pointee = new_clone(void_type, ctx.allocator)}
+                            case 'c':  // Character
+                                expected_type = Primitive_Type.I8
+                            case:
+                                add_error(ctx, call.args[0].span, "format() unknown format specifier: %%%c", spec_char)
+                                expected_type = Primitive_Type.Void
+                            }
+                            
+                            append(&expected_types, expected_type)
+                        }
+                    } else {
+                        i += 1
+                    }
+                }
+                
+                // Validate argument count
+                if len(expected_types) != len(format_args) {
+                    add_error(ctx, node.span, "format() has %d format specifiers but %d arguments", len(expected_types), len(format_args))
+                    node.inferred_type = Named_Type{name = "string"}
+                    return Named_Type{name = "string"}
+                }
+                
+                // Type check each argument against its format specifier
+                for idx in 0..<len(format_args) {
+                    if idx >= len(expected_types) do break
+                    
+                    arg := format_args[idx]
+                    expected_type := expected_types[idx]
+                    // Check argument with expected type for coercion
+                    arg_type := check_node(ctx, arg, expected_type)
+                    
+                    // Check if types are compatible
+                    compatible := false
+                    
+                    #partial switch exp in expected_type {
+                    case Primitive_Type:
+                        if exp == .I32 {
+                            // Accept i32, i64, or untyped int for %d, %i, %x, %X, %o
+                            if prim, is_prim := arg_type.(Primitive_Type); is_prim {
+                                compatible = prim == .I32 || prim == .I64
+                            } else if _, is_untyped := arg_type.(Untyped_Int); is_untyped {
+                                compatible = true  // Untyped int coerces to i32/i64
+                            }
+                        } else if exp == .U8 {
+                            // Accept u8, u32, u64, i32, i64, or untyped int for %u, %x, %X, %o
+                            if prim, is_prim := arg_type.(Primitive_Type); is_prim {
+                                compatible = prim == .U8 || prim == .I32 || prim == .I64  // For now, accept common integer types
+                            } else if _, is_untyped := arg_type.(Untyped_Int); is_untyped {
+                                compatible = true  // Untyped int coerces to integer types
+                            }
+                        } else if exp == .F64 {
+                            // Accept f32, f64, or untyped float for %f, %g, %e, %E
+                            if prim, is_prim := arg_type.(Primitive_Type); is_prim {
+                                compatible = prim == .F32 || prim == .F64
+                            } else if _, is_untyped := arg_type.(Untyped_Float); is_untyped {
+                                compatible = true  // Untyped float coerces to f32/f64
+                            }
+                        } else if exp == .I8 {
+                            // Accept i8 for %c
+                            if prim, is_prim := arg_type.(Primitive_Type); is_prim {
+                                compatible = prim == .I8
+                            }
+                        }
+                    case Named_Type:
+                        // For %s, accept string or cstring
+                        if t_name, is_named := arg_type.(Named_Type); is_named {
+                            compatible = t_name.name == "string" || t_name.name == "cstring" || t_name.name == "strings.string"
+                        } else if prim, is_prim := arg_type.(Primitive_Type); is_prim {
+                            compatible = prim == .Cstring
+                        }
+                    case Pointer_Type:
+                        // For %p, accept any pointer type
+                        if _, is_ptr := arg_type.(Pointer_Type); is_ptr {
+                            compatible = true
+                        }
+                    }
+                    
+                    if !compatible {
+                        arg_num := idx + 1
+                        add_error(ctx, arg.span, "format() argument %d type mismatch: format specifier expects %v, got %v", arg_num, expected_type, arg_type)
+                    }
+                }
+                
+                node.inferred_type = Named_Type{name = "string"}
+                return Named_Type{name = "string"}
+            }
         }
 
         callee_type := check_node(ctx, call.callee)
