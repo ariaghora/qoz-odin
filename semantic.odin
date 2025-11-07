@@ -940,6 +940,30 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
             }
         }
         
+        // Handle Vec_Type field access (data, len, cap, allocator)
+        if vec_type, is_vec := actual_type.(Vec_Type); is_vec {
+            switch field_access.field_name {
+            case "data":
+                // data field is *T
+                data_type := Pointer_Type{pointee = vec_type.element_type}
+                node.inferred_type = data_type
+                return data_type
+            case "len", "cap":
+                // len and cap are i64
+                node.inferred_type = Primitive_Type.I64
+                return Primitive_Type.I64
+            case "allocator":
+                // allocator is mem.Allocator
+                alloc_type := Named_Type{name = "mem.Allocator"}
+                node.inferred_type = alloc_type
+                return alloc_type
+            case:
+                add_error(ctx, node.span, "vec has no field '%s' (valid fields: data, len, cap, allocator)", field_access.field_name)
+                node.inferred_type = Primitive_Type.Void
+                return Primitive_Type.Void
+            }
+        }
+        
         struct_type, is_struct := actual_type.(Struct_Type)
         if !is_struct {
             add_error(ctx, node.span, "Cannot access field of non-struct type")

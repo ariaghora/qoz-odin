@@ -10,3 +10,37 @@ string_concat := func(a: string, b: string, allocator: mem.Allocator): string {
     
     return string{data: new_data, len: new_len}
 }
+
+StringBuilder := struct {
+    buffer: *vec<i8>,
+}
+
+builder_init := func(allocator: mem.Allocator): *StringBuilder {
+    sb := new(StringBuilder, allocator)
+    sb.buffer = new(vec<i8>, allocator)
+    return sb
+}
+
+builder_append_string := func(sb: *StringBuilder, s: string) {
+    for i := 0; i < len(s); i += 1 {
+        ch := s.data[i]
+        append(sb.buffer, ch)
+    }
+}
+
+builder_append_char := func(sb: *StringBuilder, ch: i8) {
+    append(sb.buffer, ch)
+}
+
+builder_len := func(sb: *StringBuilder): i64 {
+    return len(sb.buffer)
+}
+
+builder_to_string := func(sb: *StringBuilder): string {
+    return string{data: sb.buffer.data, len: len(sb.buffer)}
+}
+
+builder_destroy := func(sb: *StringBuilder, allocator: mem.Allocator) {
+    del(sb.buffer)
+    del(sb, allocator)
+}
