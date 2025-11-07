@@ -149,7 +149,12 @@ resolve_named_type :: proc(ctx: ^Semantic_Context, named: Named_Type, pkg_name: 
         if pkg_dir, is_pkg := ctx.import_aliases[pkg_alias]; is_pkg {
             if pkg_info, has_pkg := ctx.packages[pkg_dir]; has_pkg {
                 if symbol, found := pkg_info.symbols[type_name]; found {
-                    return symbol.type, true
+                    resolved_type := symbol.type
+                    // Recursively resolve if it's another named type
+                    if nested_named, is_named := resolved_type.(Named_Type); is_named {
+                        return resolve_named_type(ctx, nested_named, pkg_name)
+                    }
+                    return resolved_type, true
                 }
             }
         }
@@ -158,7 +163,12 @@ resolve_named_type :: proc(ctx: ^Semantic_Context, named: Named_Type, pkg_name: 
     
     // It's a simple name, look it up normally
     if sym, ok := semantic_lookup_symbol(ctx, named.name); ok {
-        return sym.type, true
+        resolved_type := sym.type
+        // Recursively resolve if it's another named type
+        if nested_named, is_named := resolved_type.(Named_Type); is_named {
+            return resolve_named_type(ctx, nested_named, pkg_name)
+        }
+        return resolved_type, true
     }
     
     // If not found in scope and we have a package name, search in that package's symbols
@@ -166,7 +176,12 @@ resolve_named_type :: proc(ctx: ^Semantic_Context, named: Named_Type, pkg_name: 
         for pkg_dir, pkg_info in ctx.packages {
             if filepath.base(pkg_dir) == pkg_name {
                 if symbol, found := pkg_info.symbols[named.name]; found {
-                    return symbol.type, true
+                    resolved_type := symbol.type
+                    // Recursively resolve if it's another named type
+                    if nested_named, is_named := resolved_type.(Named_Type); is_named {
+                        return resolve_named_type(ctx, nested_named, pkg_name)
+                    }
+                    return resolved_type, true
                 }
             }
         }
