@@ -289,7 +289,7 @@ parse_project :: proc(entry_package_dir: string, arena_lexer, arena_parser: mem.
             tokens, err_tokenize := tokenize(string(source), arena_lexer)
             if err_tokenize != nil do return nil, nil, make_parse_error_simple(err_tokenize.(string), file_path, 0, 0)
 
-            ast := parse(tokens, file_path, arena_parser) or_return
+            ast := parse_program(tokens, file_path, arena_parser) or_return
             asts[file_path] = ast
             tokens_map[file_path] = tokens
             
@@ -338,7 +338,7 @@ resolve_package_path :: proc(current_pkg_dir: string, import_path: string) -> st
     return filepath.clean(filepath.join({current_pkg_dir, import_path}, context.temp_allocator), context.temp_allocator)
 }
 
-parse :: proc(tokens: [dynamic]Token, file: string, allocator := context.allocator, loc:=#caller_location) -> (res: ^Node, err: Maybe(Parse_Error)) {
+parse_program :: proc(tokens: [dynamic]Token, file: string, allocator := context.allocator, loc:=#caller_location) -> (res: ^Node, err: Maybe(Parse_Error)) {
     ps := Parsing_State {
         tokens = tokens,
         current_token = tokens[0],
@@ -363,88 +363,10 @@ parse :: proc(tokens: [dynamic]Token, file: string, allocator := context.allocat
 
 parse_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     #partial switch ps.current_token.kind {
-    case .KW_Import: return parse_import(ps, parent, allocator)
-    case .KW_Link: return parse_link(ps, parent, allocator)
-    case .Iden: 
-        next_tok := ps.tokens[ps.idx + 1].kind
-        if next_tok == .Assign || next_tok == .Colon {
-            // x := val  or  x: type = val
-            return parse_var_def(ps, parent, allocator)
-        } 
-
-        // Parse lvalue expression (could be x, x[i], x.field, etc.)
-        expr := parse_expression(ps, parent, allocator) or_return
-        
-        // Check for assignment or compound assignment
-        is_assignment := false
-        compound_op: Maybe(Token_Kind) = nil
-        
-        #partial switch ps.current_token.kind {
-        case .Eq:
-            is_assignment = true
-        case .Plus_Eq:
-            is_assignment = true
-            compound_op = .Plus
-        case .Minus_Eq:
-            is_assignment = true
-            compound_op = .Minus
-        case .Star_Eq:
-            is_assignment = true
-            compound_op = .Star
-        case .Slash_Eq:
-            is_assignment = true
-            compound_op = .Slash
-        }
-        
-        if is_assignment {
-            parser_advance(ps)  // eat '=' or '+=' etc.
-            
-            // Validate lvalue
-            #partial switch expr.node_kind {
-            case .Identifier, .Index, .Field_Access:
-                // Valid
-            case:
-                return nil, make_parse_error(ps, "Invalid assignment target")
-            }
-            
-            value := parse_expression(ps, parent, allocator) or_return
-            
-            assign_node := new(Node, allocator)
-            assign_node.node_kind = .Assignment
-            assign_node.parent = parent
-            assign_node.span = Span{start = expr.span.start, end = ps.idx - 1}
-            assign_node.payload = Node_Assign{
-                target = expr,
-                value = value,
-                compound_op = compound_op,
-            }
-        
-            return assign_node, nil
-        } 
-
-        expr_stmt := new(Node, allocator)
-        expr_stmt.node_kind = .Expr_Statement
-        expr_stmt.payload = Node_Expr_Statement{expr = expr}
-        return expr_stmt, nil
-
-    case .KW_Del:
-        span_start := ps.idx
-        parser_advance(ps) // eat 'free'
-        parser_consume(ps, .Left_Paren) or_return
-        ptr := parse_expression(ps, parent, allocator) or_return
-        parser_consume(ps, .Comma) or_return
-        alloc := parse_expression(ps, parent, allocator) or_return
-        parser_consume(ps, .Right_Paren) or_return
-        return new_clone(Node{
-            node_kind = .Del,
-            parent = parent,
-            span = Span{start = span_start, end = ps.idx - 1},
-            payload = Node_Del{
-                pointer=ptr,
-                allocator=alloc,
-            },
-        }, allocator), nil
-
+    case .Iden: return parse_iden_led_statement(ps, parent, allocator)
+    case .KW_Import: return parse_import_statement(ps, parent, allocator)
+    case .KW_Link: return parse_link_statement(ps, parent, allocator)
+    case .KW_Del: return parse_del_statement(ps, parent, allocator)
     case .KW_Defer: return parse_defer_statement(ps, parent, allocator)
     case .KW_For: return parse_for_statement(ps, parent, allocator)
     case .KW_While: return parse_while_statement(ps, parent, allocator)
@@ -452,15 +374,88 @@ parse_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.
     case .KW_Print: return parse_print_statement(ps, parent, allocator)
     case .KW_Println: return parse_println_statement(ps, parent, allocator)
     case .KW_Return: return parse_return_statement(ps, parent, allocator)
-    case .KW_Size_Of: 
-        return nil, make_parse_error(ps, fmt.tprintf("Cannot use `%v` here as a statement", ps.current_token.source))
-    case:
-        fmt.println(ps.current_token)
-        return nil, make_parse_error(ps, fmt.tprintf("Cannot parse statement starting with %v at position %d", ps.current_token.kind, ps.idx))
+    case .KW_Size_Of: return nil, make_parse_error(ps, fmt.tprintf("Cannot use `%v` here as a statement", ps.current_token.source))
+    case: return nil, make_parse_error(ps, fmt.tprintf("Cannot parse statement starting with %v at position %d", ps.current_token.kind, ps.idx))
     }
 }
 
-parse_import :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
+parse_iden_led_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
+    next_tok := ps.tokens[ps.idx + 1].kind
+    if next_tok == .Assign || next_tok == .Colon {
+        // x := val  or  x: type = val
+        return parse_var_def(ps, parent, allocator)
+    } 
+
+    // Parse lvalue expression (could be x, x[i], x.field, etc.)
+    expr := parse_expression(ps, parent, allocator) or_return
+    
+    // Check for assignment or compound assignment
+    is_assignment := false
+    compound_op: Maybe(Token_Kind) = nil
+    
+    #partial switch ps.current_token.kind {
+    case .Eq:
+        is_assignment = true
+    case .Plus_Eq:
+        is_assignment = true
+        compound_op = .Plus
+    case .Minus_Eq:
+        is_assignment = true
+        compound_op = .Minus
+    case .Star_Eq:
+        is_assignment = true
+        compound_op = .Star
+    case .Slash_Eq:
+        is_assignment = true
+        compound_op = .Slash
+    }
+    
+    if is_assignment {
+        parser_advance(ps)  // eat '=' or '+=' etc.
+        
+        // Validate lvalue
+        #partial switch expr.node_kind {
+        case .Identifier, .Index, .Field_Access: // Valid
+        case: return nil, make_parse_error(ps, "Invalid assignment target")
+        }
+        
+        value := parse_expression(ps, parent, allocator) or_return
+        
+        assign_node := new(Node, allocator)
+        assign_node.node_kind = .Assignment
+        assign_node.parent = parent
+        assign_node.span = Span{start = expr.span.start, end = ps.idx - 1}
+        assign_node.payload = Node_Assign{ target = expr, value = value, compound_op = compound_op }
+    
+        return assign_node, nil
+    } 
+
+    expr_stmt := new(Node, allocator)
+    expr_stmt.node_kind = .Expr_Statement
+    expr_stmt.payload = Node_Expr_Statement{expr = expr}
+    return expr_stmt, nil
+}
+
+parse_del_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
+    span_start := ps.idx
+    parser_advance(ps) // eat 'free'
+    parser_consume(ps, .Left_Paren) or_return
+    ptr := parse_expression(ps, parent, allocator) or_return
+    parser_consume(ps, .Comma) or_return
+    alloc := parse_expression(ps, parent, allocator) or_return
+    parser_consume(ps, .Right_Paren) or_return
+    return new_clone(Node{
+        node_kind = .Del,
+        parent = parent,
+        span = Span{start = span_start, end = ps.idx - 1},
+        payload = Node_Del{
+            pointer=ptr,
+            allocator=alloc,
+        },
+    }, allocator), nil
+}
+
+parse_import_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     span_start := ps.idx
     parser_advance(ps) // eat 'import'
     
@@ -488,7 +483,7 @@ parse_import :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.all
     }, allocator), nil
 }
 
-parse_link :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
+parse_link_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     span_start := ps.idx
     parser_advance(ps) // eat 'link'
     
@@ -1008,7 +1003,7 @@ parse_primary :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
         expr := parse_expression(ps, parent, allocator) or_return
         parser_consume(ps, .Right_Paren) or_return
         return expr, nil
-    case .Iden: return parse_identifier(ps, parent, allocator)
+    case .Iden: return parse_iden_expression(ps, parent, allocator)
     case .KW_Fn: return parse_fn_def(ps, parent, allocator)
     case .KW_Struct: 
         struct_type := parse_type(ps, allocator) or_return
@@ -1028,7 +1023,7 @@ parse_primary :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
     }
 }
 
-parse_identifier :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
+parse_iden_expression :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     span_start := ps.idx
     name := ps.current_token.source
     
