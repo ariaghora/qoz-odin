@@ -1224,25 +1224,25 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
             }
             
             if callee_name == "append" {
-                // append(vec: *vec<T>, item: T)
+                // append(vec: vec<T>, item: T)
                 if len(call.args) != 2 {
-                    add_error(ctx, node.span, "append() requires exactly 2 arguments (vec pointer and item)")
+                    add_error(ctx, node.span, "append() requires exactly 2 arguments (vec and item)")
                     node.inferred_type = Primitive_Type.Void
                     return Primitive_Type.Void
                 }
                 
-                // Check first argument: must be pointer to vec
+                // Check first argument: must be vec (internally *vec<T>)
                 vec_ptr_type := check_node(ctx, call.args[0])
                 ptr_type, is_ptr := vec_ptr_type.(Pointer_Type)
                 if !is_ptr {
-                    add_error(ctx, call.args[0].span, "append() first argument must be pointer to vec, got %v", vec_ptr_type)
+                    add_error(ctx, call.args[0].span, "append() requires vec, got %v", vec_ptr_type)
                     node.inferred_type = Primitive_Type.Void
                     return Primitive_Type.Void
                 }
                 
                 vec_type, is_vec := ptr_type.pointee^.(Vec_Type)
                 if !is_vec {
-                    add_error(ctx, call.args[0].span, "append() first argument must be pointer to vec, got pointer to %v", ptr_type.pointee^)
+                    add_error(ctx, call.args[0].span, "append() requires vec, got %v", vec_ptr_type)
                     node.inferred_type = Primitive_Type.Void
                     return Primitive_Type.Void
                 }
