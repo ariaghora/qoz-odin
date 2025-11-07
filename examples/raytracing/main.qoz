@@ -1,15 +1,38 @@
+import math "std:cmath"
+
 Ray := struct {}
 
 Vec3 := alias arr<f64, 3>
+Color := alias Vec3
 
-vec3_scale := func(v: Vec3, factor: f64): Vec3 {
-    return v * factor
+vec_dot := func(v1: Vec3, v2: Vec3): f64 {
+    mul := v1 * v2
+    return mul[0] + mul[1] + mul[2]
 }
 
-vec3_add := func(v1: Vec3, v2: Vec3): Vec3 {
-    return v1 + v2
+vec_cross := func(v1: Vec3, v2: Vec3): Vec3 {
+    return {
+        v1[1] * v2[2] - v1[2] * v2[1],
+        v1[2] * v2[0] - v1[0] * v2[2],
+        v1[0] * v2[1] - v1[1] * v2[0],
+    }
 }
 
+vec_length_squared := func(v: Vec3): f64 {
+    sqr := v * v
+    return sqr[0] + sqr[1] + sqr[2]
+}
+
+vec_length := func(v: Vec3): f64 {
+    return math.sqrt(vec_length_squared(v))
+}
+
+write_color := func(color: Color) {
+    cnorm := color * 255.999
+    ir := cnorm[0] as i32
+    ig := cnorm[1] as i32
+    ib := cnorm[2] as i32
+}
 
 main := func() {
     image_width := 256

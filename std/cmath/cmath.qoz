@@ -1,0 +1,30 @@
+// C math library bindings (link with -lm on Unix systems)
+
+// Basic operations
+sqrt  := func(x: f64): f64 external
+pow   := func(x: f64, y: f64): f64 external
+fabs  := func(x: f64): f64 external
+floor := func(x: f64): f64 external
+ceil  := func(x: f64): f64 external
+round := func(x: f64): f64 external
+fmod  := func(x: f64, y: f64): f64 external
+
+// Trigonometry
+sin  := func(x: f64): f64 external
+cos  := func(x: f64): f64 external
+tan  := func(x: f64): f64 external
+asin := func(x: f64): f64 external
+acos := func(x: f64): f64 external
+atan := func(x: f64): f64 external
+atan2 := func(y: f64, x: f64): f64 external
+
+// Exponential and logarithm
+exp   := func(x: f64): f64 external
+log   := func(x: f64): f64 external
+log10 := func(x: f64): f64 external
+log2  := func(x: f64): f64 external
+
+// Min/max
+fmin := func(x: f64, y: f64): f64 external
+fmax := func(x: f64, y: f64): f64 external
+
