@@ -1,9 +1,12 @@
 import math "std:cmath"
+import "std:strings"
+import "std:mem"
 
 Ray := struct {}
 
-Vec3 := alias arr<f64, 3>
-Color := alias Vec3
+Vec3   := alias arr<f64, 3>
+Color  := alias Vec3
+Stream := alias strings.StringBuilder
 
 vec_dot := func(v1: Vec3, v2: Vec3): f64 {
     mul := v1 * v2
@@ -27,7 +30,7 @@ vec_length := func(v: Vec3): f64 {
     return math.sqrt(vec_length_squared(v))
 }
 
-write_color := func(color: Color) {
+write_color := func(sb: *Stream, color: Color) {
     cnorm := color * 255.999
     ir := cnorm[0] as i32
     ig := cnorm[1] as i32
@@ -38,6 +41,7 @@ main := func() {
     image_width := 256
     image_height := 256
 
+    alloc := mem.default_allocator()
 
     println("P3")
     print(image_width, image_height, "\n255\n")

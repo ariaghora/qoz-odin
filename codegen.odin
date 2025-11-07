@@ -1954,9 +1954,10 @@ codegen_forward_decl :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
                     }
                 }
 
-                // Forward declare structs
+                // Forward declare structs and emit typedefs for aliases
                 if var_def.content.node_kind == .Type_Expr {
                     type_expr := var_def.content.payload.(Node_Type_Expr)
+
                     if _, is_struct := type_expr.type_info.(Struct_Type); is_struct {
                         strings.write_string(&ctx_cg.output_buf, "typedef struct ")
                         strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX)
@@ -1969,6 +1970,24 @@ codegen_forward_decl :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
                         strings.write_string(&ctx_cg.output_buf, "__")
                         strings.write_string(&ctx_cg.output_buf, var_def.name)
                         strings.write_string(&ctx_cg.output_buf, ";\n")
+                    } else {
+                        alias_c_name := ""
+                        if ctx_cg.current_pkg_name != "" {
+                            alias_c_name = fmt.tprintf("%s%s__%s", MANGLE_PREFIX, ctx_cg.current_pkg_name, var_def.name)
+                        } else {
+                            alias_c_name = fmt.tprintf("%s%s", MANGLE_PREFIX, var_def.name)
+                        }
+
+                        strings.write_string(&ctx_cg.output_buf, "typedef ")
+                        if _, is_fn := type_expr.type_info.(Function_Type); is_fn {
+                            codegen_type(ctx_cg, type_expr.type_info, alias_c_name)
+                            strings.write_string(&ctx_cg.output_buf, ";\n")
+                        } else {
+                            codegen_type(ctx_cg, type_expr.type_info)
+                            strings.write_string(&ctx_cg.output_buf, " ")
+                            strings.write_string(&ctx_cg.output_buf, alias_c_name)
+                            strings.write_string(&ctx_cg.output_buf, ";\n")
+                        }
                     }
                 }
             }

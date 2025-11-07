@@ -36,8 +36,13 @@ builder_len := func(sb: *StringBuilder): i64 {
     return len(sb.buffer)
 }
 
-builder_to_string := func(sb: *StringBuilder): string {
-    return string{data: sb.buffer.data, len: len(sb.buffer)}
+builder_to_string := func(sb: *StringBuilder, allocator: mem.Allocator): string {
+    buf_len := len(sb.buffer)
+    new_data := allocator.alloc(allocator.data, buf_len) as *i8
+    
+    libc.memcpy(new_data, sb.buffer.data, buf_len)
+    
+    return string{data: new_data, len: buf_len}
 }
 
 builder_destroy := func(sb: *StringBuilder, allocator: mem.Allocator) {
