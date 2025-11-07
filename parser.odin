@@ -363,53 +363,8 @@ parse :: proc(tokens: [dynamic]Token, file: string, allocator := context.allocat
 
 parse_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     #partial switch ps.current_token.kind {
-    case .KW_Import:
-        span_start := ps.idx
-        parser_advance(ps) // eat 'import'
-        
-        alias: Maybe(string)
-        if ps.current_token.kind == .Iden {
-            alias = ps.current_token.source
-            parser_advance(ps)
-        }
-        
-        if ps.current_token.kind != .Lit_String {
-            return nil, make_parse_error(ps, fmt.tprintf("Expected import path (string), got %v", ps.current_token.kind))
-        }
-        
-        path := strings.trim(ps.current_token.source, "\"")
-        parser_advance(ps)
-        
-        return new_clone(Node{
-            node_kind = .Import,
-            parent = parent,
-            span = Span{start = span_start, end = ps.idx - 1},
-            payload = Node_Import{
-                path = path,
-                alias = alias,
-            },
-        }, allocator), nil
-
-    case .KW_Link:
-        span_start := ps.idx
-        parser_advance(ps) // eat 'link'
-        
-        if ps.current_token.kind != .Lit_String {
-            return nil, make_parse_error(ps, fmt.tprintf("Expected link path (string), got %v", ps.current_token.kind))
-        }
-        
-        path := strings.trim(ps.current_token.source, "\"")
-        parser_advance(ps)
-        
-        return new_clone(Node{
-            node_kind = .Link,
-            parent = parent,
-            span = Span{start = span_start, end = ps.idx - 1},
-            payload = Node_Link{
-                path = path,
-            },
-        }, allocator), nil
-
+    case .KW_Import: return parse_import(ps, parent, allocator)
+    case .KW_Link: return parse_link(ps, parent, allocator)
     case .Iden: 
         next_tok := ps.tokens[ps.idx + 1].kind
         if next_tok == .Assign || next_tok == .Colon {
@@ -503,6 +458,55 @@ parse_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.
         fmt.println(ps.current_token)
         return nil, make_parse_error(ps, fmt.tprintf("Cannot parse statement starting with %v at position %d", ps.current_token.kind, ps.idx))
     }
+}
+
+parse_import :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
+    span_start := ps.idx
+    parser_advance(ps) // eat 'import'
+    
+    alias: Maybe(string)
+    if ps.current_token.kind == .Iden {
+        alias = ps.current_token.source
+        parser_advance(ps)
+    }
+    
+    if ps.current_token.kind != .Lit_String {
+        return nil, make_parse_error(ps, fmt.tprintf("Expected import path (string), got %v", ps.current_token.kind))
+    }
+    
+    path := strings.trim(ps.current_token.source, "\"")
+    parser_advance(ps)
+    
+    return new_clone(Node{
+        node_kind = .Import,
+        parent = parent,
+        span = Span{start = span_start, end = ps.idx - 1},
+        payload = Node_Import{
+            path = path,
+            alias = alias,
+        },
+    }, allocator), nil
+}
+
+parse_link :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
+    span_start := ps.idx
+    parser_advance(ps) // eat 'link'
+    
+    if ps.current_token.kind != .Lit_String {
+        return nil, make_parse_error(ps, fmt.tprintf("Expected link path (string), got %v", ps.current_token.kind))
+    }
+    
+    path := strings.trim(ps.current_token.source, "\"")
+    parser_advance(ps)
+    
+    return new_clone(Node{
+        node_kind = .Link,
+        parent = parent,
+        span = Span{start = span_start, end = ps.idx - 1},
+        payload = Node_Link{
+            path = path,
+        },
+    }, allocator), nil
 }
 
 parse_var_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
