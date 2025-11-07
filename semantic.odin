@@ -1920,6 +1920,62 @@ semantic_binop_type_resolve :: proc(t1, t2: Type_Info, op: Token, span: Span, ct
         }
     }
     
+    // Array programming: element-wise operations on fixed-size arrays
+    // Resolve named types first
+    resolved_left := left_type
+    resolved_right := right_type
+    
+    if named_type, is_named := left_type.(Named_Type); is_named {
+        if resolved, ok := resolve_named_type(ctx, named_type); ok {
+            resolved_left = resolved
+        }
+    }
+    if named_type, is_named := right_type.(Named_Type); is_named {
+        if resolved, ok := resolve_named_type(ctx, named_type); ok {
+            resolved_right = resolved
+        }
+    }
+    
+    if left_arr, is_left_arr := resolved_left.(Array_Type); is_left_arr {
+        if right_arr, is_right_arr := resolved_right.(Array_Type); is_right_arr {
+            // Both are arrays - check they're the same type
+            if !types_equal(left_arr, right_arr) {
+                add_error(ctx, span, "Array operation requires same array types, got %v and %v", left_arr, right_arr)
+                return Primitive_Type.Void
+            }
+            
+            // Check operation is valid for element type
+            #partial switch op.kind {
+            case .Plus, .Minus, .Star, .Slash:
+                // Arithmetic operations - element type must be numeric
+                elem_type := left_arr.element_type^
+                if prim, is_prim := elem_type.(Primitive_Type); is_prim {
+                    if prim == .Void || prim == .Bool || prim == .Cstring {
+                        add_error(ctx, span, "Cannot perform arithmetic on array of %v", prim)
+                        return Primitive_Type.Void
+                    }
+                } else {
+                    add_error(ctx, span, "Cannot perform arithmetic on array of non-numeric type %v", elem_type)
+                    return Primitive_Type.Void
+                }
+                return left_arr
+            case .Eq_Eq, .Not_Eq:
+                // Comparison operations - element type must be comparable
+                elem_type := left_arr.element_type^
+                if prim, is_prim := elem_type.(Primitive_Type); is_prim {
+                    if prim == .Void {
+                        add_error(ctx, span, "Cannot compare array of void")
+                        return Primitive_Type.Bool
+                    }
+                }
+                return Primitive_Type.Bool
+            case:
+                add_error(ctx, span, "Operator %v not supported for arrays", op.kind)
+                return Primitive_Type.Void
+            }
+        }
+    }
+    
     #partial switch op.kind {
     case .Plus:
         // Pointer + integer

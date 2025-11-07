@@ -173,6 +173,57 @@ codegen_vec_wrapper_struct :: proc(ctx_cg: ^Codegen_Context, vec_type: Vec_Type,
     strings.write_string(&ctx_cg.output_buf, ";\n\n")
 }
 
+// Generate element-wise binary operation for arrays
+codegen_array_binop :: proc(ctx_cg: ^Codegen_Context, binop: Node_Bin_Op, arr_type: Array_Type) {
+    // Generate: (ArrayType){{left.data[0] op right.data[0], left.data[1] op right.data[1], ...}}
+    
+    strings.write_string(&ctx_cg.output_buf, "(")
+    codegen_type(ctx_cg, arr_type)
+    strings.write_string(&ctx_cg.output_buf, "){{")
+    
+    for i in 0..<arr_type.size {
+        if i > 0 {
+            strings.write_string(&ctx_cg.output_buf, ", ")
+        }
+        strings.write_string(&ctx_cg.output_buf, "(")
+        codegen_node(ctx_cg, binop.left)
+        fmt.sbprintf(&ctx_cg.output_buf, ".data[%d]", i)
+        strings.write_string(&ctx_cg.output_buf, binop.op.source)
+        codegen_node(ctx_cg, binop.right)
+        fmt.sbprintf(&ctx_cg.output_buf, ".data[%d])", i)
+    }
+    
+    strings.write_string(&ctx_cg.output_buf, "}}")
+}
+
+// Generate element-wise comparison for arrays
+codegen_array_comparison :: proc(ctx_cg: ^Codegen_Context, binop: Node_Bin_Op, arr_type: Array_Type) {
+    // Generate: (left.data[0] == right.data[0] && left.data[1] == right.data[1] && ...)
+    // For !=, we use || instead of &&
+    
+    use_and := binop.op.kind == .Eq_Eq
+    connector := use_and ? "&&" : "||"
+    
+    strings.write_string(&ctx_cg.output_buf, "(")
+    
+    for i in 0..<arr_type.size {
+        if i > 0 {
+            strings.write_string(&ctx_cg.output_buf, " ")
+            strings.write_string(&ctx_cg.output_buf, connector)
+            strings.write_string(&ctx_cg.output_buf, " ")
+        }
+        
+        strings.write_string(&ctx_cg.output_buf, "(")
+        codegen_node(ctx_cg, binop.left)
+        fmt.sbprintf(&ctx_cg.output_buf, ".data[%d]", i)
+        strings.write_string(&ctx_cg.output_buf, binop.op.source)
+        codegen_node(ctx_cg, binop.right)
+        fmt.sbprintf(&ctx_cg.output_buf, ".data[%d])", i)
+    }
+    
+    strings.write_string(&ctx_cg.output_buf, ")")
+}
+
 // Returns true if the built-in was handled, false otherwise
 codegen_builtin_function :: proc(ctx_cg: ^Codegen_Context, name: string, args: []^Node) -> bool {
     switch name {
@@ -771,11 +822,49 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         
     case .Bin_Op:
         binop := node.payload.(Node_Bin_Op)
-        strings.write_string(&ctx_cg.output_buf, "(")
-        codegen_node(ctx_cg, binop.left)
-        strings.write_string(&ctx_cg.output_buf, binop.op.source)
-        codegen_node(ctx_cg, binop.right)
-        strings.write_string(&ctx_cg.output_buf, ")")
+        
+        // Check if this is an array operation
+        result_type := node.inferred_type.? or_else Primitive_Type.Void
+        
+        // Resolve named types
+        resolved_result_type := result_type
+        if named_type, is_named := result_type.(Named_Type); is_named {
+            if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named_type, ctx_cg.current_pkg_name); ok {
+                resolved_result_type = resolved
+            }
+        }
+        
+        if arr_type, is_arr := resolved_result_type.(Array_Type); is_arr {
+            // Array operation - generate element-wise code
+            codegen_array_binop(ctx_cg, binop, arr_type)
+        } else if binop.op.kind == .Eq_Eq || binop.op.kind == .Not_Eq {
+            // Check if operands are arrays (comparison returns bool, not array)
+            left_type := binop.left.inferred_type.? or_else Primitive_Type.Void
+            if named_type, is_named := left_type.(Named_Type); is_named {
+                if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named_type, ctx_cg.current_pkg_name); ok {
+                    left_type = resolved
+                }
+            }
+            
+            if arr_type, is_arr := left_type.(Array_Type); is_arr {
+                // Array comparison - generate element-wise comparison
+                codegen_array_comparison(ctx_cg, binop, arr_type)
+            } else {
+                // Regular scalar operation
+                strings.write_string(&ctx_cg.output_buf, "(")
+                codegen_node(ctx_cg, binop.left)
+                strings.write_string(&ctx_cg.output_buf, binop.op.source)
+                codegen_node(ctx_cg, binop.right)
+                strings.write_string(&ctx_cg.output_buf, ")")
+            }
+        } else {
+            // Regular scalar operation
+            strings.write_string(&ctx_cg.output_buf, "(")
+            codegen_node(ctx_cg, binop.left)
+            strings.write_string(&ctx_cg.output_buf, binop.op.source)
+            codegen_node(ctx_cg, binop.right)
+            strings.write_string(&ctx_cg.output_buf, ")")
+        }
     
     case .Cast:
         cast_node := node.payload.(Node_Cast)

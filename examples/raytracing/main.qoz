@@ -3,19 +3,12 @@ Ray := struct {}
 Vec3 := alias arr<f64, 3>
 
 vec3_scale := func(v: Vec3, factor: f64): Vec3 {
-    return {
-        v[0] * factor,
-        v[1] * factor,
-        v[2] * factor,
-    }
+    scalar_arr := arr<f64, 3>{factor, factor, factor}
+    return v * scalar_arr
 }
 
 vec3_add := func(v1: Vec3, v2: Vec3): Vec3 {
-    return {
-        v1[0] + v2[0],
-        v1[1] + v2[1],
-        v1[2] + v2[2],
-    }
+    return v1 + v2
 }
 
 

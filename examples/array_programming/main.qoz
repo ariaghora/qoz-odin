@@ -1,0 +1,30 @@
+Vec3 := alias arr<f64, 3>
+
+main := func() {
+    a := arr<f64, 3>{1.0, 4.0, 9.0}
+    b := arr<f64, 3>{2.0, 4.0, 8.0}
+    
+    c := a + b  // {3, 8, 17}
+    d := a * b  // {2, 16, 72}
+    
+    println("a =", a[0], a[1], a[2])
+    println("b =", b[0], b[1], b[2])
+    println("c = a + b =", c[0], c[1], c[2])
+    println("d = a * b =", d[0], d[1], d[2])
+    
+    // Test subtraction and division
+    e := c - a  // Should be b
+    f := d / a  // Should be b
+    println("e = c - a =", e[0], e[1], e[2])
+    println("f = d / a =", f[0], f[1], f[2])
+    
+    // Test comparisons
+    if c != d {
+        println("c != d: true")
+    }
+    
+    if e == b {
+        println("e == b: true")
+    }
+}
+
