@@ -1,0 +1,36 @@
+import "std:mem"
+
+main := func() {
+    alloc := mem.default_allocator()
+    
+    // Create a vector
+    v := new(vec<i32>, alloc)
+    defer del(v)
+    
+    // Append some elements
+    append(v, 10)
+    append(v, 20)
+    append(v, 30)
+    
+    println("Vector length:", len(v))
+    println("Vector elements:")
+    
+    // Access by index
+    println("v[0] =", v[0])
+    println("v[1] =", v[1])
+    println("v[2] =", v[2])
+    
+    // Iterate with for-in loop
+    println("Iterating:")
+    for item in v {
+        println("  item:", item)
+    }
+    
+    // Add more elements to trigger growth
+    for i := 0; i < 10; i += 1 {
+        append(v, i * 100)
+    }
+    
+    println("After appending more, length:", len(v))
+}
+

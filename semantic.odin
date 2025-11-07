@@ -321,22 +321,15 @@ is_top_level_scope :: proc(ctx: ^Semantic_Context) -> bool {
 @(private="file")
 is_allowed_at_top_level :: proc(type: Type_Info) -> bool {
     #partial switch t in type {
-    case Primitive_Type:
-        return true
-    case Untyped_Int, Untyped_Float:
-        // Untyped literals are fine - they'll become primitives
-        return true
-    case Named_Type:
-        // Allow string and user-defined types (which are checked separately)
-        return t.name == "string"
-    case Function_Type:
-        return true
-    case Struct_Type:
-        // Type definitions are allowed
-        return true
-    case Array_Type, Pointer_Type:
-        // Mutable globals with complex types are not allowed
-        return false
+    case Primitive_Type: return true
+    // Untyped literals are fine, they'll become primitives
+    case Untyped_Int, Untyped_Float, Untyped_String: return true
+    // Allow string and user-defined types (which are checked separately)
+    case Named_Type: return t.name == "string"
+    case Function_Type: return true
+    case Struct_Type:   return true
+    // Mutable globals with complex types are not allowed
+    case Array_Type, Pointer_Type: return false
     }
     return false
 }
@@ -508,6 +501,9 @@ qualify_type :: proc(ctx: ^Semantic_Context, t: Type_Info, pkg_name: string, all
     case Array_Type:
         qualified_elem := qualify_type(ctx, typ.element_type^, pkg_name, allocator)
         return Array_Type{element_type = new_clone(qualified_elem, allocator), size = typ.size}
+    case Vec_Type:
+        qualified_elem := qualify_type(ctx, typ.element_type^, pkg_name, allocator)
+        return Vec_Type{element_type = new_clone(qualified_elem, allocator)}
     case Function_Type:
         qualified_params := make([]Type_Info, len(typ.params), allocator)
         for param, i in typ.params {
@@ -527,7 +523,7 @@ qualify_type :: proc(ctx: ^Semantic_Context, t: Type_Info, pkg_name: string, all
     }
 }
 
-// Pass 1: Collect declarations without analyzing bodies
+// Pass 1: Collect declarations WITHOUT analyzing bodies
 collect_declarations :: proc(ctx: ^Semantic_Context, node: ^Node, pkg_dir, project_root: string) {
     if node == nil do return
     
@@ -548,7 +544,6 @@ collect_declarations :: proc(ctx: ^Semantic_Context, node: ^Node, pkg_dir, proje
             alias = extract_alias_from_path(import_node.path)
         }
 
-        
         resolved_path := resolve_import_path(pkg_dir, project_root, import_node.path)
         ctx.import_aliases[alias] = resolved_path 
 
@@ -801,25 +796,61 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
     case .Del:
         del_node := node.payload.(Node_Del)
         ptr_type := check_node(ctx, del_node.pointer)
-        allocator_type := check_node(ctx, del_node.allocator)
         
-        // Validate first argument - must be pointer, string, or array
-        valid_first_arg := false
-        #partial switch t in ptr_type {
-        case Pointer_Type, Array_Type:
-            valid_first_arg = true
-        case Named_Type:
-            if t.name == "string" do valid_first_arg = true
+        // Check if it's a pointer to vec - special case
+        is_vec := false
+        if ptr_type_val, is_ptr := ptr_type.(Pointer_Type); is_ptr {
+            if _, is_vec_type := ptr_type_val.pointee^.(Vec_Type); is_vec_type {
+                is_vec = true
+            }
         }
         
-        if !valid_first_arg {
-            add_error(ctx, del_node.pointer.span, "del() requires pointer, string, or array type, got %v", ptr_type)
+        if is_vec {
+            // Vec deletion: del(v) - no allocator parameter
+            if del_node.allocator != nil {
+                add_error(ctx, del_node.allocator.span, "del() on vec<T> does not take allocator parameter. Vec manages its own allocator.")
+            }
+        } else {
+            // Regular deletion: del(ptr, alloc) - requires allocator
+            if del_node.allocator == nil {
+                add_error(ctx, del_node.pointer.span, "del() requires allocator parameter for non-vec types")
+                return .Void
+            }
+            
+            allocator_type := check_node(ctx, del_node.allocator)
+            
+            // Validate first argument - must be pointer, string, or array
+            valid_first_arg := false
+            #partial switch t in ptr_type {
+            case Pointer_Type:
+                valid_first_arg = true
+            case Array_Type:
+                valid_first_arg = true
+            case Named_Type:
+                if t.name == "string" do valid_first_arg = true
+            }
+            
+            if !valid_first_arg {
+                add_error(ctx, del_node.pointer.span, "del() requires pointer, string, or array type, got %v", ptr_type)
+            }
+            
+            // Validate allocator - structural typing
+            validate_allocator_struct(ctx, allocator_type, del_node.allocator.span)
         }
-        
-        // Validate allocator - structural typing
-        validate_allocator_struct(ctx, allocator_type, del_node.allocator.span)
         
         return .Void
+
+    case .New:
+        new_node := node.payload.(Node_New)
+        allocator_type := check_node(ctx, new_node.allocator)
+        
+        // Validate allocator
+        validate_allocator_struct(ctx, allocator_type, new_node.allocator.span)
+        
+        // Return pointer to the allocated type
+        result_type := Pointer_Type{pointee = new_clone(new_node.type, ctx.allocator)}
+        node.inferred_type = result_type
+        return result_type
 
     case .Field_Access:
         field_access := node.payload.(Node_Field_Access)
@@ -906,14 +937,27 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
         
         iterable_type := check_node(ctx, for_in.iterable)
         
-        arr_type, is_array := iterable_type.(Array_Type)
-        if !is_array {
+        element_type: ^Type_Info
+        #partial switch t in iterable_type {
+        case Array_Type:
+            element_type = t.element_type
+        case Vec_Type:
+            element_type = t.element_type
+        case Pointer_Type:
+            // Accept pointer to vec
+            if vec_t, is_vec := t.pointee^.(Vec_Type); is_vec {
+                element_type = vec_t.element_type
+            } else {
+                add_error(ctx, for_in.iterable.span, "Cannot iterate over non-iterable type %v", iterable_type)
+                return Primitive_Type.Void
+            }
+        case:
             add_error(ctx, for_in.iterable.span, "Cannot iterate over non-iterable type %v", iterable_type)
             return Primitive_Type.Void
         }
         
         semantic_push_scope(ctx)
-        semantic_define_symbol(ctx, for_in.iterator, arr_type.element_type^, node.span)
+        semantic_define_symbol(ctx, for_in.iterator, element_type^, node.span)
         for stmt in for_in.body do check_node(ctx, stmt)
         semantic_pop_scope(ctx)
         return Primitive_Type.Void
@@ -982,10 +1026,18 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
         element_type: Type_Info
         if arr_type, is_arr := object_type.(Array_Type); is_arr {
             element_type = arr_type.element_type^
+        } else if vec_type, is_vec := object_type.(Vec_Type); is_vec {
+            element_type = vec_type.element_type^
         } else if ptr_type, is_ptr := object_type.(Pointer_Type); is_ptr {
-            element_type = ptr_type.pointee^
+            // Check if it's a pointer to vec - if so, return vec element type
+            if vec_t, is_vec := ptr_type.pointee^.(Vec_Type); is_vec {
+                element_type = vec_t.element_type^
+            } else {
+                // Regular pointer dereference
+                element_type = ptr_type.pointee^
+            }
         } else {
-            add_error(ctx, node.span, "Cannot index non-array/pointer type")
+            add_error(ctx, node.span, "Cannot index non-array/vec/pointer type")
             node.inferred_type = Primitive_Type.Void
             return Primitive_Type.Void
         }
@@ -1133,10 +1185,11 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
     case .Fn_Call:
         call := node.payload.(Node_Call)
 
-        // Check for built-in len() function
+        // Check for built-in functions
         // Short circuit
         if call.callee.node_kind == .Identifier {
             callee_name := call.callee.payload.(Node_Identifier).name
+            
             if callee_name == "len" {
                 // Validate: exactly 1 argument
                 if len(call.args) != 1 {
@@ -1148,20 +1201,60 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
                 // Check argument type
                 arg_type := check_node(ctx, call.args[0])
                 
-                // Validate type
+                // Validate type (accept vec, *vec, array, string)
                 valid := false
                 #partial switch t in arg_type {
                 case Array_Type: valid = true
+                case Vec_Type: valid = true
+                case Pointer_Type:
+                    // Accept pointer to vec
+                    if _, is_vec := t.pointee^.(Vec_Type); is_vec {
+                        valid = true
+                    }
                 case Named_Type:
                     if t.name == "string" do valid = true
                 }
                 
                 if !valid {
-                    add_error(ctx, node.span, "len() requires array or string, got %v", arg_type)
+                    add_error(ctx, node.span, "len() requires array, vec, or string, got %v", arg_type)
                 }
                 
                 node.inferred_type = Primitive_Type.I64
                 return Primitive_Type.I64
+            }
+            
+            if callee_name == "append" {
+                // append(vec: *vec<T>, item: T)
+                if len(call.args) != 2 {
+                    add_error(ctx, node.span, "append() requires exactly 2 arguments (vec pointer and item)")
+                    node.inferred_type = Primitive_Type.Void
+                    return Primitive_Type.Void
+                }
+                
+                // Check first argument: must be pointer to vec
+                vec_ptr_type := check_node(ctx, call.args[0])
+                ptr_type, is_ptr := vec_ptr_type.(Pointer_Type)
+                if !is_ptr {
+                    add_error(ctx, call.args[0].span, "append() first argument must be pointer to vec, got %v", vec_ptr_type)
+                    node.inferred_type = Primitive_Type.Void
+                    return Primitive_Type.Void
+                }
+                
+                vec_type, is_vec := ptr_type.pointee^.(Vec_Type)
+                if !is_vec {
+                    add_error(ctx, call.args[0].span, "append() first argument must be pointer to vec, got pointer to %v", ptr_type.pointee^)
+                    node.inferred_type = Primitive_Type.Void
+                    return Primitive_Type.Void
+                }
+                
+                // Check second argument: must be compatible with vec element type
+                item_type := check_node(ctx, call.args[1], vec_type.element_type^)
+                if !types_compatible(vec_type.element_type^, item_type, ctx) {
+                    add_error(ctx, call.args[1].span, "append() item type mismatch: vec element is %v, got %v", vec_type.element_type^, item_type)
+                }
+                
+                node.inferred_type = Primitive_Type.Void
+                return Primitive_Type.Void
             }
         }
 
@@ -1384,6 +1477,13 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
         #partial switch t in value_type {
         case Array_Type:
             valid = true
+        case Vec_Type:
+            valid = true
+        case Pointer_Type:
+            // Accept pointer to vec
+            if _, is_vec := t.pointee^.(Vec_Type); is_vec {
+                valid = true
+            }
         case Named_Type:
             if t.name == "string" {
                 valid = true
@@ -1391,7 +1491,7 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
         }
         
         if !valid {
-            add_error(ctx, node.span, "len() requires array or string, got %v", value_type)
+            add_error(ctx, node.span, "len() requires array, vec, or string, got %v", value_type)
         }
         
         node.inferred_type = Primitive_Type.I64
@@ -1672,6 +1772,10 @@ types_equal :: proc(a, b: Type_Info) -> bool {
         b_val, ok := b.(Array_Type)
         if !ok do return false
         return b_val.size == a_val.size && types_equal(a_val.element_type^, b_val.element_type^)
+    case Vec_Type:
+        b_val, ok := b.(Vec_Type)
+        if !ok do return false
+        return types_equal(a_val.element_type^, b_val.element_type^)
     case Pointer_Type:
         b_val, ok := b.(Pointer_Type)
         if !ok do return false

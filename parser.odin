@@ -20,6 +20,7 @@ Node_Kind :: enum {
     Cast,
     Defer,
     Del,
+    New,
     Expr_Statement,
     Field_Access,
     Fn_Call,
@@ -52,6 +53,7 @@ Node_Kind :: enum {
 Type_Info :: union {
     Primitive_Type,
     Array_Type,
+    Vec_Type,
     Function_Type,
     Pointer_Type,
     Struct_Type,
@@ -71,6 +73,10 @@ Function_Type :: struct {
 Array_Type :: struct {
     element_type: ^Type_Info,
     size: int,
+}
+
+Vec_Type :: struct {
+    element_type: ^Type_Info,
 }
 
 Pointer_Type :: struct {
@@ -116,6 +122,7 @@ Node_Call           :: struct { callee: ^Node, args: [dynamic]^Node }
 Node_Cast           :: struct { expr: ^Node, target_type: Type_Info }
 Node_Defer          :: struct { body: [dynamic]^Node }
 Node_Del            :: struct { pointer: ^Node, allocator: ^Node }
+Node_New            :: struct { type: Type_Info, allocator: ^Node }
 Node_Field_Access   :: struct { object: ^Node, field_name: string }
 Node_Fn_Def         :: struct { params: [dynamic]Fn_Param, body: [dynamic]^Node, return_type: Type_Info, is_external: bool, external_name: Maybe(string)}
 Node_For_C          :: struct { init: ^Node, condition: ^Node, post: ^Node, body: [dynamic]^Node }
@@ -160,6 +167,7 @@ Node :: struct {
         Node_For_C,
         Node_For_In,
         Node_Del,
+        Node_New,
         Node_Identifier,
         Node_Import,
         Node_Index,
@@ -438,19 +446,25 @@ parse_iden_led_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator :=
 
 parse_del_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     span_start := ps.idx
-    parser_advance(ps) // eat 'free'
+    parser_advance(ps) // eat 'del'
     parser_consume(ps, .Left_Paren) or_return
     ptr := parse_expression(ps, parent, allocator) or_return
-    parser_consume(ps, .Comma) or_return
-    alloc := parse_expression(ps, parent, allocator) or_return
+    
+    // Check if there's a comma (allocator parameter is optional for vec types)
+    alloc_expr: ^Node = nil
+    if ps.current_token.kind == .Comma {
+        parser_advance(ps)  // eat comma
+        alloc_expr = parse_expression(ps, parent, allocator) or_return
+    }
+    
     parser_consume(ps, .Right_Paren) or_return
     return new_clone(Node{
         node_kind = .Del,
         parent = parent,
         span = Span{start = span_start, end = ps.idx - 1},
         payload = Node_Del{
-            pointer=ptr,
-            allocator=alloc,
+            pointer = ptr,
+            allocator = alloc_expr,
         },
     }, allocator), nil
 }
@@ -902,6 +916,29 @@ parse_unary :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allo
         }, allocator)
 
         return len_node, nil
+    } else if ps.current_token.kind == .KW_New {
+        op_idx := ps.idx
+        parser_advance(ps)  // eat 'new'
+        parser_consume(ps, .Left_Paren) or_return
+        
+        // Parse type
+        type_info := parse_type(ps, allocator) or_return
+        
+        parser_consume(ps, .Comma) or_return
+        
+        // Parse allocator expression
+        alloc_expr := parse_expression(ps, parent, allocator) or_return
+        
+        parser_consume(ps, .Right_Paren) or_return
+        
+        new_node := new_clone(Node {
+            node_kind = .New,
+            parent = parent,
+            span = Span{start = op_idx, end = ps.idx - 1},
+            payload = Node_New{type = type_info, allocator = alloc_expr}
+        }, allocator)
+        
+        return new_node, nil
     }
 
     return parse_postfix(ps, parent, allocator)
@@ -1535,6 +1572,20 @@ parse_type :: proc(ps: ^Parsing_State, allocator: mem.Allocator) -> (res:Type_In
         return Array_Type{
             element_type = new_clone(elem_type, allocator),
             size = size,
+        }, nil
+    }
+
+    // Vector type: vec<T>
+    if ps.current_token.kind == .KW_Vec {
+        parser_advance(ps)
+        parser_consume(ps, .Lt) or_return
+        
+        elem_type := parse_type(ps, allocator) or_return
+        
+        parser_consume(ps, .Gt) or_return
+        
+        return Vec_Type{
+            element_type = new_clone(elem_type, allocator),
         }, nil
     }
 

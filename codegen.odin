@@ -64,6 +64,30 @@ get_array_wrapper_name :: proc(elem_type: ^Type_Info, size: int) -> string {
     return fmt.tprintf("%sArray_%s_%d", MANGLE_PREFIX, type_name, size)
 }
 
+// Generate a unique name for vec wrapper struct
+get_vec_wrapper_name :: proc(elem_type: ^Type_Info) -> string {
+    type_name: string
+    #partial switch t in elem_type^ {
+    case Primitive_Type:
+        #partial switch t {
+        case .I8:  type_name = "i8"
+        case .U8:  type_name = "u8"
+        case .I32: type_name = "i32"
+        case .I64: type_name = "i64"
+        case .F32: type_name = "f32"
+        case .F64: type_name = "f64"
+        case: type_name = "unknown"
+        }
+    case Pointer_Type:
+        type_name = "ptr"
+    case Named_Type:
+        type_name, _ = strings.replace_all(t.name, ".", "_", context.temp_allocator)
+    case:
+        type_name = "unknown"
+    }
+    return fmt.tprintf("%sVec_%s", MANGLE_PREFIX, type_name)
+}
+
 // Check if a type contains any named struct types
 type_contains_struct :: proc(t: Type_Info) -> bool {
     #partial switch typ in t {
@@ -110,6 +134,45 @@ codegen_array_wrapper_struct :: proc(ctx_cg: ^Codegen_Context, arr_type: Array_T
     strings.write_string(&ctx_cg.output_buf, ";\n\n")
 }
 
+// Generate struct wrapper for vec type
+// only_primitives: if true, skip generation (vec always depends on Allocator struct)
+codegen_vec_wrapper_struct :: proc(ctx_cg: ^Codegen_Context, vec_type: Vec_Type, only_primitives := false) {
+    wrapper_name := get_vec_wrapper_name(vec_type.element_type)
+    
+    // Check if we already generated this wrapper
+    if wrapper_name in ctx_cg.generated_array_wrappers {  // Reuse same tracking map
+        return
+    }
+    
+    // Skip vec wrappers if only_primitives is true
+    // Vec always depends on mem.Allocator struct, so must wait for Pass 2.5
+    if only_primitives {
+        return
+    }
+    
+    ctx_cg.generated_array_wrappers[wrapper_name] = true
+    
+    // Note: mem.Allocator struct should already be defined by the struct pass
+    // We only generate vec wrappers in Pass 2.5, after all structs are defined
+    
+    // typedef struct qoz__Vec_i32 {
+    //     i32* data;
+    //     int64_t len;
+    //     int64_t cap;
+    //     Qoz_Allocator allocator;
+    // } qoz__Vec_i32;
+    
+    strings.write_string(&ctx_cg.output_buf, "typedef struct ")
+    strings.write_string(&ctx_cg.output_buf, wrapper_name)
+    strings.write_string(&ctx_cg.output_buf, " {\n    ")
+    codegen_type(ctx_cg, vec_type.element_type^)
+    strings.write_string(&ctx_cg.output_buf, "* data;\n    int64_t len;\n    int64_t cap;\n    ")
+    // Use the actual Qoz mem.Allocator type (mangled)
+    strings.write_string(&ctx_cg.output_buf, "qoz__mem__Allocator allocator;\n} ")
+    strings.write_string(&ctx_cg.output_buf, wrapper_name)
+    strings.write_string(&ctx_cg.output_buf, ";\n\n")
+}
+
 // Returns true if the built-in was handled, false otherwise
 codegen_builtin_function :: proc(ctx_cg: ^Codegen_Context, name: string, args: []^Node) -> bool {
     switch name {
@@ -123,6 +186,21 @@ codegen_builtin_function :: proc(ctx_cg: ^Codegen_Context, name: string, args: [
         case Array_Type:
             // Array length is compile-time constant
             fmt.sbprintf(&ctx_cg.output_buf, "%d", t.size)
+        case Vec_Type:
+            // Vec length is runtime field access
+            strings.write_string(&ctx_cg.output_buf, "(")
+            codegen_node(ctx_cg, arg)
+            strings.write_string(&ctx_cg.output_buf, ").len")
+        case Pointer_Type:
+            // Check if pointer to vec
+            if _, is_vec := t.pointee^.(Vec_Type); is_vec {
+                // Pointer to vec: use ->len
+                strings.write_string(&ctx_cg.output_buf, "(")
+                codegen_node(ctx_cg, arg)
+                strings.write_string(&ctx_cg.output_buf, ")->len")
+            } else {
+                panic("len() called on non-vec pointer")
+            }
         case Named_Type:
             if t.name == "string" {
                 // String length is runtime field access
@@ -135,6 +213,76 @@ codegen_builtin_function :: proc(ctx_cg: ^Codegen_Context, name: string, args: [
         case:
             panic("len() called on invalid type in codegen")
         }
+        return true
+    
+    case "append":
+        // append(vec: *vec<T>, item: T)
+        if len(args) != 2 do return false
+        
+        vec_ptr := args[0]
+        item := args[1]
+        
+        vec_ptr_type := vec_ptr.inferred_type.? or_else Primitive_Type.Void
+        ptr_type, is_ptr := vec_ptr_type.(Pointer_Type)
+        if !is_ptr do return false
+        
+        vec_type, is_vec := ptr_type.pointee^.(Vec_Type)
+        if !is_vec do return false
+        
+        // Generate append code with growth logic
+        // if ((*v)->len >= (*v)->cap) {
+        //     int64_t new_cap = (*v)->cap == 0 ? 8 : (*v)->cap * 2;
+        //     T* new_data = (T*)(*v)->allocator.alloc((*v)->allocator.data, new_cap * sizeof(T));
+        //     if ((*v)->data) memcpy(new_data, (*v)->data, (*v)->len * sizeof(T));
+        //     if ((*v)->data) (*v)->allocator.free((*v)->allocator.data, (*v)->data);
+        //     (*v)->data = new_data;
+        //     (*v)->cap = new_cap;
+        // }
+        // (*v)->data[(*v)->len++] = item;
+        
+        strings.write_string(&ctx_cg.output_buf, "{ if ((*")
+        codegen_node(ctx_cg, vec_ptr)
+        strings.write_string(&ctx_cg.output_buf, ").len >= (*")
+        codegen_node(ctx_cg, vec_ptr)
+        strings.write_string(&ctx_cg.output_buf, ").cap) { int64_t _new_cap = (*")
+        codegen_node(ctx_cg, vec_ptr)
+        strings.write_string(&ctx_cg.output_buf, ").cap == 0 ? 8 : (*")
+        codegen_node(ctx_cg, vec_ptr)
+        strings.write_string(&ctx_cg.output_buf, ").cap * 2; ")
+        
+        codegen_type(ctx_cg, vec_type.element_type^)
+        strings.write_string(&ctx_cg.output_buf, "* _new_data = (")
+        codegen_type(ctx_cg, vec_type.element_type^)
+        strings.write_string(&ctx_cg.output_buf, "*)(*")
+        codegen_node(ctx_cg, vec_ptr)
+        strings.write_string(&ctx_cg.output_buf, ").allocator.alloc((*")
+        codegen_node(ctx_cg, vec_ptr)
+        strings.write_string(&ctx_cg.output_buf, ").allocator.data, _new_cap * sizeof(")
+        codegen_type(ctx_cg, vec_type.element_type^)
+        strings.write_string(&ctx_cg.output_buf, ")); if ((*")
+        codegen_node(ctx_cg, vec_ptr)
+        strings.write_string(&ctx_cg.output_buf, ").data) { for (int64_t _i = 0; _i < (*")
+        codegen_node(ctx_cg, vec_ptr)
+        strings.write_string(&ctx_cg.output_buf, ").len; _i++) _new_data[_i] = (*")
+        codegen_node(ctx_cg, vec_ptr)
+        strings.write_string(&ctx_cg.output_buf, ").data[_i]; (*")
+        codegen_node(ctx_cg, vec_ptr)
+        strings.write_string(&ctx_cg.output_buf, ").allocator.free((*")
+        codegen_node(ctx_cg, vec_ptr)
+        strings.write_string(&ctx_cg.output_buf, ").allocator.data, (*")
+        codegen_node(ctx_cg, vec_ptr)
+        strings.write_string(&ctx_cg.output_buf, ").data); } (*")
+        codegen_node(ctx_cg, vec_ptr)
+        strings.write_string(&ctx_cg.output_buf, ").data = _new_data; (*")
+        codegen_node(ctx_cg, vec_ptr)
+        strings.write_string(&ctx_cg.output_buf, ").cap = _new_cap; } (*")
+        codegen_node(ctx_cg, vec_ptr)
+        strings.write_string(&ctx_cg.output_buf, ").data[(*")
+        codegen_node(ctx_cg, vec_ptr)
+        strings.write_string(&ctx_cg.output_buf, ").len++] = ")
+        codegen_node(ctx_cg, item)
+        strings.write_string(&ctx_cg.output_buf, "; }")
+        
         return true
     
     // TODO(Aria): Add more built-ins here:
@@ -284,6 +432,13 @@ codegen_collect_type_array_names :: proc(ctx_cg: ^Codegen_Context, type: Type_In
         }
         // Recurse for nested arrays
         codegen_collect_type_array_names(ctx_cg, t.element_type^, names)
+    case Vec_Type:
+        wrapper_name := get_vec_wrapper_name(t.element_type)
+        if wrapper_name not_in ctx_cg.generated_array_wrappers {
+            append(names, wrapper_name)
+            ctx_cg.generated_array_wrappers[wrapper_name] = true
+        }
+        codegen_collect_type_array_names(ctx_cg, t.element_type^, names)
     case Pointer_Type:
         codegen_collect_type_array_names(ctx_cg, t.pointee^, names)
     case Struct_Type:
@@ -331,11 +486,13 @@ codegen_collect_array_wrappers :: proc(ctx_cg: ^Codegen_Context, node: ^Node, na
     }
 }
 
-// Recursively scan a type for arrays and generate wrappers
+// Recursively scan a type for arrays and vecs and generate wrappers
 codegen_scan_type_for_arrays :: proc(ctx_cg: ^Codegen_Context, type: Type_Info, only_primitives := false) {
     #partial switch t in type {
     case Array_Type:
         codegen_array_wrapper_struct(ctx_cg, t, only_primitives)
+    case Vec_Type:
+        codegen_vec_wrapper_struct(ctx_cg, t, only_primitives)
     case Pointer_Type:
         codegen_scan_type_for_arrays(ctx_cg, t.pointee^, only_primitives)
     case Struct_Type:
@@ -518,8 +675,12 @@ codegen_print_impl :: proc(ctx_cg: ^Codegen_Context, args: [dynamic]^Node, add_n
         case Untyped_Int: format_spec = "%d"
         case Untyped_Float: format_spec = "%f"
         case Untyped_String: format_spec = "%.*s"  // Treat like string
+        case Pointer_Type:
+            format_spec = "%p"  // Print pointer address
+        case Vec_Type:
+            fmt.panicf("Cannot print vec directly. Use len(vec) or iterate over it. Type: %v", expr_type)
         case:
-            panic("Cannot print this type")
+            fmt.panicf("Cannot print type: %v. If this is len(v), check that v is dereferenced (*v)", expr_type)
         }
         
         append(&format_parts, format_spec)
@@ -778,7 +939,6 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         for_in := node.payload.(Node_For_In)
         
         iterable_type := for_in.iterable.inferred_type.? or_else panic("Type not annotated")
-        arr_type := iterable_type.(Array_Type)
         
         // Generate unique index variable
         loop_idx := ctx_cg.loop_counter
@@ -789,7 +949,27 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         strings.write_string(&ctx_cg.output_buf, " = 0; __i")
         fmt.sbprintf(&ctx_cg.output_buf, "%d", loop_idx)
         strings.write_string(&ctx_cg.output_buf, " < ")
-        fmt.sbprintf(&ctx_cg.output_buf, "%d", arr_type.size)
+        
+        // Check if it's array, vec, or *vec
+        #partial switch t in iterable_type {
+        case Array_Type:
+            fmt.sbprintf(&ctx_cg.output_buf, "%d", t.size)
+        case Vec_Type:
+            strings.write_string(&ctx_cg.output_buf, "(")
+            codegen_node(ctx_cg, for_in.iterable)
+            strings.write_string(&ctx_cg.output_buf, ").len")
+        case Pointer_Type:
+            if _, is_vec := t.pointee^.(Vec_Type); is_vec {
+                strings.write_string(&ctx_cg.output_buf, "(")
+                codegen_node(ctx_cg, for_in.iterable)
+                strings.write_string(&ctx_cg.output_buf, ")->len")
+            } else {
+                panic("Unsupported pointer type in for-in codegen")
+            }
+        case:
+            panic("Unsupported iterable type in for-in codegen")
+        }
+        
         strings.write_string(&ctx_cg.output_buf, "; __i")
         fmt.sbprintf(&ctx_cg.output_buf, "%d", loop_idx)
         strings.write_string(&ctx_cg.output_buf, "++) {\n")
@@ -799,13 +979,36 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         
         ctx_cg.indent_level += 1
         
+        // Get element type and data access
+        element_type: ^Type_Info
+        use_arrow := false
+        #partial switch t in iterable_type {
+        case Array_Type:
+            element_type = t.element_type
+        case Vec_Type:
+            element_type = t.element_type
+        case Pointer_Type:
+            if vec_t, is_vec := t.pointee^.(Vec_Type); is_vec {
+                element_type = vec_t.element_type
+                use_arrow = true
+            } else {
+                panic("Unsupported pointer type in for-in element access")
+            }
+        case:
+            panic("Unsupported iterable type in for-in element access")
+        }
+        
         codegen_indent(ctx_cg, ctx_cg.indent_level)
-        codegen_type(ctx_cg, arr_type.element_type^)
+        codegen_type(ctx_cg, element_type^)
         strings.write_string(&ctx_cg.output_buf, " ")
         strings.write_string(&ctx_cg.output_buf, for_in.iterator)
-        strings.write_string(&ctx_cg.output_buf, " = ")
+        strings.write_string(&ctx_cg.output_buf, " = (")
         codegen_node(ctx_cg, for_in.iterable)
-        strings.write_string(&ctx_cg.output_buf, ".data[__i")
+        if use_arrow {
+            strings.write_string(&ctx_cg.output_buf, ")->data[__i")
+        } else {
+            strings.write_string(&ctx_cg.output_buf, ").data[__i")
+        }
         fmt.sbprintf(&ctx_cg.output_buf, "%d", loop_idx)
         strings.write_string(&ctx_cg.output_buf, "];\n")
         
@@ -958,12 +1161,37 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
     case .Index:
         index_node := node.payload.(Node_Index)
         
-        // Check if we're indexing an array type (which uses wrapper struct)
+        // Check if we're indexing an array, vec, or pointer-to-vec
         obj_type := index_node.object.inferred_type.? or_else Primitive_Type.Void
-        if _, is_array := obj_type.(Array_Type); is_array {
+        
+        is_array := false
+        is_vec_value := false
+        is_vec_ptr := false
+        
+        #partial switch t in obj_type {
+        case Array_Type:
+            is_array = true
+        case Vec_Type:
+            is_vec_value = true
+        case Pointer_Type:
+            // Check if it's a pointer to vec
+            if vec_t, is_vec := t.pointee^.(Vec_Type); is_vec {
+                is_vec_ptr = true
+            }
+        }
+        
+        if is_array || is_vec_value {
             // Access through .data field of wrapper struct
+            strings.write_string(&ctx_cg.output_buf, "(")
             codegen_node(ctx_cg, index_node.object)
-            strings.write_string(&ctx_cg.output_buf, ".data[")
+            strings.write_string(&ctx_cg.output_buf, ").data[")
+            codegen_node(ctx_cg, index_node.index)
+            strings.write_string(&ctx_cg.output_buf, "]")
+        } else if is_vec_ptr {
+            // Pointer to vec: use ->data
+            strings.write_string(&ctx_cg.output_buf, "(")
+            codegen_node(ctx_cg, index_node.object)
+            strings.write_string(&ctx_cg.output_buf, ")->data[")
             codegen_node(ctx_cg, index_node.index)
             strings.write_string(&ctx_cg.output_buf, "]")
         } else {
@@ -1264,42 +1492,114 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         // Check what we're freeing
         ptr_type := del_node.pointer.inferred_type.? or_else Primitive_Type.Void
         
-        // Call allocator.free(allocator.data, ptr)
-        #partial switch t in ptr_type {
-        case Named_Type:
-            if t.name == "string" {
-                // Free string's internal data
+        // Special case: Vec types don't need allocator parameter
+        is_vec := false
+        if ptr_type_val, is_ptr := ptr_type.(Pointer_Type); is_ptr {
+            if _, is_vec_type := ptr_type_val.pointee^.(Vec_Type); is_vec_type {
+                is_vec = true
+            }
+        }
+        
+        if is_vec {
+            // Vec deletion: free data, then free vec itself using embedded allocator
+            // (*v).allocator.free((*v).allocator.data, (*v).data);
+            // (*v).allocator.free((*v).allocator.data, v);
+            strings.write_string(&ctx_cg.output_buf, "(*")
+            codegen_node(ctx_cg, del_node.pointer)
+            strings.write_string(&ctx_cg.output_buf, ").allocator.free((*")
+            codegen_node(ctx_cg, del_node.pointer)
+            strings.write_string(&ctx_cg.output_buf, ").allocator.data, (*")
+            codegen_node(ctx_cg, del_node.pointer)
+            strings.write_string(&ctx_cg.output_buf, ").data);\n")
+            
+            codegen_indent(ctx_cg, ctx_cg.indent_level)
+            strings.write_string(&ctx_cg.output_buf, "(*")
+            codegen_node(ctx_cg, del_node.pointer)
+            strings.write_string(&ctx_cg.output_buf, ").allocator.free((*")
+            codegen_node(ctx_cg, del_node.pointer)
+            strings.write_string(&ctx_cg.output_buf, ").allocator.data, ")
+            codegen_node(ctx_cg, del_node.pointer)
+            strings.write_string(&ctx_cg.output_buf, ");\n")
+        } else {
+            // Regular deletion with allocator parameter
+            #partial switch t in ptr_type {
+            case Named_Type:
+                if t.name == "string" {
+                    // Free string's internal data
+                    codegen_node(ctx_cg, del_node.allocator)
+                    strings.write_string(&ctx_cg.output_buf, ".free(")
+                    codegen_node(ctx_cg, del_node.allocator)
+                    strings.write_string(&ctx_cg.output_buf, ".data, (void*)")
+                    codegen_node(ctx_cg, del_node.pointer)
+                    strings.write_string(&ctx_cg.output_buf, ".data);\n")
+                }
+            case Pointer_Type:
+                // Direct pointer free
                 codegen_node(ctx_cg, del_node.allocator)
                 strings.write_string(&ctx_cg.output_buf, ".free(")
                 codegen_node(ctx_cg, del_node.allocator)
-                strings.write_string(&ctx_cg.output_buf, ".data, (void*)")
+                strings.write_string(&ctx_cg.output_buf, ".data, ")
                 codegen_node(ctx_cg, del_node.pointer)
-                strings.write_string(&ctx_cg.output_buf, ".data);\n")
+                strings.write_string(&ctx_cg.output_buf, ");\n")
+            case Array_Type:
+                // Free array pointer
+                codegen_node(ctx_cg, del_node.allocator)
+                strings.write_string(&ctx_cg.output_buf, ".free(")
+                codegen_node(ctx_cg, del_node.allocator)
+                strings.write_string(&ctx_cg.output_buf, ".data, ")
+                codegen_node(ctx_cg, del_node.pointer)
+                strings.write_string(&ctx_cg.output_buf, ");\n")
+            case:
+                // Fallback - direct pointer free
+                codegen_node(ctx_cg, del_node.allocator)
+                strings.write_string(&ctx_cg.output_buf, ".free(")
+                codegen_node(ctx_cg, del_node.allocator)
+                strings.write_string(&ctx_cg.output_buf, ".data, ")
+                codegen_node(ctx_cg, del_node.pointer)
+                strings.write_string(&ctx_cg.output_buf, ");\n")
             }
-        case Pointer_Type:
-            // Direct pointer free
-            codegen_node(ctx_cg, del_node.allocator)
-            strings.write_string(&ctx_cg.output_buf, ".free(")
-            codegen_node(ctx_cg, del_node.allocator)
-            strings.write_string(&ctx_cg.output_buf, ".data, ")
-            codegen_node(ctx_cg, del_node.pointer)
-            strings.write_string(&ctx_cg.output_buf, ");\n")
-        case Array_Type:
-            // Free array pointer
-            codegen_node(ctx_cg, del_node.allocator)
-            strings.write_string(&ctx_cg.output_buf, ".free(")
-            codegen_node(ctx_cg, del_node.allocator)
-            strings.write_string(&ctx_cg.output_buf, ".data, ")
-            codegen_node(ctx_cg, del_node.pointer)
-            strings.write_string(&ctx_cg.output_buf, ");\n")
-        case:
-            // Fallback - direct pointer free
-            codegen_node(ctx_cg, del_node.allocator)
-            strings.write_string(&ctx_cg.output_buf, ".free(")
-            codegen_node(ctx_cg, del_node.allocator)
-            strings.write_string(&ctx_cg.output_buf, ".data, ")
-            codegen_node(ctx_cg, del_node.pointer)
-            strings.write_string(&ctx_cg.output_buf, ");\n")
+        }
+
+    case .New:
+        new_node := node.payload.(Node_New)
+        result_type := node.inferred_type.? or_else Primitive_Type.Void
+        
+        // Check if this is a vec type
+        is_vec := false
+        vec_type: Vec_Type
+        if ptr_type, is_ptr := result_type.(Pointer_Type); is_ptr {
+            if vec_t, is_vec_type := ptr_type.pointee^.(Vec_Type); is_vec_type {
+                is_vec = true
+                vec_type = vec_t
+            }
+        }
+        
+        if is_vec {
+            // Vec allocation: allocate + initialize fields individually
+            strings.write_string(&ctx_cg.output_buf, "({")
+            codegen_type(ctx_cg, result_type)
+            strings.write_string(&ctx_cg.output_buf, " _v = (")
+            codegen_type(ctx_cg, result_type)
+            strings.write_string(&ctx_cg.output_buf, ")")
+            codegen_node(ctx_cg, new_node.allocator)
+            strings.write_string(&ctx_cg.output_buf, ".alloc(")
+            codegen_node(ctx_cg, new_node.allocator)
+            strings.write_string(&ctx_cg.output_buf, ".data, sizeof(")
+            codegen_type(ctx_cg, new_node.type)
+            strings.write_string(&ctx_cg.output_buf, ")); _v->data = NULL; _v->len = 0; _v->cap = 0; _v->allocator = ")
+            codegen_node(ctx_cg, new_node.allocator)
+            strings.write_string(&ctx_cg.output_buf, "; _v; })")
+        } else {
+            // Regular allocation: just call allocator.alloc and cast
+            strings.write_string(&ctx_cg.output_buf, "((")
+            codegen_type(ctx_cg, result_type)
+            strings.write_string(&ctx_cg.output_buf, ")")
+            codegen_node(ctx_cg, new_node.allocator)
+            strings.write_string(&ctx_cg.output_buf, ".alloc(")
+            codegen_node(ctx_cg, new_node.allocator)
+            strings.write_string(&ctx_cg.output_buf, ".data, sizeof(")
+            codegen_type(ctx_cg, new_node.type)
+            strings.write_string(&ctx_cg.output_buf, ")))")
         }
         
     case: fmt.panicf("Internal error: cannot generate code for node %v", node.node_kind)
@@ -1344,6 +1644,10 @@ codegen_type :: proc(ctx_cg: ^Codegen_Context, type: Type_Info, name: string = "
         // Arrays are wrapped in structs for return values
         wrapper_name := get_array_wrapper_name(t.element_type, t.size)
         strings.write_string(&ctx_cg.output_buf, wrapper_name)
+    case Vec_Type:
+        // Vecs are structs with data, len, cap, allocator
+        wrapper_name := get_vec_wrapper_name(t.element_type)
+        strings.write_string(&ctx_cg.output_buf, wrapper_name)
     case Pointer_Type:
         codegen_type(ctx_cg, t.pointee^)
         strings.write_string(&ctx_cg.output_buf, "*")
@@ -1361,7 +1665,7 @@ codegen_type :: proc(ctx_cg: ^Codegen_Context, type: Type_Info, name: string = "
         if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, t, ctx_cg.current_pkg_name); ok {
             // If resolved to a non-struct, non-named type, it's a pure alias
             #partial switch r in resolved {
-            case Function_Type, Primitive_Type, Pointer_Type, Array_Type:
+            case Function_Type, Primitive_Type, Pointer_Type, Array_Type, Vec_Type:
                 // This is a type alias to a concrete type, generate the underlying type
                 codegen_type(ctx_cg, resolved, name)
                 return
