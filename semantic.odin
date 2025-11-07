@@ -1023,12 +1023,20 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
             add_error(ctx, index_node.index.span, "Index must be integer")
         }
         
+        // Resolve named types first
+        resolved_object_type := object_type
+        if named_type, is_named := object_type.(Named_Type); is_named {
+            if resolved, ok := resolve_named_type(ctx, named_type); ok {
+                resolved_object_type = resolved
+            }
+        }
+        
         element_type: Type_Info
-        if arr_type, is_arr := object_type.(Array_Type); is_arr {
+        if arr_type, is_arr := resolved_object_type.(Array_Type); is_arr {
             element_type = arr_type.element_type^
-        } else if vec_type, is_vec := object_type.(Vec_Type); is_vec {
+        } else if vec_type, is_vec := resolved_object_type.(Vec_Type); is_vec {
             element_type = vec_type.element_type^
-        } else if ptr_type, is_ptr := object_type.(Pointer_Type); is_ptr {
+        } else if ptr_type, is_ptr := resolved_object_type.(Pointer_Type); is_ptr {
             // Check if it's a pointer to vec - if so, return vec element type
             if vec_t, is_vec := ptr_type.pointee^.(Vec_Type); is_vec {
                 element_type = vec_t.element_type^
@@ -1376,7 +1384,15 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
         
         if inferred_elem_type == nil && expected_type != nil {
             // Try to infer from expected type
-            if exp_arr, is_arr := expected_type.(Array_Type); is_arr {
+            // Resolve named types first
+            resolved_expected := expected_type
+            if named_type, is_named := expected_type.(Named_Type); is_named {
+                if resolved, ok := resolve_named_type(ctx, named_type); ok {
+                    resolved_expected = resolved
+                }
+            }
+            
+            if exp_arr, is_arr := resolved_expected.(Array_Type); is_arr {
                 inferred_elem_type = exp_arr.element_type^
                 inferred_size = exp_arr.size
             } else {

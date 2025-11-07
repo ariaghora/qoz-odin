@@ -1164,11 +1164,19 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         // Check if we're indexing an array, vec, or pointer-to-vec
         obj_type := index_node.object.inferred_type.? or_else Primitive_Type.Void
         
+        // Resolve named types first
+        resolved_obj_type := obj_type
+        if named_type, is_named := obj_type.(Named_Type); is_named {
+            if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named_type, ctx_cg.current_pkg_name); ok {
+                resolved_obj_type = resolved
+            }
+        }
+        
         is_array := false
         is_vec_value := false
         is_vec_ptr := false
         
-        #partial switch t in obj_type {
+        #partial switch t in resolved_obj_type {
         case Array_Type:
             is_array = true
         case Vec_Type:
