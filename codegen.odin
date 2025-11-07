@@ -196,6 +196,40 @@ codegen_array_binop :: proc(ctx_cg: ^Codegen_Context, binop: Node_Bin_Op, arr_ty
     strings.write_string(&ctx_cg.output_buf, "}}")
 }
 
+// Generate element-wise operation for array-scalar or scalar-array
+codegen_array_scalar_binop :: proc(ctx_cg: ^Codegen_Context, binop: Node_Bin_Op, arr_type: Array_Type, scalar_first: bool) {
+    // Generate: (ArrayType){{arr.data[0] op scalar, arr.data[1] op scalar, ...}}
+    // or:       (ArrayType){{scalar op arr.data[0], scalar op arr.data[1], ...}}
+    
+    strings.write_string(&ctx_cg.output_buf, "(")
+    codegen_type(ctx_cg, arr_type)
+    strings.write_string(&ctx_cg.output_buf, "){{")
+    
+    for i in 0..<arr_type.size {
+        if i > 0 {
+            strings.write_string(&ctx_cg.output_buf, ", ")
+        }
+        strings.write_string(&ctx_cg.output_buf, "(")
+        
+        if scalar_first {
+            // scalar op array[i]
+            codegen_node(ctx_cg, binop.left)
+            strings.write_string(&ctx_cg.output_buf, binop.op.source)
+            codegen_node(ctx_cg, binop.right)
+            fmt.sbprintf(&ctx_cg.output_buf, ".data[%d])", i)
+        } else {
+            // array[i] op scalar
+            codegen_node(ctx_cg, binop.left)
+            fmt.sbprintf(&ctx_cg.output_buf, ".data[%d]", i)
+            strings.write_string(&ctx_cg.output_buf, binop.op.source)
+            codegen_node(ctx_cg, binop.right)
+            strings.write_string(&ctx_cg.output_buf, ")")
+        }
+    }
+    
+    strings.write_string(&ctx_cg.output_buf, "}}")
+}
+
 // Generate element-wise comparison for arrays
 codegen_array_comparison :: proc(ctx_cg: ^Codegen_Context, binop: Node_Bin_Op, arr_type: Array_Type) {
     // Generate: (left.data[0] == right.data[0] && left.data[1] == right.data[1] && ...)
@@ -799,16 +833,60 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         if op_kind, has_op := assign.compound_op.?; has_op {
             codegen_node(ctx_cg, assign.target)
             strings.write_string(&ctx_cg.output_buf, " = ")
-            codegen_node(ctx_cg, assign.target)
             
-            #partial switch op_kind {
-            case .Plus:  strings.write_string(&ctx_cg.output_buf, "+")
-            case .Minus: strings.write_string(&ctx_cg.output_buf, "-")
-            case .Star:  strings.write_string(&ctx_cg.output_buf, "*")
-            case .Slash: strings.write_string(&ctx_cg.output_buf, "/")
+            // Create a synthetic binop for array operations
+            // Check if target is an array type
+            target_type := assign.target.inferred_type.? or_else Primitive_Type.Void
+            if named_type, is_named := target_type.(Named_Type); is_named {
+                if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named_type, ctx_cg.current_pkg_name); ok {
+                    target_type = resolved
+                }
             }
             
-            codegen_node(ctx_cg, assign.value)
+            if arr_type, is_arr := target_type.(Array_Type); is_arr {
+                // Generate array operation using our helper functions
+                op_source := ""
+                #partial switch op_kind {
+                case .Plus:  op_source = "+"
+                case .Minus: op_source = "-"
+                case .Star:  op_source = "*"
+                case .Slash: op_source = "/"
+                }
+                
+                synthetic_binop := Node_Bin_Op{
+                    left = assign.target,
+                    right = assign.value,
+                    op = Token{kind = op_kind, source = op_source, line = 0, column = 0},
+                }
+                
+                // Check if it's array-array or array-scalar
+                value_type := assign.value.inferred_type.? or_else Primitive_Type.Void
+                if named_type, is_named := value_type.(Named_Type); is_named {
+                    if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named_type, ctx_cg.current_pkg_name); ok {
+                        value_type = resolved
+                    }
+                }
+                
+                _, value_is_arr := value_type.(Array_Type)
+                
+                if value_is_arr {
+                    codegen_array_binop(ctx_cg, synthetic_binop, arr_type)
+                } else {
+                    codegen_array_scalar_binop(ctx_cg, synthetic_binop, arr_type, false)
+                }
+            } else {
+                // Regular scalar compound assignment
+                codegen_node(ctx_cg, assign.target)
+                
+                #partial switch op_kind {
+                case .Plus:  strings.write_string(&ctx_cg.output_buf, "+")
+                case .Minus: strings.write_string(&ctx_cg.output_buf, "-")
+                case .Star:  strings.write_string(&ctx_cg.output_buf, "*")
+                case .Slash: strings.write_string(&ctx_cg.output_buf, "/")
+                }
+                
+                codegen_node(ctx_cg, assign.value)
+            }
         } else {
             // Regular assignment
             codegen_node(ctx_cg, assign.target)
@@ -835,8 +913,43 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         }
         
         if arr_type, is_arr := resolved_result_type.(Array_Type); is_arr {
-            // Array operation - generate element-wise code
-            codegen_array_binop(ctx_cg, binop, arr_type)
+            // Array operation - could be array-array or array-scalar
+            // Check if either operand is a scalar
+            left_type := binop.left.inferred_type.? or_else Primitive_Type.Void
+            right_type := binop.right.inferred_type.? or_else Primitive_Type.Void
+            
+            // Resolve named types
+            if named_type, is_named := left_type.(Named_Type); is_named {
+                if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named_type, ctx_cg.current_pkg_name); ok {
+                    left_type = resolved
+                }
+            }
+            if named_type, is_named := right_type.(Named_Type); is_named {
+                if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named_type, ctx_cg.current_pkg_name); ok {
+                    right_type = resolved
+                }
+            }
+            
+            _, left_is_arr := left_type.(Array_Type)
+            _, right_is_arr := right_type.(Array_Type)
+            
+            if left_is_arr && right_is_arr {
+                // Array-array operation
+                codegen_array_binop(ctx_cg, binop, arr_type)
+            } else if left_is_arr && !right_is_arr {
+                // Array-scalar operation
+                codegen_array_scalar_binop(ctx_cg, binop, arr_type, false)
+            } else if !left_is_arr && right_is_arr {
+                // Scalar-array operation
+                codegen_array_scalar_binop(ctx_cg, binop, arr_type, true)
+            } else {
+                // Shouldn't happen - fallback to regular operation
+                strings.write_string(&ctx_cg.output_buf, "(")
+                codegen_node(ctx_cg, binop.left)
+                strings.write_string(&ctx_cg.output_buf, binop.op.source)
+                codegen_node(ctx_cg, binop.right)
+                strings.write_string(&ctx_cg.output_buf, ")")
+            }
         } else if binop.op.kind == .Eq_Eq || binop.op.kind == .Not_Eq {
             // Check if operands are arrays (comparison returns bool, not array)
             left_type := binop.left.inferred_type.? or_else Primitive_Type.Void

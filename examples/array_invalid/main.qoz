@@ -1,7 +1,0 @@
-main := func() {
-    // This should error: can't multiply bool arrays
-    a := arr<bool, 3>{0, 1, 0}  // bool array
-    b := arr<bool, 3>{1, 0, 1}
-    c := a * b  // Error: Cannot perform arithmetic on array of Bool
-}
-

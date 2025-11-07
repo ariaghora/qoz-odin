@@ -110,6 +110,22 @@ is_cstring_type :: proc(t: Type_Info) -> bool {
     return false
 }
 
+is_numeric_type :: proc(t: Type_Info) -> bool {
+    if _, is_untyped_int := t.(Untyped_Int); is_untyped_int {
+        return true
+    }
+    if _, is_untyped_float := t.(Untyped_Float); is_untyped_float {
+        return true
+    }
+    if prim, is_prim := t.(Primitive_Type); is_prim {
+        #partial switch prim {
+        case .I8, .U8, .I32, .I64, .F32, .F64:
+            return true
+        }
+    }
+    return false
+}
+
 is_typed_int :: proc(t: Type_Info) -> bool {
     p, ok := t.(Primitive_Type)
     if !ok do return false
@@ -1936,6 +1952,7 @@ semantic_binop_type_resolve :: proc(t1, t2: Type_Info, op: Token, span: Span, ct
         }
     }
     
+    // Check for array-array operations
     if left_arr, is_left_arr := resolved_left.(Array_Type); is_left_arr {
         if right_arr, is_right_arr := resolved_right.(Array_Type); is_right_arr {
             // Both are arrays - check they're the same type
@@ -1972,6 +1989,48 @@ semantic_binop_type_resolve :: proc(t1, t2: Type_Info, op: Token, span: Span, ct
             case:
                 add_error(ctx, span, "Operator %v not supported for arrays", op.kind)
                 return Primitive_Type.Void
+            }
+        }
+        
+        // Array op Scalar
+        #partial switch op.kind {
+        case .Plus, .Minus, .Star, .Slash:
+            // Check if right operand is a numeric scalar
+            if is_numeric_type(resolved_right) {
+                // Check array element type is numeric
+                elem_type := left_arr.element_type^
+                if prim, is_prim := elem_type.(Primitive_Type); is_prim {
+                    if prim == .Void || prim == .Bool || prim == .Cstring {
+                        add_error(ctx, span, "Cannot perform arithmetic on array of %v", prim)
+                        return Primitive_Type.Void
+                    }
+                } else {
+                    add_error(ctx, span, "Cannot perform arithmetic on array of non-numeric type %v", elem_type)
+                    return Primitive_Type.Void
+                }
+                return left_arr
+            }
+        }
+    }
+    
+    // Scalar op Array
+    if right_arr, is_right_arr := resolved_right.(Array_Type); is_right_arr {
+        #partial switch op.kind {
+        case .Plus, .Minus, .Star, .Slash:  // All arithmetic operations
+            // Check if left operand is a numeric scalar
+            if is_numeric_type(resolved_left) {
+                // Check array element type is numeric
+                elem_type := right_arr.element_type^
+                if prim, is_prim := elem_type.(Primitive_Type); is_prim {
+                    if prim == .Void || prim == .Bool || prim == .Cstring {
+                        add_error(ctx, span, "Cannot perform arithmetic on array of %v", prim)
+                        return Primitive_Type.Void
+                    }
+                } else {
+                    add_error(ctx, span, "Cannot perform arithmetic on array of non-numeric type %v", elem_type)
+                    return Primitive_Type.Void
+                }
+                return right_arr
             }
         }
     }

@@ -26,5 +26,21 @@ main := func() {
     if e == b {
         println("e == b: true")
     }
+    
+    // Test scalar operations (broadcasting)
+    println("\nScalar operations (broadcasting):")
+    scaled := a * 2.0        // {2, 8, 18}
+    offset := b + 10.0       // {12, 14, 18}
+    halved := a / 2.0        // {0.5, 2, 4.5}
+    
+    // Non-commutative operations work both ways!
+    backwards := 100.0 - a   // {99, 96, 91} - subtract each from 100
+    inverted := 12.0 / a     // {12, 3, 1.333...} - divide 12 by each
+    
+    println("a * 2.0 =", scaled[0], scaled[1], scaled[2])
+    println("b + 10.0 =", offset[0], offset[1], offset[2])
+    println("a / 2.0 =", halved[0], halved[1], halved[2])
+    println("100.0 - a =", backwards[0], backwards[1], backwards[2])
+    println("12.0 / a =", inverted[0], inverted[1], inverted[2])
 }
 

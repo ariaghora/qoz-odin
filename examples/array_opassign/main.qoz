@@ -1,0 +1,27 @@
+main := func() {
+    a := arr<f64, 3>{1.0, 2.0, 3.0}
+    b := arr<f64, 3>{10.0, 20.0, 30.0}
+    
+    println("Initial a =", a[0], a[1], a[2])
+    
+    // Array-array op-assign
+    a += b
+    println("After a += b:", a[0], a[1], a[2])
+    
+    a -= b
+    println("After a -= b:", a[0], a[1], a[2])
+    
+    a *= b
+    println("After a *= b:", a[0], a[1], a[2])
+    
+    // Array-scalar op-assign
+    a += 5.0
+    println("After a += 5.0:", a[0], a[1], a[2])
+    
+    a *= 2.0
+    println("After a *= 2.0:", a[0], a[1], a[2])
+    
+    a /= 2.0
+    println("After a /= 2.0:", a[0], a[1], a[2])
+}
+
