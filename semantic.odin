@@ -1183,6 +1183,7 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
             // Local variable not in pass 1, need to define it first
             // Determine type syntactically without full validation
             declared_type: Type_Info
+            value_type_opt: Maybe(Type_Info)
             
             #partial switch var_def.content.node_kind {
             case .Struct_Literal:
@@ -1191,29 +1192,30 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
                     type_name := normalize_struct_literal_type_name(ctx, struct_lit.type_name, &struct_lit)
                     var_def.content.payload = struct_lit
                     declared_type = Named_Type{name = type_name}
+                    value_type_opt = check_node(ctx, var_def.content, declared_type)
                 } else if explicit, has_explicit := var_def.explicit_type.?; has_explicit {
                     declared_type = explicit
+                    value_type_opt = check_node(ctx, var_def.content, declared_type)
                 } else {
-                    // No type provided, can't infer
-                    declared_type = check_node(ctx, var_def.content)
-                    
+                    inferred_type := check_node(ctx, var_def.content)
                     // Default untyped strings to string type
-                    if _, is_untyped_str := declared_type.(Untyped_String); is_untyped_str {
-                        declared_type = Named_Type{name = "string"}
+                    if _, is_untyped_str := inferred_type.(Untyped_String); is_untyped_str {
+                        inferred_type = Named_Type{name = "string"}
                     }
+                    declared_type = inferred_type
+                    value_type_opt = inferred_type
                 }
-            
             case:
                 if explicit, has_explicit := var_def.explicit_type.?; has_explicit {
                     declared_type = explicit
+                    value_type_opt = check_node(ctx, var_def.content, declared_type)
                 } else {
-                    // Infer type - check once and reuse
-                    declared_type = check_node(ctx, var_def.content)
-                    
-                    // Default untyped strings to string type
-                    if _, is_untyped_str := declared_type.(Untyped_String); is_untyped_str {
-                        declared_type = Named_Type{name = "string"}
+                    inferred_type := check_node(ctx, var_def.content)
+                    if _, is_untyped_str := inferred_type.(Untyped_String); is_untyped_str {
+                        inferred_type = Named_Type{name = "string"}
                     }
+                    declared_type = inferred_type
+                    value_type_opt = inferred_type
                 }
             }
             
@@ -1227,12 +1229,9 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
             // Define symbol BEFORE validating initializer
             semantic_define_symbol(ctx, var_def.name, declared_type, node.span)
             
-            // Validate initializer (only if not already checked during inference)
-            if _, has_explicit := var_def.explicit_type.?; has_explicit {
-                value_type := check_node(ctx, var_def.content, declared_type)
+            if value_type, ok := value_type_opt.?; ok {
                 if !types_compatible(declared_type, value_type, ctx) {
-                    add_error(ctx, node.span, "Type mismatch: declared as %v but initialized with %v", 
-                        declared_type, value_type)
+                    add_error(ctx, node.span, "Type mismatch: declared as %v but initialized with %v", declared_type, value_type)
                 }
             }
             

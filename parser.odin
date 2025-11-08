@@ -1107,33 +1107,45 @@ parse_iden_expression :: proc(ps: ^Parsing_State, parent: ^Node, allocator := co
 parse_struct_literal :: proc(ps: ^Parsing_State, type_name: string, parent: ^Node, allocator := context.allocator) -> (res:^Node, err:Maybe(Parse_Error)) {
     span_start := ps.idx - 1
     parser_consume(ps, .Left_Brace) or_return
-    
+
     field_inits := make([dynamic]Struct_Field_Init, allocator)
-    
+
     for ps.current_token.kind != .Right_Brace {
         if ps.current_token.kind == .EOF {
             return nil, make_parse_error(ps, "Unexpected EOF in struct literal")
         }
-        
+
         if ps.current_token.kind != .Iden do return nil, make_parse_error(ps, "Expected field name")
-        
+
         field_name := ps.current_token.source
         parser_advance(ps)
         parser_consume(ps, .Colon) or_return
-        
-        // Parse field value
-        field_value := parse_expression(ps, parent, allocator) or_return
+
+        // Parse field value, allowing typed literals like Vec3{...}
+        field_value := parse_expression_or_typed_literal(ps, parent, allocator) or_return
+
+        // Fallback: if braces remain, interpret the previous expression as a type for a compound literal
+        if ps.current_token.kind == .Left_Brace {
+            type_name := get_type_name_from_node(field_value, allocator)
+            if type_name == "" {
+                return nil, make_parse_error(ps, "Unexpected '{' in struct field value")
+            }
+            typed_literal, typed_err := parse_compound_literal_with_type(ps, parent, allocator, Named_Type{name = type_name}, field_value.span.start)
+            if typed_err != nil do return nil, typed_err
+            field_value = typed_literal
+        }
+
         append(&field_inits, Struct_Field_Init{name = field_name, value = field_value})
-        
+
         if ps.current_token.kind == .Comma {
             parser_advance(ps)
         } else if ps.current_token.kind != .Right_Brace {
-            return nil, make_parse_error(ps, "Expected ',' or '}' in struct literal")
+            return nil, make_parse_error(ps, fmt.tprintf("Expected ',' or '}' in struct literal, got %v", ps.current_token.kind))
         }
     }
-    
+
     parser_consume(ps, .Right_Brace) or_return
-    
+
     struct_node := new(Node, allocator)
     struct_node.node_kind = .Struct_Literal
     struct_node.parent = parent
@@ -1142,7 +1154,7 @@ parse_struct_literal :: proc(ps: ^Parsing_State, type_name: string, parent: ^Nod
         type_name = type_name,
         field_inits = field_inits,
     }
-    
+
     return struct_node, nil
 }
 
@@ -1235,8 +1247,30 @@ parse_typed_array_literal :: proc(ps: ^Parsing_State, type_name: string, parent:
     return arr_node, nil
 }
 
+parse_expression_or_typed_literal :: proc(ps: ^Parsing_State, parent: ^Node, allocator: mem.Allocator) -> (res:^Node, err:Maybe(Parse_Error)) {
+    if literal, ok := try_parse_typed_literal_initializer(ps, parent, allocator); ok {
+        return literal, nil
+    }
+    return parse_expression(ps, parent, allocator)
+}
+
 parse_compound_literal_with_type :: proc(ps: ^Parsing_State, parent: ^Node, allocator: mem.Allocator, type_info: Type_Info, span_start: int) -> (res:^Node, err:Maybe(Parse_Error)) {
+    // Special-case struct literals so ':'-style fields are supported
+    if type_info_named, ok := type_info.(Named_Type); ok {
+        if ps.current_token.kind == .Left_Brace {
+            saved := ps^
+            parser_advance(&saved) // consume '{' in saved state
+            if saved.current_token.kind == .Iden &&
+                saved.idx + 1 < len(saved.tokens) &&
+                saved.tokens[saved.idx + 1].kind == .Colon {
+                // Struct literal: delegate to struct literal parser using the real parser state
+                return parse_struct_literal(ps, type_info_named.name, parent, allocator)
+            }
+        }
+    }
+
     parser_consume(ps, .Left_Brace) or_return
+
     elements := make([dynamic]^Node, allocator)
     for ps.current_token.kind != .Right_Brace {
         elem := parse_expression(ps, parent, allocator) or_return

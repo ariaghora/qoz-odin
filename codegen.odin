@@ -1456,8 +1456,35 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
 
     case .Literal_Arr:
         arr_lit := node.payload.(Node_Array_Literal)
-        arr_type := node.inferred_type.?.(Array_Type)
-        wrapper_name := get_array_wrapper_name(arr_type.element_type, arr_type.size)
+        arr_type_info_opt := node.inferred_type
+        if arr_type_info_opt == nil {
+            // Fall back to explicit type from the literal payload if inference was deferred
+            if explicit, ok := arr_lit.explicit_type.?; ok {
+                arr_type_info_opt = explicit
+            } else {
+                panic("Array literal missing type information")
+            }
+        }
+
+        arr_type_info := arr_type_info_opt.?
+
+        arr_type: Maybe(Array_Type)
+        if as_array, ok := arr_type_info.(Array_Type); ok {
+            arr_type = as_array
+        } else if named, ok := arr_type_info.(Named_Type); ok {
+            if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named, ctx_cg.current_pkg_name); ok {
+                if resolved_arr, ok := resolved.(Array_Type); ok {
+                    arr_type = resolved_arr
+                }
+            }
+        }
+
+        if arr_type == nil {
+            panic("Array literal type must resolve to Array_Type")
+        }
+
+        resolved_arr := arr_type.?
+        wrapper_name := get_array_wrapper_name(resolved_arr.element_type, resolved_arr.size)
         
         // Generate: (WrapperStruct){{elem1, elem2, ...}}
         strings.write_string(&ctx_cg.output_buf, "(")
