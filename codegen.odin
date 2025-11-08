@@ -378,7 +378,7 @@ codegen_builtin_function :: proc(ctx_cg: ^Codegen_Context, name: string, args: [
         if args[0].node_kind != .Literal_String do return false
         
         fmt_lit := args[0].payload.(Node_Literal_String)
-        fmt_str := fmt_lit.content.source
+        fmt_str := strings.trim(fmt_lit.content.source, "\"")
         
         // Last arg is allocator
         alloc_arg := args[len(args) - 1]
@@ -1138,28 +1138,7 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
             codegen_node(ctx_cg, fn_call.callee)
             strings.write_string(&ctx_cg.output_buf, "(")
             for arg, i in fn_call.args {
-                // Check if we need to convert string to cstring
-                arg_type := arg.inferred_type.? or_else Primitive_Type.Void
-                needs_conversion := false
-                
-                if is_fn && i < len(fn_type.params) {
-                    param_type := fn_type.params[i]
-                    // Check if arg is string and param expects cstring
-                    // (Allows passing string variables to cstring parameters for FFI convenience)
-                    if is_string_type(arg_type) && is_cstring_type(param_type) {
-                        needs_conversion = true
-                    }
-                }
-                
-                if needs_conversion {
-                    // Emit .data to get underlying C string
-                    strings.write_string(&ctx_cg.output_buf, "(")
-                    codegen_node(ctx_cg, arg)
-                    strings.write_string(&ctx_cg.output_buf, ").data")
-                } else {
-                    codegen_node(ctx_cg, arg)
-                }
-                
+                codegen_node(ctx_cg, arg)
                 if i < len(fn_call.args)-1 do strings.write_string(&ctx_cg.output_buf, ", ")
             }
             
@@ -1525,10 +1504,7 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
     case .Literal_String:
         lit := node.payload.(Node_Literal_String)
     
-        str_content := lit.content.source
-        if strings.has_prefix(str_content, "\"") {
-            str_content = str_content[1:len(str_content)-1]
-        }
+        str_content := strings.trim(lit.content.source, "\"")
         
         // Check inferred type - if cstring, emit C string literal, otherwise Qoz_String
         inferred_type := node.inferred_type.? or_else Untyped_String{}

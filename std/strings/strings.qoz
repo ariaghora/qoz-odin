@@ -15,10 +15,10 @@ StringBuilder := struct {
     buffer: *vec<i8>,
 }
 
-builder_init := func(allocator: mem.Allocator): *StringBuilder {
-    sb := new(StringBuilder, allocator)
-    sb.buffer = new(vec<i8>, allocator)
-    return sb
+builder_init := func(allocator: mem.Allocator): StringBuilder {
+    return {
+        buffer: new(vec<i8>, allocator),
+    }
 }
 
 builder_append_string := func(sb: *StringBuilder, s: string) {
@@ -45,7 +45,7 @@ builder_to_string := func(sb: *StringBuilder, allocator: mem.Allocator): string 
     return string{data: new_data, len: buf_len}
 }
 
-builder_destroy := func(sb: *StringBuilder, allocator: mem.Allocator) {
+builder_destroy := func(sb: *StringBuilder) {
     del(sb.buffer)
-    del(sb, allocator)
+    sb.buffer = nil
 }

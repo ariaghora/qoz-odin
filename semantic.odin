@@ -2038,6 +2038,7 @@ types_compatible :: proc(target: Type_Info, source: Type_Info, ctx: ^Semantic_Co
     resolved_source := source
     
     if ctx != nil {
+        // Resolve top-level named types
         if named_target, is_named := target.(Named_Type); is_named {
             if resolved, ok := resolve_named_type(ctx, named_target); ok {
                 resolved_target = resolved
@@ -2046,6 +2047,22 @@ types_compatible :: proc(target: Type_Info, source: Type_Info, ctx: ^Semantic_Co
         if named_source, is_named := source.(Named_Type); is_named {
             if resolved, ok := resolve_named_type(ctx, named_source); ok {
                 resolved_source = resolved
+            }
+        }
+        
+        // Resolve named types inside pointer types (e.g., *Stream where Stream is an alias)
+        if ptr_target, is_ptr_target := resolved_target.(Pointer_Type); is_ptr_target {
+            if named_pointee, is_named := ptr_target.pointee^.(Named_Type); is_named {
+                if resolved_pointee, ok := resolve_named_type(ctx, named_pointee); ok {
+                    resolved_target = Pointer_Type{pointee = new_clone(resolved_pointee, ctx.allocator)}
+                }
+            }
+        }
+        if ptr_source, is_ptr_source := resolved_source.(Pointer_Type); is_ptr_source {
+            if named_pointee, is_named := ptr_source.pointee^.(Named_Type); is_named {
+                if resolved_pointee, ok := resolve_named_type(ctx, named_pointee); ok {
+                    resolved_source = Pointer_Type{pointee = new_clone(resolved_pointee, ctx.allocator)}
+                }
             }
         }
     }
