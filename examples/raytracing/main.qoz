@@ -30,16 +30,14 @@ vec_length := func(v: Vec3): f64 {
     return math.sqrt(vec_length_squared(v))
 }
 
-write_color := func(sb: *Stream, color: Color, tmp_alloc: mem.Allocator) {
+write_color := func(sb: *Stream, color: Color, alloc: mem.Allocator) {
     cnorm := color * 255.999
     ir := cnorm[0] as i32
     ig := cnorm[1] as i32
     ib := cnorm[2] as i32
 
-    fmt := format("%d %d %d", ir, ig, ib, tmp_alloc)
+    fmt := format("%d %d %d\n", ir, ig, ib, alloc)
     strings.builder_append_string(sb, fmt)
-    tmp_alloc.free(tmp_alloc.data, fmt.data as *void)
-    strings.builder_append_char(sb, 10)
 }
 
 main := func() {
@@ -50,21 +48,15 @@ main := func() {
     defer mem.arena_free(&arena)
     alloc := mem.arena_allocator(&arena)
 
-    tmp_alloc := mem.default_allocator()
-
     sb := strings.builder_init(alloc)
     defer strings.builder_destroy(&sb)
 
-    strings.builder_append_string(&sb, "P3")
-    strings.builder_append_char(&sb, 10)
+    strings.builder_append_string(&sb, "P3\n")
 
-    dim_line := format("%d %d", image_width, image_height, tmp_alloc)
+    dim_line := format("%d %d\n", image_width, image_height, alloc)
     strings.builder_append_string(&sb, dim_line)
-    tmp_alloc.free(tmp_alloc.data, dim_line.data as *void)
-    strings.builder_append_char(&sb, 10)
 
-    strings.builder_append_string(&sb, "255")
-    strings.builder_append_char(&sb, 10)
+    strings.builder_append_string(&sb, "255\n")
 
     for j := 0; j < image_height; j += 1 {
         for i := 0; i < image_width; i += 1 {
@@ -72,7 +64,7 @@ main := func() {
             g := (j as f64) / ((image_height-1) as f64)
             b := 0.0
             color : Color = {r, g, b}
-            write_color(&sb, color, tmp_alloc)
+            write_color(&sb, color, alloc)
         }
     }
 

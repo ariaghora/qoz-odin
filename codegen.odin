@@ -386,22 +386,11 @@ codegen_builtin_function :: proc(ctx_cg: ^Codegen_Context, name: string, args: [
         
         // Generate: ({ int _size = snprintf(NULL, 0, fmt, ...); char* _buf = alloc.alloc(alloc.data, _size + 1); snprintf(_buf, _size + 1, fmt, ...); (Qoz_String){.data = _buf, .len = _size}; })
         
+        decoded_fmt := decode_string_literal_bytes(strings.trim(fmt_lit.content.source, "\""), ctx_cg.ctx_sem.allocator)
+         
         strings.write_string(&ctx_cg.output_buf, "({ int _fmt_size = snprintf(NULL, 0, ")
-        // Emit format string as C string literal
-        strings.write_string(&ctx_cg.output_buf, "\"")
-        // Escape the format string for C
-        for i in 0..<len(fmt_str) {
-            switch fmt_str[i] {
-            case '\n': strings.write_string(&ctx_cg.output_buf, "\\n")
-            case '\t': strings.write_string(&ctx_cg.output_buf, "\\t")
-            case '\r': strings.write_string(&ctx_cg.output_buf, "\\r")
-            case '\\': strings.write_string(&ctx_cg.output_buf, "\\\\")
-            case '"': strings.write_string(&ctx_cg.output_buf, "\\\"")
-            case: strings.write_string(&ctx_cg.output_buf, fmt_str[i:i+1])
-            }
-        }
-        strings.write_string(&ctx_cg.output_buf, "\"")
-        
+        emit_c_string_literal(ctx_cg, decoded_fmt)
+         
         // Emit format arguments
         for arg in format_args {
             strings.write_string(&ctx_cg.output_buf, ", ")
@@ -411,20 +400,9 @@ codegen_builtin_function :: proc(ctx_cg: ^Codegen_Context, name: string, args: [
         codegen_node(ctx_cg, alloc_arg)
         strings.write_string(&ctx_cg.output_buf, ".alloc(")
         codegen_node(ctx_cg, alloc_arg)
-        strings.write_string(&ctx_cg.output_buf, ".data, _fmt_size + 1); snprintf(_fmt_buf, _fmt_size + 1, \"")
-        // Emit format string again
-        for i in 0..<len(fmt_str) {
-            switch fmt_str[i] {
-            case '\n': strings.write_string(&ctx_cg.output_buf, "\\n")
-            case '\t': strings.write_string(&ctx_cg.output_buf, "\\t")
-            case '\r': strings.write_string(&ctx_cg.output_buf, "\\r")
-            case '\\': strings.write_string(&ctx_cg.output_buf, "\\\\")
-            case '"': strings.write_string(&ctx_cg.output_buf, "\\\"")
-            case: strings.write_string(&ctx_cg.output_buf, fmt_str[i:i+1])
-            }
-        }
-        strings.write_string(&ctx_cg.output_buf, "\"")
-        
+        strings.write_string(&ctx_cg.output_buf, ".data, _fmt_size + 1); snprintf(_fmt_buf, _fmt_size + 1, ")
+        emit_c_string_literal(ctx_cg, decoded_fmt)
+         
         // Emit format arguments again
         for arg in format_args {
             strings.write_string(&ctx_cg.output_buf, ", ")
@@ -1504,7 +1482,8 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
     case .Literal_String:
         lit := node.payload.(Node_Literal_String)
     
-        str_content := strings.trim(lit.content.source, "\"")
+        raw_content := strings.trim(lit.content.source, "\"")
+        decoded := decode_string_literal_bytes(raw_content, ctx_cg.ctx_sem.allocator)
         
         // Check inferred type - if cstring, emit C string literal, otherwise Qoz_String
         inferred_type := node.inferred_type.? or_else Untyped_String{}
@@ -1515,16 +1494,13 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         }
         
         if is_cstring {
-            // Emit C string literal directly
-            strings.write_string(&ctx_cg.output_buf, "\"")
-            strings.write_string(&ctx_cg.output_buf, str_content)
-            strings.write_string(&ctx_cg.output_buf, "\"")
+            emit_c_string_literal(ctx_cg, decoded)
         } else {
             // Emit Qoz_String compound literal
-            strings.write_string(&ctx_cg.output_buf, "(Qoz_String){.data = \"")
-            strings.write_string(&ctx_cg.output_buf, str_content)
-            strings.write_string(&ctx_cg.output_buf, "\", .len = ")
-            fmt.sbprintf(&ctx_cg.output_buf, "%d", len(str_content))
+            strings.write_string(&ctx_cg.output_buf, "(Qoz_String){.data = ")
+            emit_c_string_literal(ctx_cg, decoded)
+            strings.write_string(&ctx_cg.output_buf, ", .len = ")
+            fmt.sbprintf(&ctx_cg.output_buf, "%d", len(decoded))
             strings.write_string(&ctx_cg.output_buf, "}")
         }
     
@@ -2101,4 +2077,32 @@ codegen_func_signature :: proc(ctx_cg: ^Codegen_Context, fn_name: string, node: 
         }
     }
     strings.write_string(&ctx_cg.output_buf, ")")
+}
+
+emit_c_string_literal :: proc(ctx_cg: ^Codegen_Context, data: []i8) {
+    strings.write_string(&ctx_cg.output_buf, "\"")
+    for ch in data {
+        ch_u8 := cast(u8)ch
+        switch ch_u8 {
+        case 10:
+            strings.write_string(&ctx_cg.output_buf, "\\n")
+        case 13:
+            strings.write_string(&ctx_cg.output_buf, "\\r")
+        case 9:
+            strings.write_string(&ctx_cg.output_buf, "\\t")
+        case 0:
+            strings.write_string(&ctx_cg.output_buf, "\\0")
+        case '"':
+            strings.write_string(&ctx_cg.output_buf, "\\\"")
+        case '\\':
+            strings.write_string(&ctx_cg.output_buf, "\\\\")
+        case:
+            if ch_u8 < 32 || ch_u8 >= 127 {
+                fmt.sbprintf(&ctx_cg.output_buf, "\\x%02X", ch_u8)
+            } else {
+                fmt.sbprintf(&ctx_cg.output_buf, "%c", ch_u8)
+            }
+        }
+    }
+    strings.write_string(&ctx_cg.output_buf, "\"")
 }

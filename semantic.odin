@@ -1336,7 +1336,8 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
                 }
                 
                 fmt_lit := call.args[0].payload.(Node_Literal_String)
-                fmt_str := fmt_lit.content.source
+                raw_fmt := strings.trim(fmt_lit.content.source, "\"")
+                decoded_fmt := decode_string_literal_bytes(raw_fmt, ctx.allocator)
                 
                 // Last argument must be an allocator
                 alloc_arg := call.args[len(call.args) - 1]
@@ -1352,51 +1353,33 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
                 
                 // Parse format specifiers and extract expected types
                 expected_types := make([dynamic]Type_Info, 0, len(format_args), ctx.allocator)
+                spec_count := 0
                 i := 0
-                for i < len(fmt_str) {
-                    if fmt_str[i] == '%' {
-                        if i + 1 < len(fmt_str) && fmt_str[i + 1] == '%' {
+                for i < len(decoded_fmt) {
+                    ch := decoded_fmt[i]
+                    if ch == '%' {
+                        if i + 1 < len(decoded_fmt) && decoded_fmt[i + 1] == '%' {
                             i += 2  // Skip %%
                             continue
                         }
-                        
-                        // Found a format specifier, parse it
-                        i += 1  // Skip %
-                        
-                        // Skip flags, width, precision
-                        for i < len(fmt_str) && strings.contains("0123456789.-+ #hlLzjt", fmt_str[i:i+1]) {
+                        spec_count += 1
+                        i += 1
+                        // Skip format specifier characters (d, f, s, etc.)
+                        for i < len(decoded_fmt) {
+                            if !format_is_flag_char(decoded_fmt[i]) {
+                                break
+                            }
                             i += 1
                         }
-                        
-                        // Extract type specifier
-                        if i < len(fmt_str) {
-                            spec_char := fmt_str[i]
-                            i += 1
-                            
-                            // Map format specifier to expected type
-                            expected_type: Type_Info
-                            switch spec_char {
-                            case 'd', 'i':  // Signed integer
-                                expected_type = Primitive_Type.I32  // Default to i32, but accept i64 too
-                            case 'u':  // Unsigned integer
-                                expected_type = Primitive_Type.U8  // Default to u8, but accept u32, u64 too
-                            case 'x', 'X', 'o':  // Hexadecimal/octal
-                                expected_type = Primitive_Type.I32  // Accept integer types
-                            case 'f', 'g', 'e', 'E':  // Floating point
-                                expected_type = Primitive_Type.F64  // Default to f64, but accept f32 too
-                            case 's':  // String
-                                expected_type = Named_Type{name = "string"}
-                            case 'p':  // Pointer
-                                void_type: Type_Info = Primitive_Type.Void
-                                expected_type = Pointer_Type{pointee = new_clone(void_type, ctx.allocator)}
-                            case 'c':  // Character
-                                expected_type = Primitive_Type.I8
-                            case:
+                        if i < len(decoded_fmt) {
+                            spec_char := decoded_fmt[i]
+                            i += 1  // Skip the type specifier
+                            expected_type, ok := format_expected_type_for_specifier(spec_char, ctx.allocator)
+                            if !ok {
                                 add_error(ctx, call.args[0].span, "format() unknown format specifier: %%%c", spec_char)
-                                expected_type = Primitive_Type.Void
+                            } else {
+                                _, _ = append(&expected_types, expected_type)
                             }
-                            
-                            append(&expected_types, expected_type)
                         }
                     } else {
                         i += 1
@@ -2422,4 +2405,36 @@ validate_type_exists :: proc(ctx: ^Semantic_Context, t: Type_Info, span: Span) -
     case:
         return true
     }
+}
+
+format_is_flag_char :: proc(ch: i8) -> bool {
+    if ch >= '0' && ch <= '9' {
+        return true
+    }
+    switch ch {
+    case '-', '+', ' ', '#', '.':
+        return true
+    case 'h', 'l', 'L', 'z', 'j', 't':
+        return true
+    }
+    return false
+}
+
+format_expected_type_for_specifier :: proc(ch: i8, allocator: mem.Allocator) -> (Type_Info, bool) {
+    switch ch {
+    case 'd', 'i', 'x', 'X', 'o':
+        return Primitive_Type.I32, true
+    case 'u':
+        return Primitive_Type.U8, true
+    case 'f', 'g', 'e', 'E':
+        return Primitive_Type.F64, true
+    case 's':
+        return Named_Type{name = "string"}, true
+    case 'p':
+        void_type: Type_Info = Primitive_Type.Void
+        return Pointer_Type{pointee = new_clone(void_type, allocator)}, true
+    case 'c':
+        return Primitive_Type.I8, true
+    }
+    return {}, false
 }
