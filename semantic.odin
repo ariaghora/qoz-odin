@@ -1571,6 +1571,26 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
     case .Literal_Arr:
         arr_lit := node.payload.(Node_Array_Literal)
         
+        // Infer type from explicit annotation (e.g., Vec3{...})
+        if explicit_type, has_explicit := arr_lit.explicit_type.?; has_explicit {
+            resolved := explicit_type
+            if named_type, is_named := explicit_type.(Named_Type); is_named {
+                if resolved_named, ok := resolve_named_type(ctx, named_type); ok {
+                    resolved = resolved_named
+                } else {
+                    add_error(ctx, node.span, "Unknown type '%s' for compound literal", named_type.name)
+                    return Primitive_Type.Void
+                }
+            }
+            if arr_type, is_arr := resolved.(Array_Type); is_arr {
+                arr_lit.element_type = arr_type.element_type^
+                arr_lit.size = arr_type.size
+            } else {
+                add_error(ctx, node.span, "Compound literal type %v is not an array", resolved)
+                return Primitive_Type.Void
+            }
+        }
+        
         // Infer type from context if not explicitly provided
         inferred_elem_type := arr_lit.element_type
         inferred_size := arr_lit.size

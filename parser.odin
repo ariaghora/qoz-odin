@@ -111,7 +111,7 @@ Parsing_State :: struct {
 Fn_Param :: struct { name: string, type: Type_Info, span: Span }
 Struct_Field_Init :: struct { name: string, value: ^Node }
 
-Node_Array_Literal  :: struct { element_type: Type_Info, size: int, elements: [dynamic]^Node }
+Node_Array_Literal  :: struct { element_type: Type_Info, size: int, elements: [dynamic]^Node, explicit_type: Maybe(Type_Info) }
 Node_Assign         :: struct { 
     target: ^Node, 
     value: ^Node,
@@ -552,7 +552,19 @@ parse_var_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
         expr.span = Span{start = ps.idx-1, end = ps.idx-1}
         expr.payload = Node_Type_Expr{type_info = alias_type}
     } else {
-        expr = parse_expression(ps, parent, allocator) or_return
+        if explicit, has_explicit := explicit_type.?; has_explicit {
+            if ps.current_token.kind == .Left_Brace {
+                expr = parse_compound_literal_with_type(ps, parent, allocator, explicit, ps.idx) or_return
+            } else {
+                expr = parse_expression(ps, parent, allocator) or_return
+            }
+        } else {
+            if literal, ok := try_parse_typed_literal_initializer(ps, parent, allocator); ok {
+                expr = literal
+            } else {
+                expr = parse_expression(ps, parent, allocator) or_return
+            }
+        }
     }
     
     var_node := new(Node, allocator)
@@ -1014,16 +1026,18 @@ parse_postfix :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
             left = index_node
         
         case .Left_Brace:
-            // Check if it's a struct literal: TypeExpr{ field: value, ... }
+            // Check if it's a struct literal: TypeName{ field: value, ... }
+            // Lookahead to distinguish from regular blocks
             next_idx := ps.idx + 1
             if next_idx < len(ps.tokens) && 
                 ps.tokens[next_idx].kind == .Iden &&
                 next_idx + 1 < len(ps.tokens) &&
                 ps.tokens[next_idx + 1].kind == .Colon {
-                // It's a struct literal with a type expression
-                return parse_struct_literal_with_type_expr(ps, left, parent, allocator)
+                // It's a struct literal
+                type_name := get_type_name_from_node(left, allocator)
+                return parse_struct_literal(ps, type_name, parent, allocator)
             }
-            // Otherwise not a struct literal, return what we have
+            // Otherwise just an identifier, let caller handle the {
             return left, nil
             
         case:
@@ -1190,6 +1204,63 @@ parse_untyped_struct_literal :: proc(ps: ^Parsing_State, parent: ^Node, span_sta
     }
     
     return struct_node, nil
+}
+
+parse_typed_array_literal :: proc(ps: ^Parsing_State, type_name: string, parent: ^Node, span_start: int, allocator := context.allocator) -> (res:^Node, err:Maybe(Parse_Error)) {
+    parser_consume(ps, .Left_Brace) or_return
+    elements := make([dynamic]^Node, allocator)
+    for ps.current_token.kind != .Right_Brace {
+        elem := parse_expression(ps, parent, allocator) or_return
+        append(&elements, elem)
+        if ps.current_token.kind == .Comma {
+            parser_advance(ps)
+        } else if ps.current_token.kind != .Right_Brace {
+            return nil, make_parse_error(ps, "Expected ',' or '}' in compound literal")
+        }
+    }
+
+    parser_consume(ps, .Right_Brace) or_return
+
+    arr_node := new(Node, allocator)
+    arr_node.node_kind = .Literal_Arr
+    arr_node.parent = parent
+    arr_node.span = Span{start = span_start, end = ps.idx - 1}
+    arr_node.payload = Node_Array_Literal{
+        element_type = nil,
+        size = len(elements),
+        elements = elements,
+        explicit_type = Named_Type{name = type_name},
+    }
+
+    return arr_node, nil
+}
+
+parse_compound_literal_with_type :: proc(ps: ^Parsing_State, parent: ^Node, allocator: mem.Allocator, type_info: Type_Info, span_start: int) -> (res:^Node, err:Maybe(Parse_Error)) {
+    parser_consume(ps, .Left_Brace) or_return
+    elements := make([dynamic]^Node, allocator)
+    for ps.current_token.kind != .Right_Brace {
+        elem := parse_expression(ps, parent, allocator) or_return
+        append(&elements, elem)
+        if ps.current_token.kind == .Comma {
+            parser_advance(ps)
+        } else if ps.current_token.kind != .Right_Brace {
+            return nil, make_parse_error(ps, "Expected ',' or '}' in compound literal")
+        }
+    }
+    parser_consume(ps, .Right_Brace) or_return
+
+    arr_node := new(Node, allocator)
+    arr_node.node_kind = .Literal_Arr
+    arr_node.parent = parent
+    arr_node.span = Span{start = span_start, end = ps.idx - 1}
+    arr_node.payload = Node_Array_Literal{
+        element_type = nil,
+        size = len(elements),
+        elements = elements,
+        explicit_type = type_info,
+    }
+
+    return arr_node, nil
 }
 
 parse_literal_number :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
@@ -1437,6 +1508,24 @@ parse_untyped_compound_literal :: proc(ps: ^Parsing_State, parent: ^Node, alloca
     return arr_node, nil
 }
 
+try_parse_typed_literal_initializer :: proc(ps: ^Parsing_State, parent: ^Node, allocator: mem.Allocator) -> (^Node, bool) {
+    literal_start := ps.idx
+    saved := ps^
+    type_info, type_err := parse_type(&saved, allocator)
+    if type_err != nil {
+        return nil, false
+    }
+    if saved.current_token.kind != .Left_Brace {
+        return nil, false
+    }
+    literal, err := parse_compound_literal_with_type(&saved, parent, allocator, type_info, literal_start)
+    if err != nil {
+        return nil, false
+    }
+    ps^ = saved
+    return literal, true
+}
+
 parse_for_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res:^Node, err:Maybe(Parse_Error)) {
     span_start := ps.idx
     parser_advance(ps) // eat 'for'
@@ -1679,7 +1768,6 @@ parse_type :: proc(ps: ^Parsing_State, allocator: mem.Allocator) -> (res:Type_In
             return_type = new_clone(return_type, allocator),
         }, nil
     case: 
-        fmt.println(ps.current_token)
         return nil, make_parse_error(ps, fmt.tprintf("Expected type at position %d, got %v", ps.idx, ps.current_token.kind))
     }
 
