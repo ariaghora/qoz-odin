@@ -295,7 +295,7 @@ tokenize :: proc(source: string, allocator := context.allocator) -> (tokens: [dy
                 make_tok(&t, .Eq, "=")
             }
         case:
-            if unicode.is_alpha(c) {
+            if unicode.is_alpha(c) || c == '_' {
                 make_id_or_kw(&t)
             } else if unicode.is_number(c) {
                 make_number(&t)
