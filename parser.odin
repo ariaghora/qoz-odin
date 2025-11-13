@@ -781,7 +781,44 @@ parse_expression_basic :: proc(ps: ^Parsing_State, parent: ^Node, allocator := c
 }
 
 parse_logical :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
+    return parse_logical_or(ps, parent, allocator)
+}
+
+parse_logical_or :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
+    left := parse_logical_and(ps, parent, allocator) or_return
+
+    for ps.current_token.kind == .Or_Or {
+        op := ps.current_token
+        parser_advance(ps)
+        right := parse_logical_and(ps, parent, allocator) or_return
+        
+        left = new_clone(Node {
+            node_kind = .Bin_Op,
+            parent = parent,
+            span = Span{start = left.span.start, end = right.span.end},
+            payload = Node_Bin_Op{left = left, right = right, op = op}
+        }, allocator)
+    }
+
+    return left, nil
+}
+
+parse_logical_and :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     left := parse_equality(ps, parent, allocator) or_return
+
+    for ps.current_token.kind == .And_And {
+        op := ps.current_token
+        parser_advance(ps)
+        right := parse_equality(ps, parent, allocator) or_return
+        
+        left = new_clone(Node {
+            node_kind = .Bin_Op,
+            parent = parent,
+            span = Span{start = left.span.start, end = right.span.end},
+            payload = Node_Bin_Op{left = left, right = right, op = op}
+        }, allocator)
+    }
+
     return left, nil
 }
 

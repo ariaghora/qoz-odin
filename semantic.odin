@@ -746,6 +746,19 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
         left_type := check_node(ctx, binop.left)
         right_type := check_node(ctx, binop.right)
         
+        // Special handling for logical operators - both operands must be boolean
+        if binop.op.kind == .And_And || binop.op.kind == .Or_Or {
+            if left_prim, ok := left_type.(Primitive_Type); !ok || left_prim != .Bool {
+                add_error(ctx, binop.left.span, "Logical operators require boolean operands, got %v", left_type)
+            }
+            if right_prim, ok := right_type.(Primitive_Type); !ok || right_prim != .Bool {
+                add_error(ctx, binop.right.span, "Logical operators require boolean operands, got %v", right_type)
+            }
+            result_type := Primitive_Type.Bool
+            node.inferred_type = result_type
+            return result_type
+        }
+        
         // Coerce untyped operands and update their inferred types
         if is_untyped_int(left_type) && is_typed_int(right_type) {
             binop.left.inferred_type = right_type
@@ -2299,6 +2312,8 @@ semantic_binop_type_resolve :: proc(t1, t2: Type_Info, op: Token, span: Span, ct
         #partial switch op.kind {
         case .Eq_Eq, .Not_Eq, .Lt, .Gt, .Lt_Eq, .Gt_Eq:
             return Primitive_Type.Bool
+        case .And_And, .Or_Or:
+            return Primitive_Type.Bool
         }
         // Arithmetic operators keep result as untyped integer - will be resolved by context
         return Untyped_Int{}
@@ -2306,6 +2321,8 @@ semantic_binop_type_resolve :: proc(t1, t2: Type_Info, op: Token, span: Span, ct
         // Comparison operators always return bool
         #partial switch op.kind {
         case .Eq_Eq, .Not_Eq, .Lt, .Gt, .Lt_Eq, .Gt_Eq:
+            return Primitive_Type.Bool
+        case .And_And, .Or_Or:
             return Primitive_Type.Bool
         }
         // Arithmetic operators keep result as untyped float - will be resolved by context
@@ -2340,6 +2357,12 @@ semantic_binop_primitive :: proc(t: Primitive_Type, op: Token, span: Span, ctx: 
         if t == .Void {
             add_error(ctx, span, "Cannot compare void")
             return Primitive_Type.Bool
+        }
+        return Primitive_Type.Bool
+    
+    case .And_And, .Or_Or:
+        if t != .Bool {
+            add_error(ctx, span, "Logical operators require boolean operands, got %v", t)
         }
         return Primitive_Type.Bool
     

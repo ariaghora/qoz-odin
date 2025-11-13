@@ -6,7 +6,7 @@ import "core:unicode"
 
 Token_Kind :: enum {
     Eq, Eq_Eq, Not_Eq, Assign, Colon, Semicolon, Comma, Dot,
-    Lt, Gt, Lt_Eq, Gt_Eq, Amp, Not,
+    Lt, Gt, Lt_Eq, Gt_Eq, Amp, Not, And_And, Or_Or,
     Plus, Minus, Star, Slash, Percent,
     Plus_Eq, Minus_Eq, Star_Eq, Slash_Eq, 
     Left_Paren, Right_Paren,
@@ -269,7 +269,20 @@ tokenize :: proc(source: string, allocator := context.allocator) -> (tokens: [dy
                 make_tok(&t, .Slash, "/")
             }
         case '%': make_tok(&t, .Percent, "%")
-        case '&': make_tok(&t, .Amp, "&")
+        case '&':
+            if peek(&t, source) == '&' {
+                tokenizer_advance(&t)
+                make_tok(&t, .And_And, "&&")
+            } else {
+                make_tok(&t, .Amp, "&")
+            }
+        case '|':
+            if peek(&t, source) == '|' {
+                tokenizer_advance(&t)
+                make_tok(&t, .Or_Or, "||")
+            } else {
+                return nil, fmt.tprintf("Unknown symbol `%v` at line %d, column %d", c, t.line, t.column)
+            }
         case ';': make_tok(&t, .Semicolon, ";")
         case '"', '\'': make_string(&t)
         case ':': 
