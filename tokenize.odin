@@ -12,7 +12,7 @@ Token_Kind :: enum {
     Left_Paren, Right_Paren,
     Left_Brace, Right_Brace,
     Left_Bracket, Right_Bracket,
-    Lit_Number, Lit_String, Lit_Nil,
+    Lit_Number, Lit_String, Lit_Nil, Lit_True, Lit_False,
     KW_Fn, KW_External, KW_If, KW_Else, KW_Print, KW_Println, KW_Return, KW_As, KW_Defer, KW_Alias,
     KW_I8, KW_U8, KW_I32, KW_I64, KW_F32, KW_F64, KW_Void, KW_Bool, KW_Cstring, 
     KW_Arr, KW_Vec, KW_Map, KW_For, KW_While, KW_In, KW_Struct,
@@ -129,6 +129,8 @@ make_id_or_kw :: proc(t: ^Tokenizer) {
     case "f64":      tok_kind = .KW_F64
     case "void":     tok_kind = .KW_Void
     case "bool":     tok_kind = .KW_Bool
+    case "true":     tok_kind = .Lit_True
+    case "false":    tok_kind = .Lit_False
     case "cstring":  tok_kind = .KW_Cstring
     case "arr":      tok_kind = .KW_Arr
     case "vec":      tok_kind = .KW_Vec
