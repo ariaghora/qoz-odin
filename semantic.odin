@@ -1957,6 +1957,10 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
         node.inferred_type = result
         return result
     
+    case .Literal_Bool:
+        node.inferred_type = Primitive_Type.Bool
+        return Primitive_Type.Bool
+    
     case .Identifier:
         iden := node.payload.(Node_Identifier)
         if sym, ok := semantic_lookup_symbol(ctx, iden.name); ok {

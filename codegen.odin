@@ -1531,6 +1531,11 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
             strings.write_string(&ctx_cg.output_buf, "}")
         }
     
+    case .Literal_Bool:
+        lit := node.payload.(Node_Literal_Bool)
+        src := lit.content.source
+        strings.write_string(&ctx_cg.output_buf, src)
+    
     case .Defer:
         // Collect defer, don't emit yet
         defer_node := node.payload.(Node_Defer)

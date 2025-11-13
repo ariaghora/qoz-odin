@@ -37,6 +37,7 @@ Node_Kind :: enum {
     Literal_Nil,
     Literal_Number,
     Literal_String,
+    Literal_Bool,
     Print,
     Println,
     Program,
@@ -137,6 +138,7 @@ Node_Link           :: struct { path: string }
 Node_Literal_Nil    :: struct {}
 Node_Literal_Number :: struct { content: Token }
 Node_Literal_String :: struct { content: Token }
+Node_Literal_Bool   :: struct { content: Token }
 Node_Print          :: struct { args: [dynamic]^Node }
 Node_Println        :: struct { args: [dynamic]^Node }
 Node_Return         :: struct { value: ^Node } 
@@ -177,6 +179,7 @@ Node :: struct {
         Node_Literal_Nil,
         Node_Literal_Number,
         Node_Literal_String,
+        Node_Literal_Bool,
         Node_Print,
         Node_Println,
         Node_Return,
@@ -724,7 +727,7 @@ parse_print_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := co
     args := make([dynamic]^Node, allocator)
     if ps.current_token.kind != .Right_Paren {
         for {
-            arg := parse_expression(ps, print_node, allocator) or_return
+            arg := parse_expression_or_typed_literal(ps, print_node, allocator) or_return
             append(&args, arg)
             
             if ps.current_token.kind != .Comma {
@@ -756,7 +759,7 @@ parse_println_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := 
     args := make([dynamic]^Node, allocator)
     if ps.current_token.kind != .Right_Paren {
         for {
-            arg := parse_expression(ps, println_node, allocator) or_return
+            arg := parse_expression_or_typed_literal(ps, println_node, allocator) or_return
             append(&args, arg)
             
             if ps.current_token.kind != .Comma {
@@ -966,7 +969,7 @@ parse_postfix :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
             parser_advance(ps) // eat '('
             fn_args := make([dynamic]^Node, allocator)
             for ps.current_token.kind != .Right_Paren {
-                arg := parse_expression(ps, left, allocator) or_return
+                arg := parse_expression_or_typed_literal(ps, left, allocator) or_return
                 append(&fn_args, arg)
                 if ps.current_token.kind == .Comma {
                     parser_advance(ps)
@@ -1067,6 +1070,7 @@ parse_primary :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
     case .Lit_Number: return parse_literal_number(ps, parent, allocator)
     case .Lit_String: return parse_literal_string(ps, parent, allocator)
     case .Lit_Nil: return parse_literal_nil(ps, parent, allocator)
+    case .Lit_True, .Lit_False: return parse_literal_bool(ps, parent, allocator)
     case .KW_Arr: return parse_literal_array(ps, parent, allocator)
     case .Left_Brace: return parse_untyped_compound_literal(ps, parent, allocator)
     case:
@@ -1334,6 +1338,21 @@ parse_literal_nil :: proc(ps: ^Parsing_State, parent: ^Node, allocator := contex
     lit_node.node_kind = .Literal_Nil
     lit_node.parent = parent
     lit_node.payload = Node_Literal_Nil{}
+    
+    parser_advance(ps)
+    lit_node.span = Span{start = span_start, end = ps.idx - 1}
+    
+    return lit_node, nil
+}
+
+parse_literal_bool :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
+    span_start := ps.idx
+    tok := ps.current_token
+    
+    lit_node := new(Node, allocator)
+    lit_node.node_kind = .Literal_Bool
+    lit_node.parent = parent
+    lit_node.payload = Node_Literal_Bool{content = tok}
     
     parser_advance(ps)
     lit_node.span = Span{start = span_start, end = ps.idx - 1}
