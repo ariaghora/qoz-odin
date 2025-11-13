@@ -173,6 +173,27 @@ codegen_vec_wrapper_struct :: proc(ctx_cg: ^Codegen_Context, vec_type: Vec_Type,
     strings.write_string(&ctx_cg.output_buf, ";\n\n")
 }
 
+// Generate element-wise unary operation for arrays
+codegen_array_unop :: proc(ctx_cg: ^Codegen_Context, unop: Node_Un_Op, arr_type: Array_Type) {
+    // Generate: (ArrayType){{op operand.data[0], op operand.data[1], ...}}
+    
+    strings.write_string(&ctx_cg.output_buf, "(")
+    codegen_type(ctx_cg, arr_type)
+    strings.write_string(&ctx_cg.output_buf, "){{")
+    
+    for i in 0..<arr_type.size {
+        if i > 0 {
+            strings.write_string(&ctx_cg.output_buf, ", ")
+        }
+        strings.write_string(&ctx_cg.output_buf, "(")
+        strings.write_string(&ctx_cg.output_buf, unop.op.source)
+        codegen_node(ctx_cg, unop.operand)
+        fmt.sbprintf(&ctx_cg.output_buf, ".data[%d]", i)
+        strings.write_string(&ctx_cg.output_buf, ")")
+    }
+    strings.write_string(&ctx_cg.output_buf, "}}")
+}
+
 // Generate element-wise binary operation for arrays
 codegen_array_binop :: proc(ctx_cg: ^Codegen_Context, binop: Node_Bin_Op, arr_type: Array_Type) {
     // Generate: (ArrayType){{left.data[0] op right.data[0], left.data[1] op right.data[1], ...}}
@@ -1030,10 +1051,30 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         strings.write_string(&ctx_cg.output_buf, ")")
 
     case .Un_Op:
-        binop := node.payload.(Node_Un_Op)
-        strings.write_string(&ctx_cg.output_buf, binop.op.source)
+        unop := node.payload.(Node_Un_Op)
+        
+        // Check if this is an array unary operation
+        if unop.op.kind == .Plus || unop.op.kind == .Minus {
+            operand_type := unop.operand.inferred_type.? or_else Primitive_Type.Void
+            
+            // Resolve named types
+            if named_type, is_named := operand_type.(Named_Type); is_named {
+                if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named_type, ctx_cg.current_pkg_name); ok {
+                    operand_type = resolved
+                }
+            }
+            
+            // Handle array unary operations
+            if arr_type, is_array := operand_type.(Array_Type); is_array {
+                codegen_array_unop(ctx_cg, unop, arr_type)
+                return
+            }
+        }
+        
+        // Default unary operation (for primitives and other operators)
+        strings.write_string(&ctx_cg.output_buf, unop.op.source)
         strings.write_string(&ctx_cg.output_buf, "(")
-        codegen_node(ctx_cg, binop.operand)
+        codegen_node(ctx_cg, unop.operand)
         strings.write_string(&ctx_cg.output_buf, ")")
 
     case .Field_Access:

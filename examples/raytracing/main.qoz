@@ -8,7 +8,12 @@ Stream := alias strings.StringBuilder
 
 Ray       := struct { origin: Vec3, direction: Vec3 }
 Sphere    := struct { center: Vec3, radius: f64 }
-HitRecord := struct { t: f64, p: Vec3, normal: Vec3 }
+HitRecord := struct {
+    t:          f64,
+    p:          Vec3,
+    normal:     Vec3,
+    front_face: bool
+}
 
 hit_sphere := func(center: Vec3, radius: f64, ray: Ray): f64 {
     oc := center - ray.origin
@@ -50,6 +55,15 @@ vec_unit_vector := func(v: Vec3): Vec3 {
     return v / vec_length(v)
 }
 
+hit_record_set_face_normal := func(rec: HitRecord, ray: Ray, outward_normal: Vec3) {
+    rec.front_face = vec_dot(ray.direction, outward_normal) < 0.0
+    if rec.front_face {
+        rec.normal = outward_normal
+    } else {
+        rec.normal = -outward_normal
+    }
+}
+
 ray_at := func(r: Ray, t: f64): Vec3 {
     return r.origin + t * r.direction
 }
@@ -87,7 +101,8 @@ sphere_hit := func(sphere: Sphere, ray: Ray, tmin: f64, tmax: f64, rec: HitRecor
         }
     }
     rec.t = root
-    rec.p = ray_at(rec.t)
+    rec.p = ray_at(ray, rec.t)
+    rec.normal = (rec.p - sphere.center) / sphere.radius
     return true
 }
 

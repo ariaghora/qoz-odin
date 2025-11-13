@@ -1884,9 +1884,45 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
                 return operand_type
             }
             
-            prim, ok := operand_type.(Primitive_Type)
+            // Resolve named types first
+            resolved_type := operand_type
+            if named_type, is_named := operand_type.(Named_Type); is_named {
+                if resolved, ok := resolve_named_type(ctx, named_type, ctx.current_package); ok {
+                    resolved_type = resolved
+                }
+            }
+            
+            // Handle arrays (element-wise unary operations)
+            if array_type, is_array := resolved_type.(Array_Type); is_array {
+                // Check that the element type supports unary operations
+                elem_type := array_type.element_type^
+                if is_numeric_type(elem_type) {
+                    node.inferred_type = operand_type
+                    return operand_type
+                } else {
+                    add_error(ctx, node.span, "Cannot apply unary operator to array with non-numeric elements: %v", elem_type)
+                    node.inferred_type = Primitive_Type.I32
+                    return Primitive_Type.I32
+                }
+            }
+            
+            // Handle vecs (element-wise unary operations)
+            if vec_type, is_vec := resolved_type.(Vec_Type); is_vec {
+                // Check that the element type supports unary operations
+                elem_type := vec_type.element_type^
+                if is_numeric_type(elem_type) {
+                    node.inferred_type = operand_type
+                    return operand_type
+                } else {
+                    add_error(ctx, node.span, "Cannot apply unary operator to vec with non-numeric elements: %v", elem_type)
+                    node.inferred_type = Primitive_Type.I32
+                    return Primitive_Type.I32
+                }
+            }
+            
+            prim, ok := resolved_type.(Primitive_Type)
             if !ok || prim == .Void {
-                add_error(ctx, node.span, "Cannot apply unary operator to %v", operand_type)
+                add_error(ctx, node.span, "Cannot apply unary operator to %v", resolved_type)
                 node.inferred_type = Primitive_Type.I32
                 return Primitive_Type.I32
             }
