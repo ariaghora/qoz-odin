@@ -727,7 +727,7 @@ parse_print_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := co
     args := make([dynamic]^Node, allocator)
     if ps.current_token.kind != .Right_Paren {
         for {
-            arg := parse_expression_or_typed_literal(ps, print_node, allocator) or_return
+            arg := parse_expression(ps, print_node, allocator) or_return
             append(&args, arg)
             
             if ps.current_token.kind != .Comma {
@@ -759,7 +759,7 @@ parse_println_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := 
     args := make([dynamic]^Node, allocator)
     if ps.current_token.kind != .Right_Paren {
         for {
-            arg := parse_expression_or_typed_literal(ps, println_node, allocator) or_return
+            arg := parse_expression(ps, println_node, allocator) or_return
             append(&args, arg)
             
             if ps.current_token.kind != .Comma {
@@ -776,7 +776,7 @@ parse_println_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := 
     return println_node, nil
 }
 
-parse_expression :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
+parse_expression_basic :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     return parse_logical(ps, parent, allocator)
 }
 
@@ -969,7 +969,7 @@ parse_postfix :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
             parser_advance(ps) // eat '('
             fn_args := make([dynamic]^Node, allocator)
             for ps.current_token.kind != .Right_Paren {
-                arg := parse_expression_or_typed_literal(ps, left, allocator) or_return
+                arg := parse_expression(ps, left, allocator) or_return
                 append(&fn_args, arg)
                 if ps.current_token.kind == .Comma {
                     parser_advance(ps)
@@ -1084,17 +1084,35 @@ parse_iden_expression :: proc(ps: ^Parsing_State, parent: ^Node, allocator := co
     
     parser_advance(ps)
 
-    // Check if it's a struct literal: TypeName{ field: value, ... }
-    // Lookahead to distinguish from regular blocks
+    // Check if it's a struct literal: TypeName{ field: value, ... } or TypeName{ val1, val2, ... }
     if ps.current_token.kind == .Left_Brace {
         next_idx := ps.idx + 1
-        // Struct literal has pattern: { identifier : value }
-        if next_idx < len(ps.tokens) && 
-            ps.tokens[next_idx].kind == .Iden &&
-            next_idx + 1 < len(ps.tokens) &&
-            ps.tokens[next_idx + 1].kind == .Colon {
-            // It's a struct literal
-            return parse_struct_literal(ps, name, parent, allocator)
+        if next_idx < len(ps.tokens) {
+            next_token := ps.tokens[next_idx]
+            
+            // Case 1: Named field initialization { identifier : value }
+            if next_token.kind == .Iden &&
+               next_idx + 1 < len(ps.tokens) &&
+               ps.tokens[next_idx + 1].kind == .Colon {
+                return parse_struct_literal(ps, name, parent, allocator)
+            }
+            
+            // Case 2: Positional initialization { value, value, ... } or empty { }
+            // Allow any token that could start an expression or right brace for empty
+            if next_token.kind == .Right_Brace ||
+               next_token.kind == .Lit_Number ||
+               next_token.kind == .Lit_String ||
+               next_token.kind == .Lit_True ||
+               next_token.kind == .Lit_False ||
+               next_token.kind == .Lit_Nil ||
+               next_token.kind == .Iden ||
+               next_token.kind == .Left_Paren ||
+               next_token.kind == .Minus ||
+               next_token.kind == .Plus ||
+               next_token.kind == .Not {
+                // Try to parse as typed compound literal
+                return parse_typed_compound_literal(ps, name, parent, allocator)
+            }
         }
         // Otherwise just an identifier, let caller handle the {
     }
@@ -1106,6 +1124,31 @@ parse_iden_expression :: proc(ps: ^Parsing_State, parent: ^Node, allocator := co
     iden_node.span = Span{start = span_start, end = ps.idx - 1}
     
     return iden_node, nil
+}
+
+parse_typed_compound_literal :: proc(ps: ^Parsing_State, type_name: string, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
+    // We already consumed the identifier, now we're at the '{'
+    // Create a type info from the type name and parse compound literal
+    span_start := ps.idx - 1  // Back up to include the type name
+    
+    // Create type info from name
+    type_info: Type_Info
+    switch type_name {
+    case "i8": type_info = Primitive_Type.I8
+    case "u8": type_info = Primitive_Type.U8
+    case "i32": type_info = Primitive_Type.I32
+    case "i64": type_info = Primitive_Type.I64
+    case "f32": type_info = Primitive_Type.F32
+    case "f64": type_info = Primitive_Type.F64
+    case "bool": type_info = Primitive_Type.Bool
+    case "void": type_info = Primitive_Type.Void
+    case "cstring": type_info = Primitive_Type.Cstring
+    case:
+        // Assume it's a named type (like an alias)
+        type_info = Named_Type{name = type_name}
+    }
+    
+    return parse_compound_literal_with_type(ps, parent, allocator, type_info, span_start)
 }
 
 parse_struct_literal :: proc(ps: ^Parsing_State, type_name: string, parent: ^Node, allocator := context.allocator) -> (res:^Node, err:Maybe(Parse_Error)) {
@@ -1126,7 +1169,7 @@ parse_struct_literal :: proc(ps: ^Parsing_State, type_name: string, parent: ^Nod
         parser_consume(ps, .Colon) or_return
 
         // Parse field value, allowing typed literals like Vec3{...}
-        field_value := parse_expression_or_typed_literal(ps, parent, allocator) or_return
+        field_value := parse_expression(ps, parent, allocator) or_return
 
         // Fallback: if braces remain, interpret the previous expression as a type for a compound literal
         if ps.current_token.kind == .Left_Brace {
@@ -1251,12 +1294,13 @@ parse_typed_array_literal :: proc(ps: ^Parsing_State, type_name: string, parent:
     return arr_node, nil
 }
 
-parse_expression_or_typed_literal :: proc(ps: ^Parsing_State, parent: ^Node, allocator: mem.Allocator) -> (res:^Node, err:Maybe(Parse_Error)) {
+parse_expression :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     if literal, ok := try_parse_typed_literal_initializer(ps, parent, allocator); ok {
         return literal, nil
     }
-    return parse_expression(ps, parent, allocator)
+    return parse_expression_basic(ps, parent, allocator)
 }
+
 
 parse_compound_literal_with_type :: proc(ps: ^Parsing_State, parent: ^Node, allocator: mem.Allocator, type_info: Type_Info, span_start: int) -> (res:^Node, err:Maybe(Parse_Error)) {
     // Special-case struct literals so ':'-style fields are supported
