@@ -1073,7 +1073,7 @@ parse_postfix :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
                 ps.tokens[next_idx].kind == .Iden &&
                 next_idx + 1 < len(ps.tokens) &&
                 ps.tokens[next_idx + 1].kind == .Colon {
-                // It's a struct literal
+                // It's a struct literal with named fields: TypeName{ field: value }
                 type_name := get_type_name_from_node(left, allocator)
                 return parse_struct_literal(ps, type_name, parent, allocator)
             }
@@ -1136,19 +1136,31 @@ parse_iden_expression :: proc(ps: ^Parsing_State, parent: ^Node, allocator := co
             
             // Case 2: Positional initialization { value, value, ... } or empty { }
             // Allow any token that could start an expression or right brace for empty
+            // But be more careful with identifiers - check what follows them
             if next_token.kind == .Right_Brace ||
                next_token.kind == .Lit_Number ||
                next_token.kind == .Lit_String ||
                next_token.kind == .Lit_True ||
                next_token.kind == .Lit_False ||
                next_token.kind == .Lit_Nil ||
-               next_token.kind == .Iden ||
                next_token.kind == .Left_Paren ||
                next_token.kind == .Minus ||
                next_token.kind == .Plus ||
                next_token.kind == .Not {
                 // Try to parse as typed compound literal
                 return parse_typed_compound_literal(ps, name, parent, allocator)
+            }
+            
+            // Special handling for identifiers - need to check what follows
+            if next_token.kind == .Iden &&
+               next_idx + 1 < len(ps.tokens) {
+                token_after_iden := ps.tokens[next_idx + 1].kind
+                // Only treat as compound literal if identifier is followed by tokens that make sense in that context
+                if token_after_iden == .Comma || token_after_iden == .Right_Brace {
+                    // Looks like positional compound literal: Type{iden, iden} or Type{iden}
+                    return parse_typed_compound_literal(ps, name, parent, allocator)
+                }
+                // Otherwise it's not a compound literal, let caller handle the {
             }
         }
         // Otherwise just an identifier, let caller handle the {

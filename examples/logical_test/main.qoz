@@ -1,0 +1,26 @@
+main := func() {
+    a := true
+    b := false
+    
+    println("Testing logical operators:")
+    
+    if a && b {
+        println("a && b is true")
+    } else {
+        println("a && b is false")  
+    }
+    
+    if a || b {
+        println("a || b is true")
+    } else {
+        println("a || b is false")
+    }
+    
+    if a && (b || true) {
+        println("a && (b || true) is true")
+    } else {
+        println("a && (b || true) is false")
+    }
+    
+    println("All logical operator tests completed!")
+}

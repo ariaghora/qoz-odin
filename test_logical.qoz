@@ -1,0 +1,21 @@
+main := func() {
+    // Test logical operators with booleans
+    a := true
+    b := false
+    
+    result1 := a && b  // should be false
+    result2 := a || b  // should be true
+    result3 := !a && b // should be false  
+    result4 := !a || b // should be false
+    
+    println("a && b:", result1)
+    println("a || b:", result2)
+    println("!a && b:", result3)
+    println("!a || b:", result4)
+    
+    // Test with complex expressions
+    x := 5
+    y := 10
+    complex_result := (x < y) && (y > 0) && true
+    println("Complex:", complex_result)
+}

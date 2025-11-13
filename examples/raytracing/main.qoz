@@ -5,24 +5,7 @@ import "std:mem"
 Vec3   := alias arr<f64, 3>
 Color  := alias Vec3
 Stream := alias strings.StringBuilder
-
-Ray       := struct { origin: Vec3, direction: Vec3 }
-Sphere    := struct { center: Vec3, radius: f64 }
-HitRecord := struct { t: f64, p: Vec3, normal: Vec3 }
-
-hit_sphere := func(center: Vec3, radius: f64, ray: Ray): f64 {
-    oc := center - ray.origin
-    a := vec_dot(ray.direction, ray.direction)
-    b := -2.0 * vec_dot(ray.direction, oc)
-    c := vec_dot(oc, oc) - radius*radius
-    disc := b*b - 4.0*a*c
-
-    if disc < 0.0 {
-        return -1.0
-    } else {
-        return (-b - math.sqrt(disc)) / (2.0*a)
-    }
-}
+Ray    := struct { origin: Vec3, direction: Vec3 }
 
 vec_dot := func(v1: Vec3, v2: Vec3): f64 {
     mul := v1 * v2
@@ -55,40 +38,11 @@ ray_at := func(r: Ray, t: f64): Vec3 {
 }
 
 ray_color := func(r: Ray): Color {
-    t := hit_sphere(Vec3{0.0, 0.0, -1.0}, 0.5, r) 
-    if t > 0.0 {
-        N := vec_unit_vector(ray_at(r, t) - Vec3{0.0, 0.0, -1.0})
-        color := Color{ N[0] + 1.0, N[1] + 1.0, N[2] + 1.0 }
-        return 0.5 * color
-    }
-
     unit_direction := vec_unit_vector(r.direction)
     a := 0.5 * (unit_direction[1] + 1.0)
     white := Color{1.0, 1.0, 1.0}
-    return (1.0 - a) * white + a * Color{0.5, 0.7, 1.0}
-}
-
-sphere_hit := func(sphere: Sphere, ray: Ray, tmin: f64, tmax: f64, rec: HitRecord): bool {
-    oc := ray.origin - sphere.center
-    a := vec_length_squared(ray.direction)
-    h := vec_dot(ray.direction, oc)
-    c := vec_length_squared(oc) - sphere.radius*sphere.radius
-    disc := h*h - a*c 
-    if disc < 0.0 { return false }
-
-    sqrtd := math.sqrt(disc)
-
-    // find the nearest root that lies in the acceptable range
-    root := (h-sqrtd) / a
-    if root <= tmin || tmax <= root {
-        root = (h + sqrtd) / a 
-        if root <= tmin || tmax <= root {
-            return false
-        }
-    }
-    rec.t = root
-    rec.p = ray_at(rec.t)
-    return true
+    c := Color{0.5, 0.7, 1.0}
+    return (1.0-a) * white + a * c
 }
 
 write_color := func(sb: *Stream, color: Color, alloc: mem.Allocator) {
@@ -126,7 +80,8 @@ main := func() {
     pixel_delta_v := viewport_v / image_height
 
     // Location of the upper left pixel
-    viewport_upper_left := camera_center - Vec3{0.0, 0.0, focal_length} - viewport_u/2 - viewport_v/2
+    _offset := Vec3{0.0, 0.0, focal_length}
+    viewport_upper_left := camera_center - _offset - viewport_u/2 - viewport_v/2
     pixel00_loc := viewport_upper_left + 0.5 * (pixel_delta_u + pixel_delta_v)
 
     // Render
