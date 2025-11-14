@@ -145,7 +145,7 @@ resolve_named_type :: proc(ctx: ^Semantic_Context, named: Named_Type, pkg_name: 
         pkg_alias := named.name[:dot_idx]
         type_name := named.name[dot_idx+1:]
         
-        // Look up the package
+        // Look up the package by alias first
         if pkg_dir, is_pkg := ctx.import_aliases[pkg_alias]; is_pkg {
             if pkg_info, has_pkg := ctx.packages[pkg_dir]; has_pkg {
                 if symbol, found := pkg_info.symbols[type_name]; found {
@@ -158,6 +158,23 @@ resolve_named_type :: proc(ctx: ^Semantic_Context, named: Named_Type, pkg_name: 
                 }
             }
         }
+        
+        // Fallback: check if pkg_alias matches a package directory name
+        // This handles cases where normalize_struct_literal_type_name converted
+        // "rl.Color" to "raylib.Color" (using package dir name instead of alias)
+        for pkg_dir, pkg_info in ctx.packages {
+            if filepath.base(pkg_dir) == pkg_alias {
+                if symbol, found := pkg_info.symbols[type_name]; found {
+                    resolved_type := symbol.type
+                    // Recursively resolve if it's another named type
+                    if nested_named, is_named := resolved_type.(Named_Type); is_named {
+                        return resolve_named_type(ctx, nested_named, pkg_name)
+                    }
+                    return resolved_type, true
+                }
+            }
+        }
+        
         return {}, false
     }
     
