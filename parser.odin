@@ -60,6 +60,7 @@ Type_Info :: union {
     Pointer_Type,
     Struct_Type,
     Union_Type,
+    Tuple_Type,
     Named_Type,
     Untyped_Int,
     Untyped_Float,
@@ -92,6 +93,10 @@ Struct_Type :: struct {
 }
 
 Union_Type :: struct {
+    types: [dynamic]Type_Info,
+}
+
+Tuple_Type :: struct {
     types: [dynamic]Type_Info,
 }
 
@@ -156,10 +161,10 @@ Node_Literal_String :: struct { content: Token }
 Node_Literal_Bool   :: struct { content: Token }
 Node_Print          :: struct { args: [dynamic]^Node }
 Node_Println        :: struct { args: [dynamic]^Node }
-Node_Return         :: struct { value: ^Node } 
+Node_Return         :: struct { values: [dynamic]^Node } 
 Node_Statement_List :: struct { nodes: [dynamic]^Node }
 Node_Un_Op          :: struct { operand: ^Node, op: Token }
-Node_Var_Def        :: struct { name: string, content: ^Node, explicit_type: Maybe(Type_Info), is_alias: bool }
+Node_Var_Def        :: struct { names: [dynamic]string, content: ^Node, explicit_type: Maybe(Type_Info), is_alias: bool }
 Node_Expr_Statement :: struct { expr: ^Node }
 Node_Type_Expr      :: struct { type_info: Type_Info, }
 Node_Size_Of        :: struct { type: ^Node }
@@ -409,8 +414,8 @@ parse_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.
 
 parse_iden_led_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     next_tok := ps.tokens[ps.idx + 1].kind
-    if next_tok == .Assign || next_tok == .Colon {
-        // x := val  or  x: type = val
+    // Check for variable definition: x := val, x: type = val, or x, y := func()
+    if next_tok == .Assign || next_tok == .Colon || next_tok == .Comma {
         return parse_var_def(ps, parent, allocator)
     } 
 
@@ -540,14 +545,32 @@ parse_link_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := con
 
 parse_var_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     span_start := ps.idx
-    name_tok := ps.current_token
-    parser_advance(ps)
+    
+    // Parse multiple names for destructuring: value, ok := func()
+    names := make([dynamic]string, allocator)
+    for {
+        if ps.current_token.kind != .Iden {
+            return nil, make_parse_error(ps, "Expected identifier in variable definition")
+        }
+        append(&names, ps.current_token.source)
+        parser_advance(ps)
+        
+        if ps.current_token.kind == .Comma {
+            parser_advance(ps) // eat ','
+        } else {
+            break
+        }
+    }
 
     explicit_type: Maybe(Type_Info)
     is_alias := false
     
     // Check for explicit type annotation: name: type = expr
+    // Note: explicit types with multiple names not supported (would be ambiguous)
     if ps.current_token.kind == .Colon {
+        if len(names) > 1 {
+            return nil, make_parse_error(ps, "Explicit type annotation not supported for multiple variable definitions")
+        }
         parser_advance(ps)
         explicit_type = parse_type(ps, allocator) or_return
         parser_consume(ps, .Eq) or_return
@@ -591,8 +614,7 @@ parse_var_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
     var_node.node_kind = .Var_Def
     var_node.parent = parent
     var_node.span = Span{start = span_start, end = ps.idx-1}
-    // 
-    var_node.payload = Node_Var_Def{name = name_tok.source, content = expr, explicit_type=explicit_type, is_alias=is_alias}
+    var_node.payload = Node_Var_Def{names = names, content = expr, explicit_type=explicit_type, is_alias=is_alias}
     
     return var_node, nil
 }
@@ -1577,12 +1599,24 @@ parse_return_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := c
     ret_node.span = Span{start = span_start, end = ps.idx}
     
     if ps.current_token.kind == .Right_Brace || ps.current_token.kind == .EOF {
-        ret_node.payload = Node_Return{value = nil}
+        ret_node.payload = Node_Return{values = make([dynamic]^Node, allocator)}
         return ret_node, nil
     }
     
-    expr := parse_expression(ps, ret_node, allocator) or_return
-    ret_node.payload = Node_Return{value = expr}
+    // Parse multiple return values (comma-separated)
+    values := make([dynamic]^Node, allocator)
+    for {
+        expr := parse_expression(ps, ret_node, allocator) or_return
+        append(&values, expr)
+        
+        if ps.current_token.kind == .Comma {
+            parser_advance(ps) // eat ','
+        } else {
+            break
+        }
+    }
+    
+    ret_node.payload = Node_Return{values = values}
     
     return ret_node, nil
 }
@@ -1978,6 +2012,40 @@ parse_type :: proc(ps: ^Parsing_State, allocator: mem.Allocator) -> (res:Type_In
         parser_consume(ps, .Right_Brace) or_return
         
         return Struct_Type{fields = fields}, nil
+    }
+
+    // Tuple type: (type, type, type) - must check before union since both use braces
+    // But tuples use parentheses, so check for Left_Paren first
+    if ps.current_token.kind == .Left_Paren {
+        parser_advance(ps) // eat '('
+        types := make([dynamic]Type_Info, allocator)
+        
+        // Parse types until we hit ')'
+        for ps.current_token.kind != .Right_Paren {
+            if ps.current_token.kind == .EOF {
+                return nil, make_parse_error(ps, "Unexpected EOF in tuple definition")
+            }
+            
+            // Parse type
+            tuple_type := parse_type(ps, allocator) or_return
+            append(&types, tuple_type)
+            
+            // Optional comma
+            if ps.current_token.kind == .Comma {
+                parser_advance(ps)
+            } else if ps.current_token.kind != .Right_Paren {
+                return nil, make_parse_error(ps, "Expected ',' or ')' in tuple definition")
+            }
+        }
+        
+        parser_consume(ps, .Right_Paren) or_return
+        
+        // If only one type, it's not a tuple (just parentheses around a type)
+        if len(types) == 1 {
+            return types[0], nil
+        }
+        
+        return Tuple_Type{types = types}, nil
     }
 
     // Union type: union { type, type, type }

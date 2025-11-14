@@ -314,7 +314,7 @@ semantic_analyze_project :: proc(
             for stmt in ast.payload.(Node_Statement_List).nodes {
                 if stmt.node_kind == .Var_Def {
                     var_def := stmt.payload.(Node_Var_Def)
-                    if var_def.name == "main" {
+                    if len(var_def.names) > 0 && var_def.names[0] == "main" {
                         main_span = stmt.span
                         break
                     }
@@ -575,6 +575,13 @@ qualify_type :: proc(ctx: ^Semantic_Context, t: Type_Info, pkg_name: string, all
             append(&qualified_types, qualified_type)
         }
         return Union_Type{types = qualified_types}
+    case Tuple_Type:
+        qualified_types := make([dynamic]Type_Info, allocator)
+        for tuple_type in typ.types {
+            qualified_type := qualify_type(ctx, tuple_type, pkg_name, allocator)
+            append(&qualified_types, qualified_type)
+        }
+        return Tuple_Type{types = qualified_types}
     case:
         return t
     }
@@ -609,10 +616,13 @@ collect_declarations :: proc(ctx: ^Semantic_Context, node: ^Node, pkg_dir, proje
         
         // Handle type alias: name := alias Type
         if var_def.is_alias {
+            if len(var_def.names) != 1 {
+                return // Error will be caught in Pass 2
+            }
             if var_def.content.node_kind == .Type_Expr {
                 type_expr := var_def.content.payload.(Node_Type_Expr)
                 // Define the alias as a type in the symbol table
-                semantic_define_symbol(ctx, var_def.name, type_expr.type_info, node.span, pkg_dir)
+                semantic_define_symbol(ctx, var_def.names[0], type_expr.type_info, node.span, pkg_dir)
             }
             return
         }
@@ -621,12 +631,14 @@ collect_declarations :: proc(ctx: ^Semantic_Context, node: ^Node, pkg_dir, proje
             fn_def := var_def.content.payload.(Node_Fn_Def)
             if fn_def.is_external {
                 // Store with qualified package name for cross-package lookups
-                if pkg_dir != "" {
-                    pkg_name := filepath.base(pkg_dir)
-                    qualified_name := fmt.tprintf("%s.%s", pkg_name, var_def.name)
-                    ctx.external_functions[qualified_name] = true
-                } else {
-                    ctx.external_functions[var_def.name] = true
+                if len(var_def.names) > 0 {
+                    if pkg_dir != "" {
+                        pkg_name := filepath.base(pkg_dir)
+                        qualified_name := fmt.tprintf("%s.%s", pkg_name, var_def.names[0])
+                        ctx.external_functions[qualified_name] = true
+                    } else {
+                        ctx.external_functions[var_def.names[0]] = true
+                    }
                 }
             }
         }
@@ -667,7 +679,9 @@ collect_declarations :: proc(ctx: ^Semantic_Context, node: ^Node, pkg_dir, proje
         }
         
         if type, ok := declared_type.?; ok {
-            semantic_define_symbol(ctx, var_def.name, type, node.span, pkg_dir, external_name)
+            if len(var_def.names) > 0 {
+                semantic_define_symbol(ctx, var_def.names[0], type, node.span, pkg_dir, external_name)
+            }
         }
     }
 }
@@ -1152,6 +1166,11 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
 
         // Handle type alias: name := alias Type
         if var_def.is_alias {
+            if len(var_def.names) != 1 {
+                add_error(ctx, node.span, "Type alias can only have one name")
+                return Primitive_Type.Void
+            }
+            
             // The content must be a type expression
             if var_def.content.node_kind != .Type_Expr {
                 add_error(ctx, node.span, "Alias must be followed by a type expression")
@@ -1163,24 +1182,68 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
             alias_type := type_expr.type_info
             
             // Alias was already defined in Pass 1, just return the type
-            if existing_sym, found := semantic_lookup_symbol(ctx, var_def.name); found {
+            if existing_sym, found := semantic_lookup_symbol(ctx, var_def.names[0]); found {
                 node.inferred_type = existing_sym.type
                 return existing_sym.type
             }
             
             // If not found (local alias), define it
-            semantic_define_symbol(ctx, var_def.name, alias_type, node.span)
+            semantic_define_symbol(ctx, var_def.names[0], alias_type, node.span)
             node.inferred_type = alias_type
             return alias_type
+        }
+
+        // Handle destructuring assignment: value, ok := func()
+        if len(var_def.names) > 1 {
+            // Check that content is a function call
+            if var_def.content.node_kind != .Fn_Call {
+                add_error(ctx, node.span, "Destructuring assignment requires a function call")
+                return Primitive_Type.Void
+            }
+            
+            // Check the function call and get its return type
+            call_type := check_node(ctx, var_def.content)
+            
+            // Resolve if it's a Named_Type
+            resolved_call_type := call_type
+            if named, is_named := call_type.(Named_Type); is_named {
+                if resolved, ok := resolve_named_type(ctx, named); ok {
+                    resolved_call_type = resolved
+                }
+            }
+            
+            // Must return a tuple
+            tuple_ret, is_tuple := resolved_call_type.(Tuple_Type)
+            if !is_tuple {
+                add_error(ctx, node.span, "Destructuring assignment requires function to return tuple, got %v", call_type)
+                return Primitive_Type.Void
+            }
+            
+            // Check number of names matches tuple size
+            if len(var_def.names) != len(tuple_ret.types) {
+                add_error(ctx, node.span, "Destructuring assignment: expected %d names, got %d", len(tuple_ret.types), len(var_def.names))
+                return Primitive_Type.Void
+            }
+            
+            // Define each variable with its corresponding tuple element type
+            for name, i in var_def.names {
+                if i < len(tuple_ret.types) {
+                    element_type := tuple_ret.types[i]
+                    semantic_define_symbol(ctx, name, element_type, node.span)
+                }
+            }
+            
+            node.inferred_type = call_type
+            return call_type
         }
 
         if var_def.content.node_kind == .Type_Expr {
             type_expr := var_def.content.payload.(Node_Type_Expr)
             if _, is_struct := type_expr.type_info.(Struct_Type); is_struct {
-                ctx.current_struct_name = var_def.name
+                ctx.current_struct_name = var_def.names[0]
                 ctx.current_union_name = nil
             } else if _, is_union := type_expr.type_info.(Union_Type); is_union {
-                ctx.current_union_name = var_def.name
+                ctx.current_union_name = var_def.names[0]
                 ctx.current_struct_name = nil
             } else {
                 ctx.current_struct_name = nil
@@ -1189,7 +1252,7 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
         }
 
         // Check if this is a package-level symbol (already defined in Pass 1)
-        existing_sym, already_defined := semantic_lookup_symbol(ctx, var_def.name)
+        existing_sym, already_defined := semantic_lookup_symbol(ctx, var_def.names[0])
         
         // If it's a package-level symbol (has pkg_dir), it was collected in Pass 1
         // Just validate it, don't redefine
@@ -1216,15 +1279,15 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
             // Local variable - check for redefinition or shadowing
             
             // Check if symbol exists in current scope (redefinition)
-            if var_def.name in ctx.current_scope.symbols {
-                add_error(ctx, node.span, "Symbol '%s' is already defined in this scope", var_def.name)
+            if var_def.names[0] in ctx.current_scope.symbols {
+                add_error(ctx, node.span, "Symbol '%s' is already defined in this scope", var_def.names[0])
                 node.inferred_type = Primitive_Type.Void
                 return Primitive_Type.Void
             }
             
             // Check if symbol exists in parent scope (shadowing)
             if already_defined {
-                add_error(ctx, node.span, "Symbol '%s' shadows variable from outer scope", var_def.name)
+                add_error(ctx, node.span, "Symbol '%s' shadows variable from outer scope", var_def.names[0])
                 node.inferred_type = Primitive_Type.Void
                 return Primitive_Type.Void
             }
@@ -1276,7 +1339,7 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
             }
             
             // Define symbol BEFORE validating initializer
-            semantic_define_symbol(ctx, var_def.name, declared_type, node.span)
+            semantic_define_symbol(ctx, var_def.names[0], declared_type, node.span)
             
             if value_type, ok := value_type_opt.?; ok {
                 if !types_compatible(declared_type, value_type, ctx) {
@@ -1924,16 +1987,47 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
             return Primitive_Type.Void
         }
 
-        if ret.value != nil {
-            ret_type := check_node(ctx, ret.value, expected_ret_type)
+        // Resolve expected return type if it's a Named_Type
+        resolved_expected_type := expected_ret_type
+        if named, is_named := expected_ret_type.(Named_Type); is_named {
+            if resolved, ok := resolve_named_type(ctx, named); ok {
+                resolved_expected_type = resolved
+            }
+        }
+
+        // Check if expected return is a tuple
+        if tuple_ret, is_tuple := resolved_expected_type.(Tuple_Type); is_tuple {
+            // Multiple return values expected
+            if len(ret.values) != len(tuple_ret.types) {
+                add_error(ctx, node.span, "Return statement: expected %d values, got %d", len(tuple_ret.types), len(ret.values))
+                return Primitive_Type.Void
+            }
+            
+            // Check each return value against corresponding tuple type
+            for value, i in ret.values {
+                if i < len(tuple_ret.types) {
+                    expected_type := tuple_ret.types[i]
+                    value_type := check_node(ctx, value, expected_type)
+                    if !types_compatible(expected_type, value_type, ctx) {
+                        add_error(ctx, node.span, "Return value %d: expected %v, got %v", i, expected_type, value_type)
+                    }
+                }
+            }
+        } else if len(ret.values) == 0 {
+            // No return values - check if void is expected
+            exp_prim_type, is_prim := resolved_expected_type.(Primitive_Type)
+            if !is_prim || exp_prim_type != .Void {
+                add_error(ctx, node.span, "Function expects return value")
+            }
+        } else if len(ret.values) == 1 {
+            // Single return value
+            ret_type := check_node(ctx, ret.values[0], expected_ret_type)
             if !types_compatible(expected_ret_type, ret_type, ctx) {
                 add_error(ctx, node.span, "Return type mismatch: expected %v, got %v", expected_ret_type, ret_type)
             }
         } else {
-            exp_prim_type, is_prim := expected_ret_type.(Primitive_Type)
-            if !is_prim || exp_prim_type != .Void {
-                add_error(ctx, node.span, "Function expects return value")
-            }
+            // Multiple values but function expects single return
+            add_error(ctx, node.span, "Function expects single return value, got %d", len(ret.values))
         }
         
         return Primitive_Type.Void
@@ -2319,6 +2413,15 @@ types_equal :: proc(a, b: Type_Info) -> bool {
             if !types_equal(type_a, type_b) do return false
         }
         return true
+    case Tuple_Type:
+        b_val, ok := b.(Tuple_Type)
+        if !ok do return false
+        if len(a_val.types) != len(b_val.types) do return false
+        for type_a, i in a_val.types {
+            type_b := b_val.types[i]
+            if !types_equal(type_a, type_b) do return false
+        }
+        return true
     case Named_Type:
         b_val, ok := b.(Named_Type)
         return ok && a_val.name==b_val.name
@@ -2406,6 +2509,22 @@ types_compatible :: proc(target: Type_Info, source: Type_Info, ctx: ^Semantic_Co
             if types_compatible(union_type, resolved_source, ctx) {
                 return true
             }
+        }
+    }
+    
+    // Tuple type compatibility - both must be tuples with compatible elements
+    if tuple_target, is_tuple_target := resolved_target.(Tuple_Type); is_tuple_target {
+        if tuple_source, is_tuple_source := resolved_source.(Tuple_Type); is_tuple_source {
+            if len(tuple_target.types) != len(tuple_source.types) {
+                return false
+            }
+            for type_target, i in tuple_target.types {
+                type_source := tuple_source.types[i]
+                if !types_compatible(type_target, type_source, ctx) {
+                    return false
+                }
+            }
+            return true
         }
     }
     

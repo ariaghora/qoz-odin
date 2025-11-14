@@ -16,6 +16,7 @@ Codegen_Context :: struct {
     current_pkg_name: string,
     skip_struct_defs: bool,
     generated_array_wrappers: map[string]bool, // Track which array wrapper structs we've generated
+    generated_tuple_types: map[string]string, // Track tuple types: type signature -> typedef name
     current_function_locals: map[string]bool, // Track parameters and local variables in current function
     current_function_return_type: Maybe(Type_Info), // Track current function's return type for union wrapping
     defer_stack: [dynamic][dynamic]^Node, // Stack of defer lists per scope
@@ -64,6 +65,63 @@ get_array_wrapper_name :: proc(elem_type: ^Type_Info, size: int) -> string {
         type_name = "unknown"
     }
     return fmt.tprintf("%sArray_%s_%d", MANGLE_PREFIX, type_name, size)
+}
+
+// Generate a unique signature string for tuple type
+get_tuple_signature :: proc(tuple_type: Tuple_Type) -> string {
+    parts := make([dynamic]string, context.temp_allocator)
+    append(&parts, "tuple")
+    for tuple_elem in tuple_type.types {
+        #partial switch t in tuple_elem {
+        case Primitive_Type:
+            #partial switch t {
+            case .I8:  append(&parts, "i8")
+            case .U8:  append(&parts, "u8")
+            case .I32: append(&parts, "i32")
+            case .I64: append(&parts, "i64")
+            case .F32: append(&parts, "f32")
+            case .F64: append(&parts, "f64")
+            case .Bool: append(&parts, "bool")
+            case .Cstring: append(&parts, "cstring")
+            case: append(&parts, "unknown")
+            }
+        case Named_Type:
+            // Use the name, but replace dots with underscores
+            name, _ := strings.replace_all(t.name, ".", "_", context.temp_allocator)
+            append(&parts, name)
+        case: append(&parts, "unknown")
+        }
+    }
+    return strings.join(parts[:], "_", context.temp_allocator)
+}
+
+// Generate typedef for tuple type
+codegen_tuple_typedef :: proc(ctx_cg: ^Codegen_Context, tuple_type: Tuple_Type) -> string {
+    signature := get_tuple_signature(tuple_type)
+    
+    // Check if we've already generated this tuple type
+    if typedef_name, exists := ctx_cg.generated_tuple_types[signature]; exists {
+        return typedef_name
+    }
+    
+    // Generate a new typedef name
+    typedef_name := fmt.tprintf("%s%s__%s", MANGLE_PREFIX, ctx_cg.current_pkg_name, signature)
+    ctx_cg.generated_tuple_types[signature] = typedef_name
+    
+    // Generate the typedef
+    strings.write_string(&ctx_cg.output_buf, "typedef struct {")
+    for tuple_elem, i in tuple_type.types {
+        if i > 0 {
+            strings.write_string(&ctx_cg.output_buf, " ")
+        }
+        codegen_type(ctx_cg, tuple_elem)
+        fmt.sbprintf(&ctx_cg.output_buf, " field_%d;", i)
+    }
+    strings.write_string(&ctx_cg.output_buf, "} ")
+    strings.write_string(&ctx_cg.output_buf, typedef_name)
+    strings.write_string(&ctx_cg.output_buf, ";\n")
+    
+    return typedef_name
 }
 
 // Generate a unique name for vec wrapper struct
@@ -456,6 +514,7 @@ codegen :: proc(asts: map[string]^Node, sorted_packages: []string, ctx_sem: ^Sem
         ctx_sem = ctx_sem,
         temp_counter = 0,
         generated_array_wrappers = make(map[string]bool, allocator=allocator),
+        generated_tuple_types = make(map[string]string, allocator=allocator),
     }
 
     strings.write_string(&ctx_cg.output_buf, string(#load("qoz_runtime.c")))
@@ -716,7 +775,7 @@ codegen_composite_alias :: proc(ctx_cg: ^Codegen_Context, type_info: Type_Info, 
 // Check if a type is a composite type (struct, union, future enums, etc.)
 is_composite_type :: proc(type_info: Type_Info) -> bool {
     #partial switch t in type_info {
-    case Struct_Type, Union_Type:
+    case Struct_Type, Union_Type, Tuple_Type:
         return true
     }
     return false
@@ -891,7 +950,9 @@ codegen_struct_forward_decl :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
             type_expr := var_def.content.payload.(Node_Type_Expr)
             
             if is_composite_type(type_expr.type_info) {
-                codegen_composite_forward_decl(ctx_cg, type_expr.type_info, var_def.name)
+                if len(var_def.names) > 0 {
+                    codegen_composite_forward_decl(ctx_cg, type_expr.type_info, var_def.names[0])
+                }
             }
         }
     }
@@ -911,7 +972,9 @@ codegen_struct_defs :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
             type_expr := var_def.content.payload.(Node_Type_Expr)
                 
             if is_composite_type(type_expr.type_info) {
-                codegen_composite_definition(ctx_cg, type_expr.type_info, var_def.name)
+                if len(var_def.names) > 0 {
+                    codegen_composite_definition(ctx_cg, type_expr.type_info, var_def.names[0])
+                }
             }
         }
     }
@@ -2541,13 +2604,12 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         codegen_emit_defers(ctx_cg)
         
         strings.write_string(&ctx_cg.output_buf, "return")
-        if ret.value != nil {
+        
+        if len(ret.values) > 0 {
             strings.write_string(&ctx_cg.output_buf, " ")
             
-            // Check if we need to wrap return value in union constructor
+            // Check if we need to wrap return values in tuple or union constructor
             if expected_ret_type, has_ret_type := ctx_cg.current_function_return_type.?; has_ret_type {
-                ret_value_type := ret.value.inferred_type.? or_else Primitive_Type.Void
-                
                 // Resolve return type if it's a named type
                 resolved_ret_type := expected_ret_type
                 if named_ret, is_named := expected_ret_type.(Named_Type); is_named {
@@ -2556,32 +2618,65 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
                     }
                 }
                 
-                // If return type is a union and value is a variant, wrap in union constructor
-                if union_ret, is_union := resolved_ret_type.(Union_Type); is_union {
-                    // Find which union variant matches the return value type
-                    variant_index := -1
-                    for union_type, idx in union_ret.types {
-                        if types_compatible(union_type, ret_value_type, ctx_cg.ctx_sem) {
-                            variant_index = idx
-                            break
+                // Check if return type is a tuple
+                if tuple_ret, is_tuple := resolved_ret_type.(Tuple_Type); is_tuple {
+                    // Multiple return values - generate tuple struct literal
+                    strings.write_string(&ctx_cg.output_buf, "(")
+                    codegen_type(ctx_cg, expected_ret_type)
+                    strings.write_string(&ctx_cg.output_buf, "){")
+                    for value, i in ret.values {
+                        if i > 0 {
+                            strings.write_string(&ctx_cg.output_buf, ", ")
                         }
+                        fmt.sbprintf(&ctx_cg.output_buf, ".field_%d = ", i)
+                        codegen_node(ctx_cg, value)
                     }
+                    strings.write_string(&ctx_cg.output_buf, "}")
+                } else if len(ret.values) == 1 {
+                    // Single return value - check for union wrapping
+                    ret_value_type := ret.values[0].inferred_type.? or_else Primitive_Type.Void
                     
-                    if variant_index >= 0 {
-                        // Generate union constructor: (UnionType){.tag = index, .data.variant_N = value}
-                        strings.write_string(&ctx_cg.output_buf, "(")
-                        codegen_type(ctx_cg, expected_ret_type)
-                        fmt.sbprintf(&ctx_cg.output_buf, "){{.tag = %d, .data.variant_%d = ", variant_index, variant_index)
-                        codegen_node(ctx_cg, ret.value)
-                        strings.write_string(&ctx_cg.output_buf, "}")
+                    // If return type is a union and value is a variant, wrap in union constructor
+                    if union_ret, is_union := resolved_ret_type.(Union_Type); is_union {
+                        // Find which union variant matches the return value type
+                        variant_index := -1
+                        for union_type, idx in union_ret.types {
+                            if types_compatible(union_type, ret_value_type, ctx_cg.ctx_sem) {
+                                variant_index = idx
+                                break
+                            }
+                        }
+                        
+                        if variant_index >= 0 {
+                            // Generate union constructor: (UnionType){.tag = index, .data.variant_N = value}
+                            strings.write_string(&ctx_cg.output_buf, "(")
+                            codegen_type(ctx_cg, expected_ret_type)
+                            fmt.sbprintf(&ctx_cg.output_buf, "){{.tag = %d, .data.variant_%d = ", variant_index, variant_index)
+                            codegen_node(ctx_cg, ret.values[0])
+                            strings.write_string(&ctx_cg.output_buf, "}")
+                        } else {
+                            codegen_node(ctx_cg, ret.values[0])
+                        }
                     } else {
-                        codegen_node(ctx_cg, ret.value)
+                        codegen_node(ctx_cg, ret.values[0])
                     }
                 } else {
-                    codegen_node(ctx_cg, ret.value)
+                    // Multiple values but not a tuple - error (should be caught in semantic)
+                    for value, i in ret.values {
+                        if i > 0 {
+                            strings.write_string(&ctx_cg.output_buf, ", ")
+                        }
+                        codegen_node(ctx_cg, value)
+                    }
                 }
             } else {
-                codegen_node(ctx_cg, ret.value)
+                // No expected type - just emit values
+                for value, i in ret.values {
+                    if i > 0 {
+                        strings.write_string(&ctx_cg.output_buf, ", ")
+                    }
+                    codegen_node(ctx_cg, value)
+                }
             }
         }
         strings.write_string(&ctx_cg.output_buf, ";\n")
@@ -2657,10 +2752,12 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
             // Find the package dir that matches current package name
             for pkg_dir, pkg_info in ctx_cg.ctx_sem.packages {
                 if filepath.base(pkg_dir) == ctx_cg.current_pkg_name {
-                    if sym, found := pkg_info.symbols[var_def.name]; found {
-                        if fn_type, is_fn := sym.type.(Function_Type); is_fn {
-                            qualified_fn_type = fn_type
-                            break
+                    if len(var_def.names) > 0 {
+                        if sym, found := pkg_info.symbols[var_def.names[0]]; found {
+                            if fn_type, is_fn := sym.type.(Function_Type); is_fn {
+                                qualified_fn_type = fn_type
+                                break
+                            }
                         }
                     }
                 }
@@ -2682,7 +2779,9 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
             // Push a new defer scope for this function
             append(&ctx_cg.defer_stack, make([dynamic]^Node, ctx_cg.ctx_sem.allocator))
             
-            codegen_func_signature(ctx_cg, var_def.name, fn_def, qualified_fn_type)
+            if len(var_def.names) > 0 {
+                codegen_func_signature(ctx_cg, var_def.names[0], fn_def, qualified_fn_type)
+            }
             strings.write_string(&ctx_cg.output_buf, " {\n")
             for stmt in fn_def.body {
                 codegen_indent(ctx_cg, ctx_cg.indent_level)
@@ -2693,7 +2792,7 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
             codegen_emit_defers(ctx_cg)
             
             // Special case: add return 0 to main 
-            if var_def.name == "main" {
+            if len(var_def.names) > 0 && var_def.names[0] == "main" {
                 codegen_indent(ctx_cg, ctx_cg.indent_level)
                 strings.write_string(&ctx_cg.output_buf, "return 0;\n")
             }
@@ -2719,7 +2818,9 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
                 strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX)
                 strings.write_string(&ctx_cg.output_buf, ctx_cg.current_pkg_name)
                 strings.write_string(&ctx_cg.output_buf, "__")
-                strings.write_string(&ctx_cg.output_buf, var_def.name) 
+                if len(var_def.names) > 0 {
+                strings.write_string(&ctx_cg.output_buf, var_def.names[0])
+            } 
                 strings.write_string(&ctx_cg.output_buf, " {\n")
                 ctx_cg.indent_level += 1
                 
@@ -2750,34 +2851,96 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
                 strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX)
                 strings.write_string(&ctx_cg.output_buf, ctx_cg.current_pkg_name)
                 strings.write_string(&ctx_cg.output_buf, "__")
-                strings.write_string(&ctx_cg.output_buf, var_def.name)
+                if len(var_def.names) > 0 {
+                    strings.write_string(&ctx_cg.output_buf, var_def.names[0])
+                }
                 strings.write_string(&ctx_cg.output_buf, ";\n\n")
             }
         } else {
-            //| Regular case
-            //+-------------
-            var_type := node.inferred_type.(Type_Info)
+            // Handle destructuring assignment: value, ok := func()
+            if len(var_def.names) > 1 {
+                // Generate: type0 name0; type1 name1; ... name0 = call_result.field_0; name1 = call_result.field_1; ...
+                call_result_type := node.inferred_type.(Type_Info)
+                
+                // Resolve if Named_Type
+                resolved_call_type := call_result_type
+                if named, is_named := call_result_type.(Named_Type); is_named {
+                    if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named, ctx_cg.current_pkg_name); ok {
+                        resolved_call_type = resolved
+                    }
+                }
+                
+                tuple_ret, is_tuple := resolved_call_type.(Tuple_Type)
+                if is_tuple {
+                    // Generate temporary variable for the call result
+                    temp_name := fmt.tprintf("_tuple_%d", ctx_cg.temp_counter)
+                    ctx_cg.temp_counter += 1
+                    
+                    codegen_type(ctx_cg, call_result_type)
+                    strings.write_string(&ctx_cg.output_buf, " ")
+                    strings.write_string(&ctx_cg.output_buf, temp_name)
+                    strings.write_string(&ctx_cg.output_buf, " = ")
+                    codegen_node(ctx_cg, var_def.content)
+                    strings.write_string(&ctx_cg.output_buf, ";\n")
+                    
+                    // Extract each field into its variable
+                    for name, i in var_def.names {
+                        if i < len(tuple_ret.types) {
+                            element_type := tuple_ret.types[i]
+                            codegen_type(ctx_cg, element_type)
+                            strings.write_string(&ctx_cg.output_buf, " ")
+                            strings.write_string(&ctx_cg.output_buf, name)
+                            fmt.sbprintf(&ctx_cg.output_buf, " = %s.field_%d;\n", temp_name, i)
+                            
+                            // Track local variable
+                            if ctx_cg.func_nesting_depth > 0 {
+                                ctx_cg.current_function_locals[name] = true
+                            }
+                        }
+                    }
+                } else {
+                    // Error case - should be caught in semantic
+                    codegen_type(ctx_cg, call_result_type)
+                    strings.write_string(&ctx_cg.output_buf, " ")
+                    if len(var_def.names) > 0 {
+                        strings.write_string(&ctx_cg.output_buf, var_def.names[0])
+                    }
+                    strings.write_string(&ctx_cg.output_buf, " = ")
+                    codegen_node(ctx_cg, var_def.content)
+                    if !ctx_cg.in_for_header {
+                        strings.write_string(&ctx_cg.output_buf, ";\n")
+                    }
+                }
+            } else {
+                //| Regular case - single variable
+                //+-------------
+                var_type := node.inferred_type.(Type_Info)
 
-            // Track local variable in current function
-            if ctx_cg.func_nesting_depth > 0 {
-                ctx_cg.current_function_locals[var_def.name] = true
-            }
+                // Track local variable in current function
+                if ctx_cg.func_nesting_depth > 0 {
+                    if len(var_def.names) > 0 {
+                        ctx_cg.current_function_locals[var_def.names[0]] = true
+                    }
+                }
 
-            codegen_type(ctx_cg, node.inferred_type.(Type_Info))
-            strings.write_string(&ctx_cg.output_buf, " ")
-            
-            // Add package prefix for top-level variables
-            if ctx_cg.func_nesting_depth == 0 {
-                strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX)
-                strings.write_string(&ctx_cg.output_buf, ctx_cg.current_pkg_name)
-                strings.write_string(&ctx_cg.output_buf, "__")
-            }
-            strings.write_string(&ctx_cg.output_buf, var_def.name)
+                codegen_type(ctx_cg, node.inferred_type.(Type_Info))
+                strings.write_string(&ctx_cg.output_buf, " ")
+                
+                // Add package prefix for top-level variables
+                if ctx_cg.func_nesting_depth == 0 {
+                    strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX)
+                    strings.write_string(&ctx_cg.output_buf, ctx_cg.current_pkg_name)
+                    strings.write_string(&ctx_cg.output_buf, "__")
+                }
+                if len(var_def.names) > 0 {
+                    strings.write_string(&ctx_cg.output_buf, var_def.names[0])
+                }
 
-            strings.write_string(&ctx_cg.output_buf, " = ")
-            codegen_node(ctx_cg, var_def.content)
-            if !ctx_cg.in_for_header {
-                strings.write_string(&ctx_cg.output_buf, ";\n")
+                strings.write_string(&ctx_cg.output_buf, " = ")
+                codegen_node(ctx_cg, var_def.content)
+                if !ctx_cg.in_for_header {
+                    strings.write_string(&ctx_cg.output_buf, ";\n")
+                }
             }
         }
     
@@ -2952,6 +3115,10 @@ codegen_type :: proc(ctx_cg: ^Codegen_Context, type: Type_Info, name: string = "
         // Generate the struct name - this happens when resolving named union types
         // We can't know the actual name here, so this is a fallback
         panic("Internal error: Union_Type should be handled as Named_Type, not inline")
+    case Tuple_Type:
+        // Generate typedef name for tuple type
+        typedef_name := codegen_tuple_typedef(ctx_cg, t)
+        strings.write_string(&ctx_cg.output_buf, typedef_name)
     case Named_Type:
         // Check for builtin string type
         if t.name == "string" || t.name == "strings.string" {
@@ -3017,15 +3184,19 @@ codegen_forward_decl :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
                     // Find the package dir that matches current package name
                     for pkg_dir, pkg_info in ctx_cg.ctx_sem.packages {
                         if filepath.base(pkg_dir) == ctx_cg.current_pkg_name {
-                            if sym, found := pkg_info.symbols[var_def.name]; found {
-                                if fn_type, is_fn := sym.type.(Function_Type); is_fn {
-                                    qualified_fn_type = fn_type
-                                    break
+                            if len(var_def.names) > 0 {
+                                if sym, found := pkg_info.symbols[var_def.names[0]]; found {
+                                    if fn_type, is_fn := sym.type.(Function_Type); is_fn {
+                                        qualified_fn_type = fn_type
+                                        break
+                                    }
                                 }
                             }
                         }
                     }
-                    codegen_func_signature(ctx_cg, var_def.name, fn_def, qualified_fn_type)
+                    if len(var_def.names) > 0 {
+                        codegen_func_signature(ctx_cg, var_def.names[0], fn_def, qualified_fn_type)
+                    }
                     strings.write_string(&ctx_cg.output_buf, ";\n")
                     
                     // Generate #define alias for external functions with external_name
@@ -3034,9 +3205,13 @@ codegen_forward_decl :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
                             // Mangle the Qoz name according to package
                             mangled_name: string
                             if ctx_cg.current_pkg_name != "" {
-                                mangled_name = fmt.tprintf("%s%s__%s", MANGLE_PREFIX, ctx_cg.current_pkg_name, var_def.name)
+                                if len(var_def.names) > 0 {
+                                    mangled_name = fmt.tprintf("%s%s__%s", MANGLE_PREFIX, ctx_cg.current_pkg_name, var_def.names[0])
+                                }
                             } else {
-                                mangled_name = fmt.tprintf("%s%s", MANGLE_PREFIX, var_def.name)
+                                if len(var_def.names) > 0 {
+                                    mangled_name = fmt.tprintf("%s%s", MANGLE_PREFIX, var_def.names[0])
+                                }
                             }
                             fmt.sbprintf(&ctx_cg.output_buf, "#define %s %s\n", mangled_name, ext_name)
                         }
@@ -3048,13 +3223,19 @@ codegen_forward_decl :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
                     type_expr := var_def.content.payload.(Node_Type_Expr)
 
                     if is_composite_type(type_expr.type_info) {
-                        codegen_composite_alias(ctx_cg, type_expr.type_info, var_def.name)
+                        if len(var_def.names) > 0 {
+                            codegen_composite_alias(ctx_cg, type_expr.type_info, var_def.names[0])
+                        }
                     } else {
                         alias_c_name := ""
                         if ctx_cg.current_pkg_name != "" {
-                            alias_c_name = fmt.tprintf("%s%s__%s", MANGLE_PREFIX, ctx_cg.current_pkg_name, var_def.name)
+                            if len(var_def.names) > 0 {
+                                alias_c_name = fmt.tprintf("%s%s__%s", MANGLE_PREFIX, ctx_cg.current_pkg_name, var_def.names[0])
+                            }
                         } else {
-                            alias_c_name = fmt.tprintf("%s%s", MANGLE_PREFIX, var_def.name)
+                            if len(var_def.names) > 0 {
+                                alias_c_name = fmt.tprintf("%s%s", MANGLE_PREFIX, var_def.names[0])
+                            }
                         }
 
                         strings.write_string(&ctx_cg.output_buf, "typedef ")
