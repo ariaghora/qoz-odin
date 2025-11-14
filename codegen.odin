@@ -460,6 +460,7 @@ codegen :: proc(asts: map[string]^Node, sorted_packages: []string, ctx_sem: ^Sem
     strings.write_string(&ctx_cg.output_buf, string(#load("qoz_runtime.c")))
     strings.write_string(&ctx_cg.output_buf, "\n\n")
     strings.write_string(&ctx_cg.output_buf, "#include <stdio.h>\n")
+    strings.write_string(&ctx_cg.output_buf, "#include <string.h>\n")
 
     // Pass 1: Struct forward declarations for ALL packages
     for pkg_dir in sorted_packages {
@@ -1951,6 +1952,321 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         
         codegen_indent(ctx_cg, ctx_cg.indent_level)
         strings.write_string(&ctx_cg.output_buf, "}\n")
+
+    case .Switch:
+        switch_stmt := node.payload.(Node_Switch)
+        value_type := switch_stmt.value.inferred_type.? or_else Primitive_Type.Void
+        
+        // Resolve named types
+        resolved_value_type := value_type
+        if named, is_named := value_type.(Named_Type); is_named {
+            if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named, ctx_cg.current_pkg_name); ok {
+                resolved_value_type = resolved
+            }
+        }
+        
+        union_type, is_union := resolved_value_type.(Union_Type)
+        
+        if is_union {
+            // Union switch: generate switch on .tag
+            // Get union type name for C variable declaration
+            union_type_name := ""
+            if named, is_named := value_type.(Named_Type); is_named {
+                union_type_name = named.name
+                if !strings.contains(union_type_name, ".") && ctx_cg.current_pkg_name != "" {
+                    union_type_name = fmt.tprintf("%s.%s", ctx_cg.current_pkg_name, union_type_name)
+                }
+            }
+            
+            // Generate temporary variable for union value
+            temp_name := fmt.tprintf("_switch_%d", ctx_cg.temp_counter)
+            ctx_cg.temp_counter += 1
+            
+            strings.write_string(&ctx_cg.output_buf, "{\n")
+            ctx_cg.indent_level += 1
+            codegen_indent(ctx_cg, ctx_cg.indent_level)
+            
+            // Declare temporary union variable
+            if union_type_name != "" {
+                mangled_name := fmt.tprintf("%s%s__%s", MANGLE_PREFIX, ctx_cg.current_pkg_name, union_type_name)
+                if strings.contains(union_type_name, ".") {
+                    dot_idx := strings.index(union_type_name, ".")
+                    pkg_part := union_type_name[:dot_idx]
+                    type_part := union_type_name[dot_idx+1:]
+                    mangled_name = fmt.tprintf("%s%s__%s", MANGLE_PREFIX, pkg_part, type_part)
+                }
+                fmt.sbprintf(&ctx_cg.output_buf, "%s %s = ", mangled_name, temp_name)
+            } else {
+                panic("Switch codegen: union type must be named")
+            }
+            
+            codegen_node(ctx_cg, switch_stmt.value)
+            strings.write_string(&ctx_cg.output_buf, ";\n")
+            
+            // Generate switch on tag
+            codegen_indent(ctx_cg, ctx_cg.indent_level)
+            strings.write_string(&ctx_cg.output_buf, "switch (")
+            strings.write_string(&ctx_cg.output_buf, temp_name)
+            strings.write_string(&ctx_cg.output_buf, ".tag) {\n")
+            
+            // Push new defer scope for switch body
+            append(&ctx_cg.defer_stack, make([dynamic]^Node, ctx_cg.ctx_sem.allocator))
+            
+            // Generate cases
+            for case_item in switch_stmt.cases {
+                type_pattern, is_type_pattern := case_item.pattern.(Type_Pattern)
+                if !is_type_pattern {
+                    continue // Skip invalid cases
+                }
+                
+                // Find variant index
+                variant_index := -1
+                for variant_type, i in union_type.types {
+                    // Resolve both pattern and variant types for comparison
+                    resolved_pattern := type_pattern.type
+                    if named_pattern, is_named := type_pattern.type.(Named_Type); is_named {
+                        if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named_pattern, ctx_cg.current_pkg_name); ok {
+                            resolved_pattern = resolved
+                        }
+                    }
+                    
+                    resolved_variant := variant_type
+                    if named_variant, is_named := variant_type.(Named_Type); is_named {
+                        if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named_variant, ctx_cg.current_pkg_name); ok {
+                            resolved_variant = resolved
+                        }
+                    }
+                    
+                    if types_equal(resolved_pattern, resolved_variant) {
+                        variant_index = i
+                        break
+                    }
+                }
+                
+                if variant_index == -1 {
+                    continue // Skip invalid cases (semantic analysis should have caught this)
+                }
+                
+                codegen_indent(ctx_cg, ctx_cg.indent_level + 1)
+                fmt.sbprintf(&ctx_cg.output_buf, "case %d:\n", variant_index)
+                
+                // Wrap case body in braces to allow variable declarations
+                codegen_indent(ctx_cg, ctx_cg.indent_level + 1)
+                strings.write_string(&ctx_cg.output_buf, "{\n")
+                ctx_cg.indent_level += 1
+                
+                // If pattern has a name, extract variant and assign to variable
+                if pattern_name, has_name := type_pattern.var_name.?; has_name {
+                    codegen_indent(ctx_cg, ctx_cg.indent_level)
+                    codegen_type(ctx_cg, type_pattern.type)
+                    strings.write_string(&ctx_cg.output_buf, " ")
+                    strings.write_string(&ctx_cg.output_buf, pattern_name)
+                    fmt.sbprintf(&ctx_cg.output_buf, " = %s.data.variant_%d;\n", temp_name, variant_index)
+                }
+                
+                // Generate case body
+                for stmt in case_item.body {
+                    codegen_indent(ctx_cg, ctx_cg.indent_level)
+                    codegen_node(ctx_cg, stmt)
+                }
+                
+                // Emit defers before exiting case
+                codegen_emit_defers(ctx_cg)
+                
+                codegen_indent(ctx_cg, ctx_cg.indent_level)
+                strings.write_string(&ctx_cg.output_buf, "break;\n")
+                ctx_cg.indent_level -= 1
+                codegen_indent(ctx_cg, ctx_cg.indent_level)
+                strings.write_string(&ctx_cg.output_buf, "}\n")
+            }
+            
+            // Generate default case if present
+            if default_body, has_default := switch_stmt.default_case.?; has_default {
+                codegen_indent(ctx_cg, ctx_cg.indent_level + 1)
+                strings.write_string(&ctx_cg.output_buf, "default:\n")
+                
+                ctx_cg.indent_level += 1
+                for stmt in default_body {
+                    codegen_indent(ctx_cg, ctx_cg.indent_level)
+                    codegen_node(ctx_cg, stmt)
+                }
+                
+                // Emit defers before exiting default
+                codegen_emit_defers(ctx_cg)
+                
+                codegen_indent(ctx_cg, ctx_cg.indent_level)
+                strings.write_string(&ctx_cg.output_buf, "break;\n")
+                ctx_cg.indent_level -= 1
+            }
+            
+            // Pop defer scope
+            pop(&ctx_cg.defer_stack)
+            
+            codegen_indent(ctx_cg, ctx_cg.indent_level)
+            strings.write_string(&ctx_cg.output_buf, "}\n")
+            
+            ctx_cg.indent_level -= 1
+            codegen_indent(ctx_cg, ctx_cg.indent_level)
+            strings.write_string(&ctx_cg.output_buf, "}\n")
+        } else {
+            // Integer/value switch: generate regular C switch
+            // Check if it's a string type (struct) - C doesn't support switch on structs
+            is_string_switch := false
+            if named, is_named := value_type.(Named_Type); is_named {
+                if named.name == "string" {
+                    is_string_switch = true
+                }
+            } else if _, is_struct := resolved_value_type.(Struct_Type); is_struct {
+                // Check if it's the string struct
+                if str_struct, is_str_struct := resolved_value_type.(Struct_Type); is_str_struct {
+                    if len(str_struct.fields) == 2 && 
+                       str_struct.fields[0].name == "data" && 
+                       str_struct.fields[1].name == "len" {
+                        is_string_switch = true
+                    }
+                }
+            }
+            
+            if is_string_switch {
+                // String switch: generate if-else chain (C doesn't support switch on structs)
+                // Push new defer scope for switch body
+                append(&ctx_cg.defer_stack, make([dynamic]^Node, ctx_cg.ctx_sem.allocator))
+                
+                // Generate if-else chain
+                for case_item, i in switch_stmt.cases {
+                    value_pattern, is_value_pattern := case_item.pattern.(Value_Pattern)
+                    if !is_value_pattern {
+                        continue // Skip invalid cases
+                    }
+                    
+                    if i == 0 {
+                        strings.write_string(&ctx_cg.output_buf, "if (")
+                    } else {
+                        codegen_indent(ctx_cg, ctx_cg.indent_level)
+                        strings.write_string(&ctx_cg.output_buf, "else if (")
+                    }
+                    
+                    // Compare strings: check both len and data
+                    strings.write_string(&ctx_cg.output_buf, "(")
+                    codegen_node(ctx_cg, switch_stmt.value)
+                    strings.write_string(&ctx_cg.output_buf, ").len == (")
+                    codegen_node(ctx_cg, value_pattern.value)
+                    strings.write_string(&ctx_cg.output_buf, ").len && ")
+                    strings.write_string(&ctx_cg.output_buf, "memcmp((")
+                    codegen_node(ctx_cg, switch_stmt.value)
+                    strings.write_string(&ctx_cg.output_buf, ").data, (")
+                    codegen_node(ctx_cg, value_pattern.value)
+                    strings.write_string(&ctx_cg.output_buf, ").data, (")
+                    codegen_node(ctx_cg, switch_stmt.value)
+                    strings.write_string(&ctx_cg.output_buf, ").len) == 0")
+                    strings.write_string(&ctx_cg.output_buf, ") {\n")
+                    
+                    // Generate case body
+                    ctx_cg.indent_level += 1
+                    for stmt in case_item.body {
+                        codegen_indent(ctx_cg, ctx_cg.indent_level)
+                        codegen_node(ctx_cg, stmt)
+                    }
+                    
+                    // Emit defers before exiting case
+                    codegen_emit_defers(ctx_cg)
+                    
+                    ctx_cg.indent_level -= 1
+                    codegen_indent(ctx_cg, ctx_cg.indent_level)
+                    strings.write_string(&ctx_cg.output_buf, "}\n")
+                }
+                
+                // Generate default case if present
+                if default_body, has_default := switch_stmt.default_case.?; has_default {
+                    codegen_indent(ctx_cg, ctx_cg.indent_level)
+                    strings.write_string(&ctx_cg.output_buf, "else {\n")
+                    
+                    ctx_cg.indent_level += 1
+                    for stmt in default_body {
+                        codegen_indent(ctx_cg, ctx_cg.indent_level)
+                        codegen_node(ctx_cg, stmt)
+                    }
+                    
+                    // Emit defers before exiting default
+                    codegen_emit_defers(ctx_cg)
+                    
+                    ctx_cg.indent_level -= 1
+                    codegen_indent(ctx_cg, ctx_cg.indent_level)
+                    strings.write_string(&ctx_cg.output_buf, "}\n")
+                }
+                
+                // Pop defer scope
+                pop(&ctx_cg.defer_stack)
+            } else {
+                // Integer/value switch: generate regular C switch
+                strings.write_string(&ctx_cg.output_buf, "switch (")
+                codegen_node(ctx_cg, switch_stmt.value)
+                strings.write_string(&ctx_cg.output_buf, ") {\n")
+                
+                // Push new defer scope for switch body
+                append(&ctx_cg.defer_stack, make([dynamic]^Node, ctx_cg.ctx_sem.allocator))
+                
+                // Generate cases
+                for case_item in switch_stmt.cases {
+                    value_pattern, is_value_pattern := case_item.pattern.(Value_Pattern)
+                    if !is_value_pattern {
+                        continue // Skip invalid cases
+                    }
+                    
+                    codegen_indent(ctx_cg, ctx_cg.indent_level + 1)
+                    strings.write_string(&ctx_cg.output_buf, "case ")
+                    codegen_node(ctx_cg, value_pattern.value)
+                    strings.write_string(&ctx_cg.output_buf, ":\n")
+                    
+                    // Generate case body (wrap in braces to allow variable declarations)
+                    codegen_indent(ctx_cg, ctx_cg.indent_level + 1)
+                    strings.write_string(&ctx_cg.output_buf, "{\n")
+                    ctx_cg.indent_level += 1
+                    for stmt in case_item.body {
+                        codegen_indent(ctx_cg, ctx_cg.indent_level)
+                        codegen_node(ctx_cg, stmt)
+                    }
+                    
+                    // Emit defers before exiting case
+                    codegen_emit_defers(ctx_cg)
+                    
+                    ctx_cg.indent_level -= 1
+                    codegen_indent(ctx_cg, ctx_cg.indent_level)
+                    strings.write_string(&ctx_cg.output_buf, "break;\n")
+                    codegen_indent(ctx_cg, ctx_cg.indent_level)
+                    strings.write_string(&ctx_cg.output_buf, "}\n")
+                }
+                
+                // Generate default case if present
+                if default_body, has_default := switch_stmt.default_case.?; has_default {
+                    codegen_indent(ctx_cg, ctx_cg.indent_level + 1)
+                    strings.write_string(&ctx_cg.output_buf, "default:\n")
+                    codegen_indent(ctx_cg, ctx_cg.indent_level + 1)
+                    strings.write_string(&ctx_cg.output_buf, "{\n")
+                    
+                    ctx_cg.indent_level += 1
+                    for stmt in default_body {
+                        codegen_indent(ctx_cg, ctx_cg.indent_level)
+                        codegen_node(ctx_cg, stmt)
+                    }
+                    
+                    // Emit defers before exiting default
+                    codegen_emit_defers(ctx_cg)
+                    
+                    ctx_cg.indent_level -= 1
+                    codegen_indent(ctx_cg, ctx_cg.indent_level)
+                    strings.write_string(&ctx_cg.output_buf, "break;\n")
+                    codegen_indent(ctx_cg, ctx_cg.indent_level)
+                    strings.write_string(&ctx_cg.output_buf, "}\n")
+                }
+                
+                // Pop defer scope
+                pop(&ctx_cg.defer_stack)
+                
+                codegen_indent(ctx_cg, ctx_cg.indent_level)
+                strings.write_string(&ctx_cg.output_buf, "}\n")
+            }
+        }
 
     case .If: 
         if_node := node.payload.(Node_If)

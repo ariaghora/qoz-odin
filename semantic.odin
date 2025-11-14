@@ -1605,6 +1605,196 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
         
         return Primitive_Type.Void
 
+    case .Switch:
+        switch_stmt := node.payload.(Node_Switch)
+        value_type := check_node(ctx, switch_stmt.value)
+        
+        // Resolve named types
+        resolved_value_type := value_type
+        if named, is_named := value_type.(Named_Type); is_named {
+            if resolved, ok := resolve_named_type(ctx, named); ok {
+                resolved_value_type = resolved
+            }
+        }
+        
+        // Check if it's a union type
+        union_type, is_union := resolved_value_type.(Union_Type)
+        
+        // Also check if the original value_type is a Named_Type for string (before resolution)
+        is_string_type := false
+        if named, is_named := value_type.(Named_Type); is_named {
+            if named.name == "string" {
+                is_string_type = true
+            }
+        }
+        
+        if is_union {
+            // Union switch: validate type patterns
+            covered_variants := make(map[int]bool, context.temp_allocator)
+            
+            // Check each case
+            for case_item in switch_stmt.cases {
+                type_pattern, is_type_pattern := case_item.pattern.(Type_Pattern)
+                if !is_type_pattern {
+                    add_error(ctx, node.span, "Union switch requires type patterns, got value pattern")
+                    continue
+                }
+                
+                // Resolve pattern type
+                pattern_type := type_pattern.type
+                if named_pattern, is_named := pattern_type.(Named_Type); is_named {
+                    if resolved, ok := resolve_named_type(ctx, named_pattern); ok {
+                        pattern_type = resolved
+                    }
+                }
+                
+                // Find matching variant index
+                variant_index := -1
+                for variant_type, i in union_type.types {
+                    // Resolve variant type if it's a Named_Type
+                    resolved_variant_type := variant_type
+                    if named_variant, is_named := variant_type.(Named_Type); is_named {
+                        if resolved, ok := resolve_named_type(ctx, named_variant); ok {
+                            resolved_variant_type = resolved
+                        }
+                    }
+                    
+                    if types_equal(pattern_type, resolved_variant_type) {
+                        variant_index = i
+                        break
+                    }
+                }
+                
+                if variant_index == -1 {
+                    add_error(ctx, node.span, "Case pattern type %v does not match any variant in union", type_pattern.type)
+                } else {
+                    if variant_index in covered_variants {
+                        add_error(ctx, node.span, "Duplicate case for variant %v", type_pattern.type)
+                    }
+                    covered_variants[variant_index] = true
+                }
+                
+                // If pattern has a name, introduce it into the case body scope
+                semantic_push_scope(ctx)
+                if pattern_name, has_name := type_pattern.var_name.?; has_name {
+                    semantic_define_symbol(ctx, pattern_name, pattern_type, node.span)
+                }
+                
+                // Check case body
+                for stmt in case_item.body {
+                    check_node(ctx, stmt)
+                }
+                
+                semantic_pop_scope(ctx)
+            }
+            
+            // Check default case if present
+            if default_body, has_default := switch_stmt.default_case.?; has_default {
+                semantic_push_scope(ctx)
+                for stmt in default_body {
+                    check_node(ctx, stmt)
+                }
+                semantic_pop_scope(ctx)
+            }
+            
+            // Check exhaustiveness (all variants covered or default present)
+            if len(covered_variants) < len(union_type.types) {
+                if _, has_default := switch_stmt.default_case.?; !has_default {
+                    add_error(ctx, node.span, "Switch statement is not exhaustive: missing cases for some union variants")
+                }
+            }
+        } else {
+            // Integer/value switch: validate value patterns
+            // Check that switch value is a comparable type
+            is_comparable := is_string_type // string is always comparable
+            if !is_comparable {
+                #partial switch t in resolved_value_type {
+                case Primitive_Type:
+                    is_comparable = (t == .I8 || t == .U8 || t == .I32 || t == .I64 || t == .F32 || t == .F64 || t == .Bool || t == .Cstring)
+                case Untyped_Int, Untyped_Float:
+                    is_comparable = true
+                case Struct_Type:
+                    // Check if it's the string struct (has data: *i8 and len: i64)
+                    if len(t.fields) == 2 && 
+                       t.fields[0].name == "data" && 
+                       t.fields[1].name == "len" {
+                        is_comparable = true
+                    }
+                }
+            }
+            
+            if !is_comparable {
+                add_error(ctx, switch_stmt.value.span, "Switch statement requires union type or comparable type (integer, float, bool, string), got %v", value_type)
+                return Primitive_Type.Void
+            }
+            
+            // Track covered values for duplicate detection
+            covered_values := make(map[string]bool, context.temp_allocator)
+            
+            // Check each case
+            for case_item in switch_stmt.cases {
+                value_pattern, is_value_pattern := case_item.pattern.(Value_Pattern)
+                if !is_value_pattern {
+                    add_error(ctx, node.span, "Value switch requires value patterns, got type pattern")
+                    continue
+                }
+                
+                // Check pattern value type (with expected type for coercion)
+                // For string switches, pass the original Named_Type to allow coercion
+                expected_for_coercion := resolved_value_type
+                if is_string_type {
+                    if named, is_named := value_type.(Named_Type); is_named {
+                        expected_for_coercion = named // Use Named_Type for coercion
+                    }
+                }
+                pattern_value_type := check_node_with_context(ctx, value_pattern.value, expected_for_coercion)
+                
+                // Check compatibility with switch value type
+                // After coercion, pattern_value_type should match
+                if !types_compatible(pattern_value_type, resolved_value_type, ctx) {
+                    // Also check if it's compatible with the original value_type (for string)
+                    if !is_string_type || !types_compatible(pattern_value_type, value_type, ctx) {
+                        add_error(ctx, value_pattern.value.span, "Case value type %v is not compatible with switch value type %v", pattern_value_type, resolved_value_type)
+                    }
+                }
+                
+                // Generate a key for duplicate detection (simplified - just use source)
+                value_key := ""
+                if lit_num, is_num := value_pattern.value.payload.(Node_Literal_Number); is_num {
+                    value_key = lit_num.content.source
+                } else if lit_str, is_str := value_pattern.value.payload.(Node_Literal_String); is_str {
+                    value_key = lit_str.content.source
+                } else if lit_bool, is_bool := value_pattern.value.payload.(Node_Literal_Bool); is_bool {
+                    value_key = lit_bool.content.source
+                }
+                
+                if value_key != "" {
+                    if value_key in covered_values {
+                        add_error(ctx, value_pattern.value.span, "Duplicate case value")
+                    }
+                    covered_values[value_key] = true
+                }
+                
+                // Check case body
+                semantic_push_scope(ctx)
+                for stmt in case_item.body {
+                    check_node(ctx, stmt)
+                }
+                semantic_pop_scope(ctx)
+            }
+            
+            // Check default case if present
+            if default_body, has_default := switch_stmt.default_case.?; has_default {
+                semantic_push_scope(ctx)
+                for stmt in default_body {
+                    check_node(ctx, stmt)
+                }
+                semantic_pop_scope(ctx)
+            }
+        }
+        
+        return Primitive_Type.Void
+
     case .Literal_Arr:
         arr_lit := node.payload.(Node_Array_Literal)
         

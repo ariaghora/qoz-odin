@@ -35,6 +35,7 @@ Node_Kind :: enum {
     Link,
     Literal_Arr,
     Literal_Nil,
+    Switch,
     Literal_Number,
     Literal_String,
     Literal_Bool,
@@ -136,6 +137,15 @@ Node_For_In         :: struct { iterator: string, iterable: ^Node, body: [dynami
 Node_While          :: struct { condition: ^Node, body: [dynamic]^Node }
 Node_Identifier     :: struct { name:string }
 Node_If             :: struct { condition: ^Node, if_body: [dynamic]^Node, else_body: [dynamic]^Node }
+Switch_Case_Pattern :: union {
+    Type_Pattern,  // For union variant matching: case TypeName var:
+    Value_Pattern, // For integer/value matching: case 42:
+}
+Type_Pattern  :: struct { type: Type_Info, var_name: Maybe(string) }
+Value_Pattern :: struct { value: ^Node } // Literal value node
+
+Switch_Case         :: struct { pattern: Switch_Case_Pattern, body: [dynamic]^Node }
+Node_Switch         :: struct { value: ^Node, cases: [dynamic]Switch_Case, default_case: Maybe([dynamic]^Node) }
 Node_Import         :: struct { path: string, alias: Maybe(string) }
 Node_Index          :: struct { object, index: ^Node }
 Node_Len            :: struct { value: ^Node }
@@ -195,6 +205,7 @@ Node :: struct {
         Node_Var_Def,
         Node_Un_Op,
         Node_While,
+        Node_Switch,
     }
 }
 
@@ -387,6 +398,7 @@ parse_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.
     case .KW_For: return parse_for_statement(ps, parent, allocator)
     case .KW_While: return parse_while_statement(ps, parent, allocator)
     case .KW_If: return parse_if_statement(ps, parent, allocator)
+    case .KW_Switch: return parse_switch_statement(ps, parent, allocator)
     case .KW_Print: return parse_print_statement(ps, parent, allocator)
     case .KW_Println: return parse_println_statement(ps, parent, allocator)
     case .KW_Return: return parse_return_statement(ps, parent, allocator)
@@ -1787,6 +1799,102 @@ parse_while_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := co
             body = body,
         }
     }, allocator), nil
+}
+
+parse_switch_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
+    span_start := ps.idx
+    parser_advance(ps) // eat 'switch'
+    
+    // Parse the value expression
+    value := parse_expression(ps, parent, allocator) or_return
+    
+    parser_consume(ps, .Left_Brace) or_return
+    
+    cases := make([dynamic]Switch_Case, allocator)
+    default_case: Maybe([dynamic]^Node)
+    
+    for ps.current_token.kind != .Right_Brace {
+        if ps.current_token.kind == .EOF {
+            return nil, make_parse_error(ps, "Unexpected EOF in switch statement")
+        }
+        
+        if ps.current_token.kind == .KW_Default {
+            parser_advance(ps) // eat 'default'
+            parser_consume(ps, .Colon) or_return
+            
+            default_body := make([dynamic]^Node, allocator)
+            for ps.current_token.kind != .Right_Brace && ps.current_token.kind != .KW_Case && ps.current_token.kind != .KW_Default {
+                if ps.current_token.kind == .EOF {
+                    return nil, make_parse_error(ps, "Unexpected EOF in default case")
+                }
+                stmt := parse_statement(ps, parent, allocator) or_return
+                append(&default_body, stmt)
+            }
+            default_case = default_body
+        } else if ps.current_token.kind == .KW_Case {
+            parser_advance(ps) // eat 'case'
+            
+            // Detect pattern type: if it's a literal, it's a value pattern; otherwise it's a type pattern
+            pattern: Switch_Case_Pattern
+            
+            if ps.current_token.kind == .Lit_Number || 
+               ps.current_token.kind == .Lit_String || 
+               ps.current_token.kind == .Lit_True || 
+               ps.current_token.kind == .Lit_False ||
+               ps.current_token.kind == .Lit_Nil {
+                // Value pattern: case 42: or case "hello":
+                value_expr := parse_expression(ps, parent, allocator) or_return
+                parser_consume(ps, .Colon) or_return
+                
+                pattern = Value_Pattern{value = value_expr}
+            } else {
+                // Type pattern: case TypeName var:
+                pattern_type := parse_type(ps, allocator) or_return
+                
+                // Optional variable name for binding
+                pattern_name: Maybe(string)
+                if ps.current_token.kind == .Iden {
+                    pattern_name = ps.current_token.source
+                    parser_advance(ps) // eat identifier
+                }
+                
+                parser_consume(ps, .Colon) or_return
+                
+                pattern = Type_Pattern{type = pattern_type, var_name = pattern_name}
+            }
+            
+            // Parse case body
+            case_body := make([dynamic]^Node, allocator)
+            for ps.current_token.kind != .Right_Brace && ps.current_token.kind != .KW_Case && ps.current_token.kind != .KW_Default {
+                if ps.current_token.kind == .EOF {
+                    return nil, make_parse_error(ps, "Unexpected EOF in case body")
+                }
+                stmt := parse_statement(ps, parent, allocator) or_return
+                append(&case_body, stmt)
+            }
+            
+            append(&cases, Switch_Case{
+                pattern = pattern,
+                body = case_body,
+            })
+        } else {
+            return nil, make_parse_error(ps, fmt.tprintf("Expected 'case' or 'default' in switch, got %v", ps.current_token.kind))
+        }
+    }
+    
+    parser_consume(ps, .Right_Brace) or_return
+    
+    switch_node := new(Node, allocator)
+    switch_node.node_kind = .Switch
+    switch_node.parent = parent
+    switch_node.span = Span{start = span_start, end = ps.idx - 1}
+    switch_node.payload = Node_Switch{
+        value = value,
+        cases = cases,
+        default_case = default_case,
+    }
+    
+    return switch_node, nil
 }
 
 parse_type :: proc(ps: ^Parsing_State, allocator: mem.Allocator) -> (res:Type_Info, err:Maybe(Parse_Error)) {

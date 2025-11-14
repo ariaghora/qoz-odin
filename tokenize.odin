@@ -17,6 +17,7 @@ Token_Kind :: enum {
     KW_I8, KW_U8, KW_I32, KW_I64, KW_F32, KW_F64, KW_Void, KW_Bool, KW_Cstring, 
     KW_Arr, KW_Vec, KW_Map, KW_For, KW_While, KW_In, KW_Struct, KW_Union,
     KW_Size_Of, KW_Len, KW_New, KW_Del,
+    KW_Switch, KW_Case, KW_Default,
     KW_Import, KW_Link, Iden, EOF,
 }
 
@@ -139,6 +140,9 @@ make_id_or_kw :: proc(t: ^Tokenizer) {
     case "size_of":  tok_kind = .KW_Size_Of
     case "new":      tok_kind = .KW_New
     case "while":    tok_kind = .KW_While
+    case "switch":   tok_kind = .KW_Switch
+    case "case":     tok_kind = .KW_Case
+    case "default":  tok_kind = .KW_Default
     case:            tok_kind = .Iden
     }
     

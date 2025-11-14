@@ -1,0 +1,55 @@
+Point := struct { x: f64, y: f64 }
+Circle := struct { radius: f64 }
+
+Shape := union {
+    Point,
+    Circle,
+    f64
+}
+
+print_union := func(s: Shape) {
+    switch s {
+    case Point p:
+        println("Point:", p.x, p.y)
+    case Circle c:
+        println("Circle radius:", c.radius)
+    case f64 val:
+        println("Number:", val)
+    }
+}
+
+main := func() {
+    // Test union switch
+    println("=== Union Switch ===")
+    print_union(Point{x: 1.0, y: 2.0})
+    print_union(Circle{radius: 5.0})
+    print_union(3.14)
+    
+    // Test integer switch
+    println("\n=== Integer Switch ===")
+    x := 2
+    switch x {
+    case 1:
+        println("One")
+    case 2:
+        println("Two")
+        println("Two")
+    case 3:
+        println("Three")
+    default:
+        println("Other")
+    }
+    
+    // Test string switch
+    println("\n=== String Switch ===")
+    name := "Alice"
+    switch name {
+    case "Alice":
+        println("Hello Alice!")
+    case "Bob":
+        println("Hello Bob!")
+    default:
+        println("Hello stranger!")
+    }
+}
+
