@@ -1,0 +1,9 @@
+Shape := union {
+    Circle:  f64,
+    Square:  f64,
+    Triangle: i32
+}
+
+main := func() {
+    println("Union parsing test")
+}
