@@ -34,7 +34,8 @@ Semantic_Context :: struct {
     errors: [dynamic]Semantic_Error,
     allocator: mem.Allocator,
     current_function_return_type: Maybe(Type_Info),
-    current_struct_name: Maybe(string), 
+    current_struct_name: Maybe(string),
+    current_union_name: Maybe(string),
     external_functions: map[string]bool,
     global_symbols: map[string]bool,
 
@@ -1174,7 +1175,17 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
         }
 
         if var_def.content.node_kind == .Type_Expr {
-            ctx.current_struct_name = var_def.name
+            type_expr := var_def.content.payload.(Node_Type_Expr)
+            if _, is_struct := type_expr.type_info.(Struct_Type); is_struct {
+                ctx.current_struct_name = var_def.name
+                ctx.current_union_name = nil
+            } else if _, is_union := type_expr.type_info.(Union_Type); is_union {
+                ctx.current_union_name = var_def.name
+                ctx.current_struct_name = nil
+            } else {
+                ctx.current_struct_name = nil
+                ctx.current_union_name = nil
+            }
         }
 
         // Check if this is a package-level symbol (already defined in Pass 1)
@@ -1677,7 +1688,9 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
                 // If pattern has a name, introduce it into the case body scope
                 semantic_push_scope(ctx)
                 if pattern_name, has_name := type_pattern.var_name.?; has_name {
-                    semantic_define_symbol(ctx, pattern_name, pattern_type, node.span)
+                    // Preserve the original Named_Type for codegen (printing needs the type name)
+                    // Use the original type_pattern.type, not the resolved pattern_type
+                    semantic_define_symbol(ctx, pattern_name, type_pattern.type, node.span)
                 }
                 
                 // Check case body
@@ -2075,6 +2088,17 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
                     if check_infinite_size(ctx, struct_name, field.type, node.span) {
                         add_error(ctx, node.span, "Struct '%s' has infinite size (field '%s' creates direct recursion). You may want to use indirection for this field's type, such as *%s.", 
                             struct_name, field.name, struct_name)
+                    }
+                }
+            }
+        }
+        
+        if union_type, is_union := type_expr.type_info.(Union_Type); is_union {
+            if union_name, has_name := ctx.current_union_name.?; has_name {
+                for variant_type in union_type.types {
+                    if check_infinite_size(ctx, union_name, variant_type, node.span) {
+                        add_error(ctx, node.span, "Union '%s' has infinite size (variant '%v' creates direct recursion). You may want to use indirection for this variant's type, such as *%s.", 
+                            union_name, variant_type, union_name)
                     }
                 }
             }
@@ -2694,6 +2718,14 @@ check_infinite_size_impl :: proc(ctx: ^Semantic_Context, struct_name: string, fi
     case Struct_Type:
         for field in t.fields {
             if check_infinite_size_impl(ctx, struct_name, field.type, seen) {
+                return true
+            }
+        }
+        return false
+    
+    case Union_Type:
+        for variant_type in t.types {
+            if check_infinite_size_impl(ctx, struct_name, variant_type, seen) {
                 return true
             }
         }
