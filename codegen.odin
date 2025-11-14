@@ -17,6 +17,7 @@ Codegen_Context :: struct {
     skip_struct_defs: bool,
     generated_array_wrappers: map[string]bool, // Track which array wrapper structs we've generated
     current_function_locals: map[string]bool, // Track parameters and local variables in current function
+    current_function_return_type: Maybe(Type_Info), // Track current function's return type for union wrapping
     defer_stack: [dynamic][dynamic]^Node, // Stack of defer lists per scope
 }
 
@@ -2542,7 +2543,46 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         strings.write_string(&ctx_cg.output_buf, "return")
         if ret.value != nil {
             strings.write_string(&ctx_cg.output_buf, " ")
-            codegen_node(ctx_cg, ret.value)
+            
+            // Check if we need to wrap return value in union constructor
+            if expected_ret_type, has_ret_type := ctx_cg.current_function_return_type.?; has_ret_type {
+                ret_value_type := ret.value.inferred_type.? or_else Primitive_Type.Void
+                
+                // Resolve return type if it's a named type
+                resolved_ret_type := expected_ret_type
+                if named_ret, is_named := expected_ret_type.(Named_Type); is_named {
+                    if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named_ret, ctx_cg.current_pkg_name); ok {
+                        resolved_ret_type = resolved
+                    }
+                }
+                
+                // If return type is a union and value is a variant, wrap in union constructor
+                if union_ret, is_union := resolved_ret_type.(Union_Type); is_union {
+                    // Find which union variant matches the return value type
+                    variant_index := -1
+                    for union_type, idx in union_ret.types {
+                        if types_compatible(union_type, ret_value_type, ctx_cg.ctx_sem) {
+                            variant_index = idx
+                            break
+                        }
+                    }
+                    
+                    if variant_index >= 0 {
+                        // Generate union constructor: (UnionType){.tag = index, .data.variant_N = value}
+                        strings.write_string(&ctx_cg.output_buf, "(")
+                        codegen_type(ctx_cg, expected_ret_type)
+                        fmt.sbprintf(&ctx_cg.output_buf, "){{.tag = %d, .data.variant_%d = ", variant_index, variant_index)
+                        codegen_node(ctx_cg, ret.value)
+                        strings.write_string(&ctx_cg.output_buf, "}")
+                    } else {
+                        codegen_node(ctx_cg, ret.value)
+                    }
+                } else {
+                    codegen_node(ctx_cg, ret.value)
+                }
+            } else {
+                codegen_node(ctx_cg, ret.value)
+            }
         }
         strings.write_string(&ctx_cg.output_buf, ";\n")
 
@@ -2635,6 +2675,10 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
                 ctx_cg.current_function_locals[param.name] = true
             }
             
+            // Track function return type for union wrapping
+            old_return_type := ctx_cg.current_function_return_type
+            ctx_cg.current_function_return_type = fn_def.return_type
+            
             // Push a new defer scope for this function
             append(&ctx_cg.defer_stack, make([dynamic]^Node, ctx_cg.ctx_sem.allocator))
             
@@ -2658,6 +2702,9 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
             
             // Pop defer scope
             pop(&ctx_cg.defer_stack)
+            
+            // Restore previous return type
+            ctx_cg.current_function_return_type = old_return_type
             
             ctx_cg.func_nesting_depth -= 1
             ctx_cg.indent_level -= 1
