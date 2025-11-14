@@ -11,6 +11,7 @@ Codegen_Context :: struct {
     ctx_sem: ^Semantic_Context,
     func_nesting_depth: int, // TODO(Aria): track depth for lambda lifting
     loop_counter: int,
+    temp_counter: int, // Counter for generating unique temporary variable names
     in_for_header: bool, 
     current_pkg_name: string,
     skip_struct_defs: bool,
@@ -452,6 +453,7 @@ codegen :: proc(asts: map[string]^Node, sorted_packages: []string, ctx_sem: ^Sem
         output_buf = sb, 
         indent_level = 0, 
         ctx_sem = ctx_sem,
+        temp_counter = 0,
         generated_array_wrappers = make(map[string]bool, allocator=allocator),
     }
 
@@ -928,6 +930,465 @@ codegen_emit_defers :: proc(ctx_cg: ^Codegen_Context) {
     }
 }
 
+// Helper to check if a type is "simple" (can use printf format specifier)
+is_simple_print_type :: proc(type_info: Type_Info, ctx_sem: ^Semantic_Context, pkg_name: string) -> bool {
+    #partial switch t in type_info {
+    case Primitive_Type, Untyped_Int, Untyped_Float, Untyped_String, Pointer_Type:
+        return true
+    case Named_Type:
+        if t.name == "string" {
+            return true
+        }
+        // Resolve to check if it's a struct/array/vec
+        if resolved, ok := resolve_named_type(ctx_sem, t, pkg_name); ok {
+            return is_simple_print_type(resolved, ctx_sem, pkg_name)
+        }
+        return false
+    case:
+        return false
+    }
+}
+
+// Generate code to print a value from a C expression string (for array/struct elements)
+codegen_print_value_from_expr :: proc(ctx_cg: ^Codegen_Context, base_expr: string, index: int, type_info: Type_Info, is_first: bool, is_last: bool) {
+    // Build the full expression
+    expr := base_expr
+    if index >= 0 {
+        expr = fmt.tprintf("%s[%d]", base_expr, index)
+    } else {
+        // Use base_expr as-is (may already contain [_i] for vecs)
+        expr = base_expr
+    }
+    
+    // Resolve named types first
+    resolved_type := type_info
+    if named, is_named := type_info.(Named_Type); is_named {
+        if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named, ctx_cg.current_pkg_name); ok {
+            resolved_type = resolved
+        }
+    }
+    
+    #partial switch t in resolved_type {
+    case Primitive_Type:
+        switch t {
+        case .I8, .U8, .I32, .I64:
+            if !is_first do strings.write_string(&ctx_cg.output_buf, "printf(\" \");\n")
+            codegen_indent(ctx_cg, ctx_cg.indent_level + 2)
+            fmt.sbprintf(&ctx_cg.output_buf, "printf(\"%%d\", (int)%s);\n", expr)
+        case .F32, .F64:
+            if !is_first do strings.write_string(&ctx_cg.output_buf, "printf(\" \");\n")
+            codegen_indent(ctx_cg, ctx_cg.indent_level + 2)
+            fmt.sbprintf(&ctx_cg.output_buf, "printf(\"%%f\", (double)%s);\n", expr)
+        case .Bool:
+            if !is_first do strings.write_string(&ctx_cg.output_buf, "printf(\" \");\n")
+            codegen_indent(ctx_cg, ctx_cg.indent_level + 2)
+            fmt.sbprintf(&ctx_cg.output_buf, "printf(\"%%s\", %s ? \"true\" : \"false\");\n", expr)
+        case .Cstring:
+            if !is_first do strings.write_string(&ctx_cg.output_buf, "printf(\" \");\n")
+            codegen_indent(ctx_cg, ctx_cg.indent_level + 2)
+            fmt.sbprintf(&ctx_cg.output_buf, "printf(\"%%s\", %s);\n", expr)
+        case .Void:
+            panic("Cannot print void")
+        }
+    
+    case Untyped_Int:
+        if !is_first do strings.write_string(&ctx_cg.output_buf, "printf(\" \");\n")
+        codegen_indent(ctx_cg, ctx_cg.indent_level + 2)
+        fmt.sbprintf(&ctx_cg.output_buf, "printf(\"%%d\", (int)%s);\n", expr)
+    
+    case Untyped_Float:
+        if !is_first do strings.write_string(&ctx_cg.output_buf, "printf(\" \");\n")
+        codegen_indent(ctx_cg, ctx_cg.indent_level + 2)
+        fmt.sbprintf(&ctx_cg.output_buf, "printf(\"%%f\", (double)%s);\n", expr)
+    
+    case Untyped_String:
+        if !is_first do strings.write_string(&ctx_cg.output_buf, "printf(\" \");\n")
+        codegen_indent(ctx_cg, ctx_cg.indent_level + 2)
+        fmt.sbprintf(&ctx_cg.output_buf, "printf(\"%%.*s\", (int)(%s).len, (%s).data);\n", expr, expr)
+    
+    case Named_Type:
+        if t.name == "string" {
+            if !is_first do strings.write_string(&ctx_cg.output_buf, "printf(\" \");\n")
+            codegen_indent(ctx_cg, ctx_cg.indent_level + 2)
+            fmt.sbprintf(&ctx_cg.output_buf, "printf(\"%%.*s\", (int)(%s).len, (%s).data);\n", expr, expr)
+        } else {
+            // Recursively resolve and print
+            if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, t, ctx_cg.current_pkg_name); ok {
+                codegen_print_value_from_expr(ctx_cg, expr, -1, resolved, is_first, is_last)
+            } else {
+                panic(fmt.tprintf("Cannot resolve type: %s", t.name))
+            }
+        }
+    
+    case Pointer_Type:
+        if !is_first do strings.write_string(&ctx_cg.output_buf, "printf(\" \");\n")
+        codegen_indent(ctx_cg, ctx_cg.indent_level + 2)
+        fmt.sbprintf(&ctx_cg.output_buf, "printf(\"%%p\", (void*)%s);\n", expr)
+    
+    case Array_Type:
+        // Recursively print array element
+        if !is_first do strings.write_string(&ctx_cg.output_buf, "printf(\" \");\n")
+        codegen_indent(ctx_cg, ctx_cg.indent_level + 2)
+        strings.write_string(&ctx_cg.output_buf, "printf(\"[\");\n")
+        for i in 0..<t.size {
+            if i > 0 {
+                codegen_indent(ctx_cg, ctx_cg.indent_level + 2)
+                strings.write_string(&ctx_cg.output_buf, "printf(\", \");\n")
+            }
+            elem_expr := fmt.tprintf("%s.data[%d]", expr, i)
+            codegen_print_value_from_expr(ctx_cg, elem_expr, -1, t.element_type^, true, true)
+        }
+        codegen_indent(ctx_cg, ctx_cg.indent_level + 2)
+        strings.write_string(&ctx_cg.output_buf, "printf(\"]\");\n")
+    
+    case Vec_Type:
+        // Recursively print vec element
+        if !is_first do strings.write_string(&ctx_cg.output_buf, "printf(\" \");\n")
+        codegen_indent(ctx_cg, ctx_cg.indent_level + 2)
+        strings.write_string(&ctx_cg.output_buf, "printf(\"[\");\n")
+        codegen_indent(ctx_cg, ctx_cg.indent_level + 2)
+        strings.write_string(&ctx_cg.output_buf, "{\n")
+        codegen_indent(ctx_cg, ctx_cg.indent_level + 3)
+        fmt.sbprintf(&ctx_cg.output_buf, "typeof(%s) _vec_elem = %s;\n", expr, expr)
+        codegen_indent(ctx_cg, ctx_cg.indent_level + 3)
+        strings.write_string(&ctx_cg.output_buf, "for (int _j = 0; _j < _vec_elem.len; _j++) {\n")
+        codegen_indent(ctx_cg, ctx_cg.indent_level + 4)
+        strings.write_string(&ctx_cg.output_buf, "if (_j > 0) printf(\", \");\n")
+        codegen_indent(ctx_cg, ctx_cg.indent_level + 4)
+        elem_expr := fmt.tprintf("_vec_elem.data[_j]")
+        codegen_print_value_from_expr(ctx_cg, elem_expr, -1, t.element_type^, true, true)
+        codegen_indent(ctx_cg, ctx_cg.indent_level + 3)
+        strings.write_string(&ctx_cg.output_buf, "}\n")
+        codegen_indent(ctx_cg, ctx_cg.indent_level + 2)
+        strings.write_string(&ctx_cg.output_buf, "}\n")
+        codegen_indent(ctx_cg, ctx_cg.indent_level + 2)
+        strings.write_string(&ctx_cg.output_buf, "printf(\"]\");\n")
+    
+    case Struct_Type:
+        // Recursively print struct fields
+        if !is_first do strings.write_string(&ctx_cg.output_buf, "printf(\" \");\n")
+        codegen_indent(ctx_cg, ctx_cg.indent_level + 2)
+        strings.write_string(&ctx_cg.output_buf, "printf(\"{\");\n")
+        for field, i in t.fields {
+            if i > 0 {
+                codegen_indent(ctx_cg, ctx_cg.indent_level + 2)
+                strings.write_string(&ctx_cg.output_buf, "printf(\", \");\n")
+            }
+            codegen_indent(ctx_cg, ctx_cg.indent_level + 2)
+            fmt.sbprintf(&ctx_cg.output_buf, "printf(\"%s: \");\n", field.name)
+            field_expr := fmt.tprintf("%s.%s", expr, field.name)
+            codegen_print_value_from_expr(ctx_cg, field_expr, -1, field.type, true, true)
+        }
+        codegen_indent(ctx_cg, ctx_cg.indent_level + 2)
+        strings.write_string(&ctx_cg.output_buf, "printf(\"}\");\n")
+    
+    case Union_Type:
+        if !is_first do strings.write_string(&ctx_cg.output_buf, "printf(\" \");\n")
+        codegen_indent(ctx_cg, ctx_cg.indent_level + 2)
+        fmt.sbprintf(&ctx_cg.output_buf, "printf(\"<union tag=%%d>\", %s.tag);\n", expr)
+    
+    case:
+        panic(fmt.tprintf("Cannot print type: %v", type_info))
+    }
+}
+
+// Generate code to print a value of any type recursively, with original Named_Type preserved
+codegen_print_value_with_named_type :: proc(ctx_cg: ^Codegen_Context, arg: ^Node, resolved_type: Type_Info, original_named: Named_Type, is_first: bool, is_last: bool) {
+    #partial switch t in resolved_type {
+    case Struct_Type:
+        if !is_first do strings.write_string(&ctx_cg.output_buf, "printf(\" \");\n")
+        strings.write_string(&ctx_cg.output_buf, "printf(\"{\");\n")
+        // Generate temporary to avoid evaluating the expression multiple times
+        temp_name := fmt.tprintf("_struct_%d", ctx_cg.temp_counter)
+        ctx_cg.temp_counter += 1
+        strings.write_string(&ctx_cg.output_buf, "{\n")
+        codegen_indent(ctx_cg, ctx_cg.indent_level + 1)
+        // Use the original Named_Type to get the mangled name
+        struct_type_name := original_named.name
+        // Qualify if needed
+        if !strings.contains(struct_type_name, ".") && ctx_cg.current_pkg_name != "" {
+            struct_type_name = fmt.tprintf("%s.%s", ctx_cg.current_pkg_name, struct_type_name)
+        }
+        // Get mangled name
+        mangled_name := fmt.tprintf("%s%s__%s", MANGLE_PREFIX, ctx_cg.current_pkg_name, struct_type_name)
+        if strings.contains(struct_type_name, ".") {
+            // Qualified name - extract package and type
+            dot_idx := strings.index(struct_type_name, ".")
+            pkg_part := struct_type_name[:dot_idx]
+            type_part := struct_type_name[dot_idx+1:]
+            mangled_name = fmt.tprintf("%s%s__%s", MANGLE_PREFIX, pkg_part, type_part)
+        }
+        fmt.sbprintf(&ctx_cg.output_buf, "%s %s = ", mangled_name, temp_name)
+        codegen_node(ctx_cg, arg)
+        strings.write_string(&ctx_cg.output_buf, ";\n")
+        codegen_indent(ctx_cg, ctx_cg.indent_level + 1)
+        for field, i in t.fields {
+            if i > 0 {
+                codegen_indent(ctx_cg, ctx_cg.indent_level + 1)
+                strings.write_string(&ctx_cg.output_buf, "printf(\", \");\n")
+            }
+            codegen_indent(ctx_cg, ctx_cg.indent_level + 1)
+            fmt.sbprintf(&ctx_cg.output_buf, "printf(\"%s: \");\n", field.name)
+            codegen_indent(ctx_cg, ctx_cg.indent_level + 1)
+            // Print field using C expression
+            field_expr := fmt.tprintf("%s.%s", temp_name, field.name)
+            codegen_print_value_from_expr(ctx_cg, field_expr, -1, field.type, true, true)
+        }
+        codegen_indent(ctx_cg, ctx_cg.indent_level + 1)
+        strings.write_string(&ctx_cg.output_buf, "printf(\"}\");\n")
+        codegen_indent(ctx_cg, ctx_cg.indent_level)
+        strings.write_string(&ctx_cg.output_buf, "}\n")
+    case:
+        // For non-struct types, just use the regular function
+        codegen_print_value(ctx_cg, arg, resolved_type, is_first, is_last)
+    }
+}
+
+// Generate code to print a value of any type recursively
+codegen_print_value :: proc(ctx_cg: ^Codegen_Context, arg: ^Node, type_info: Type_Info, is_first: bool, is_last: bool) {
+    // Resolve named types first
+    resolved_type := type_info
+    if named, is_named := type_info.(Named_Type); is_named {
+        if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named, ctx_cg.current_pkg_name); ok {
+            resolved_type = resolved
+        }
+    }
+    
+    #partial switch t in resolved_type {
+    case Primitive_Type:
+        switch t {
+        case .I8, .U8, .I32, .I64:
+            if !is_first do strings.write_string(&ctx_cg.output_buf, "printf(\" \");\n")
+            strings.write_string(&ctx_cg.output_buf, "printf(\"%d\", (int)")
+            codegen_node(ctx_cg, arg)
+            strings.write_string(&ctx_cg.output_buf, ");\n")
+        case .F32, .F64:
+            if !is_first do strings.write_string(&ctx_cg.output_buf, "printf(\" \");\n")
+            strings.write_string(&ctx_cg.output_buf, "printf(\"%f\", (double)")
+            codegen_node(ctx_cg, arg)
+            strings.write_string(&ctx_cg.output_buf, ");\n")
+        case .Bool:
+            if !is_first do strings.write_string(&ctx_cg.output_buf, "printf(\" \");\n")
+            strings.write_string(&ctx_cg.output_buf, "printf(\"%s\", ")
+            codegen_node(ctx_cg, arg)
+            strings.write_string(&ctx_cg.output_buf, " ? \"true\" : \"false\");\n")
+        case .Cstring:
+            if !is_first do strings.write_string(&ctx_cg.output_buf, "printf(\" \");\n")
+            strings.write_string(&ctx_cg.output_buf, "printf(\"%s\", ")
+            codegen_node(ctx_cg, arg)
+            strings.write_string(&ctx_cg.output_buf, ");\n")
+        case .Void:
+            panic("Cannot print void")
+        }
+    
+    case Untyped_Int:
+        if !is_first do strings.write_string(&ctx_cg.output_buf, "printf(\" \");\n")
+        strings.write_string(&ctx_cg.output_buf, "printf(\"%d\", (int)")
+        codegen_node(ctx_cg, arg)
+        strings.write_string(&ctx_cg.output_buf, ");\n")
+    
+    case Untyped_Float:
+        if !is_first do strings.write_string(&ctx_cg.output_buf, "printf(\" \");\n")
+        strings.write_string(&ctx_cg.output_buf, "printf(\"%f\", (double)")
+        codegen_node(ctx_cg, arg)
+        strings.write_string(&ctx_cg.output_buf, ");\n")
+    
+    case Untyped_String:
+        if !is_first do strings.write_string(&ctx_cg.output_buf, "printf(\" \");\n")
+        strings.write_string(&ctx_cg.output_buf, "printf(\"%.*s\", (int)(")
+        codegen_node(ctx_cg, arg)
+        strings.write_string(&ctx_cg.output_buf, ").len, (")
+        codegen_node(ctx_cg, arg)
+        strings.write_string(&ctx_cg.output_buf, ").data);\n")
+    
+    case Named_Type:
+        if t.name == "string" {
+            if !is_first do strings.write_string(&ctx_cg.output_buf, "printf(\" \");\n")
+            strings.write_string(&ctx_cg.output_buf, "printf(\"%.*s\", (int)(")
+            codegen_node(ctx_cg, arg)
+            strings.write_string(&ctx_cg.output_buf, ").len, (")
+            codegen_node(ctx_cg, arg)
+            strings.write_string(&ctx_cg.output_buf, ").data);\n")
+        } else {
+            // Recursively resolve and print, but preserve the Named_Type for struct printing
+            if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, t, ctx_cg.current_pkg_name); ok {
+                // Special case: "string" resolves to a Struct_Type but should be printed specially
+                // If resolved to a struct (and not "string"), we need the original Named_Type for mangled name
+                if struct_type, is_struct := resolved.(Struct_Type); is_struct && t.name != "string" {
+                    codegen_print_value_with_named_type(ctx_cg, arg, resolved, t, is_first, is_last)
+                } else {
+                    codegen_print_value(ctx_cg, arg, resolved, is_first, is_last)
+                }
+            } else {
+                panic(fmt.tprintf("Cannot resolve type: %s", t.name))
+            }
+        }
+    
+    case Pointer_Type:
+        if !is_first do strings.write_string(&ctx_cg.output_buf, "printf(\" \");\n")
+        strings.write_string(&ctx_cg.output_buf, "printf(\"%p\", (void*)")
+        codegen_node(ctx_cg, arg)
+        strings.write_string(&ctx_cg.output_buf, ");\n")
+    
+    case Array_Type:
+        if !is_first do strings.write_string(&ctx_cg.output_buf, "printf(\" \");\n")
+        strings.write_string(&ctx_cg.output_buf, "printf(\"[\");\n")
+        // Generate temporary variable name for the array
+        temp_name := fmt.tprintf("_arr_%d", ctx_cg.temp_counter)
+        ctx_cg.temp_counter += 1
+        strings.write_string(&ctx_cg.output_buf, "{\n")
+        codegen_indent(ctx_cg, ctx_cg.indent_level + 1)
+        // Get array wrapper name for the type
+        wrapper_name := get_array_wrapper_name(t.element_type, t.size)
+        fmt.sbprintf(&ctx_cg.output_buf, "%s %s = ", wrapper_name, temp_name)
+        codegen_node(ctx_cg, arg)
+        strings.write_string(&ctx_cg.output_buf, ";\n")
+        codegen_indent(ctx_cg, ctx_cg.indent_level + 1)
+        for i in 0..<t.size {
+            if i > 0 {
+                codegen_indent(ctx_cg, ctx_cg.indent_level + 1)
+                strings.write_string(&ctx_cg.output_buf, "printf(\", \");\n")
+            }
+            codegen_indent(ctx_cg, ctx_cg.indent_level + 1)
+            // Print element using C expression
+            elem_expr := fmt.tprintf("%s.data[%d]", temp_name, i)
+            codegen_print_value_from_expr(ctx_cg, elem_expr, -1, t.element_type^, true, true)
+        }
+        codegen_indent(ctx_cg, ctx_cg.indent_level + 1)
+        strings.write_string(&ctx_cg.output_buf, "printf(\"]\");\n")
+        codegen_indent(ctx_cg, ctx_cg.indent_level)
+        strings.write_string(&ctx_cg.output_buf, "}\n")
+    
+    case Vec_Type:
+        if !is_first do strings.write_string(&ctx_cg.output_buf, "printf(\" \");\n")
+        // Generate temporary variable name for the vec
+        temp_name := fmt.tprintf("_vec_%d", ctx_cg.temp_counter)
+        ctx_cg.temp_counter += 1
+        strings.write_string(&ctx_cg.output_buf, "{\n")
+        codegen_indent(ctx_cg, ctx_cg.indent_level + 1)
+        // Get vec wrapper name for the type
+        vec_wrapper_name := get_vec_wrapper_name(t.element_type)
+        fmt.sbprintf(&ctx_cg.output_buf, "%s %s = ", vec_wrapper_name, temp_name)
+        codegen_node(ctx_cg, arg)
+        strings.write_string(&ctx_cg.output_buf, ";\n")
+        codegen_indent(ctx_cg, ctx_cg.indent_level + 1)
+        strings.write_string(&ctx_cg.output_buf, "printf(\"[\");\n")
+        codegen_indent(ctx_cg, ctx_cg.indent_level + 1)
+        fmt.sbprintf(&ctx_cg.output_buf, "for (int _i = 0; _i < %s.len; _i++) {\n", temp_name)
+        codegen_indent(ctx_cg, ctx_cg.indent_level + 2)
+        strings.write_string(&ctx_cg.output_buf, "if (_i > 0) printf(\", \");\n")
+        codegen_indent(ctx_cg, ctx_cg.indent_level + 2)
+        // Print element using C expression
+        elem_expr := fmt.tprintf("%s.data[_i]", temp_name)
+        codegen_print_value_from_expr(ctx_cg, elem_expr, -1, t.element_type^, true, true)
+        codegen_indent(ctx_cg, ctx_cg.indent_level + 1)
+        strings.write_string(&ctx_cg.output_buf, "}\n")
+        codegen_indent(ctx_cg, ctx_cg.indent_level + 1)
+        strings.write_string(&ctx_cg.output_buf, "printf(\"]\");\n")
+        codegen_indent(ctx_cg, ctx_cg.indent_level)
+        strings.write_string(&ctx_cg.output_buf, "}\n")
+    
+    case Struct_Type:
+        // Check if this is the built-in string type (has data: *i8 and len: i64 fields)
+        is_string_type := len(t.fields) == 2 && 
+            t.fields[0].name == "data" && t.fields[1].name == "len"
+        if is_string_type {
+            // Check if data field is *i8 and len is i64
+            data_ok := false
+            len_ok := false
+            if ptr, is_ptr := t.fields[0].type.(Pointer_Type); is_ptr {
+                if prim, ok := ptr.pointee^.(Primitive_Type); ok && prim == .I8 {
+                    data_ok = true
+                }
+            }
+            if prim, ok := t.fields[1].type.(Primitive_Type); ok && prim == .I64 {
+                len_ok = true
+            }
+            if data_ok && len_ok {
+                // This is the built-in string type - print it as a string, not a struct
+                if !is_first do strings.write_string(&ctx_cg.output_buf, "printf(\" \");\n")
+                strings.write_string(&ctx_cg.output_buf, "printf(\"%.*s\", (int)(")
+                codegen_node(ctx_cg, arg)
+                strings.write_string(&ctx_cg.output_buf, ").len, (")
+                codegen_node(ctx_cg, arg)
+                strings.write_string(&ctx_cg.output_buf, ").data);\n")
+                return
+            }
+        }
+        
+        if !is_first do strings.write_string(&ctx_cg.output_buf, "printf(\" \");\n")
+        // For structs, we need to know the type name. If it's a Named_Type, use that.
+        // Otherwise, we'll need to access fields directly from the expression.
+        // For now, let's access fields directly without a temporary variable.
+        strings.write_string(&ctx_cg.output_buf, "printf(\"{\");\n")
+        // Generate temporary to avoid evaluating the expression multiple times
+        temp_name := fmt.tprintf("_struct_%d", ctx_cg.temp_counter)
+        ctx_cg.temp_counter += 1
+        strings.write_string(&ctx_cg.output_buf, "{\n")
+        codegen_indent(ctx_cg, ctx_cg.indent_level + 1)
+        // We need the struct type name - get it from the original type_info if it was Named_Type
+        struct_type_name := ""
+        if named, is_named := type_info.(Named_Type); is_named {
+            struct_type_name = named.name
+            // Qualify if needed
+            if !strings.contains(struct_type_name, ".") && ctx_cg.current_pkg_name != "" {
+                struct_type_name = fmt.tprintf("%s.%s", ctx_cg.current_pkg_name, struct_type_name)
+            }
+            // Get mangled name
+            mangled_name := fmt.tprintf("%s%s__%s", MANGLE_PREFIX, ctx_cg.current_pkg_name, struct_type_name)
+            if strings.contains(struct_type_name, ".") {
+                // Qualified name - extract package and type
+                dot_idx := strings.index(struct_type_name, ".")
+                pkg_part := struct_type_name[:dot_idx]
+                type_part := struct_type_name[dot_idx+1:]
+                mangled_name = fmt.tprintf("%s%s__%s", MANGLE_PREFIX, pkg_part, type_part)
+            }
+            fmt.sbprintf(&ctx_cg.output_buf, "%s %s = ", mangled_name, temp_name)
+            codegen_node(ctx_cg, arg)
+            strings.write_string(&ctx_cg.output_buf, ";\n")
+        } else {
+            // Anonymous struct - can't easily print, but let's try to access fields directly
+            // Actually, for anonymous structs, we can't declare a variable without the type
+            // So we'll access fields directly from the expression
+            temp_name = ""  // Don't use temp, access directly
+        }
+        codegen_indent(ctx_cg, ctx_cg.indent_level + 1)
+        for field, i in t.fields {
+            if i > 0 {
+                codegen_indent(ctx_cg, ctx_cg.indent_level + 1)
+                strings.write_string(&ctx_cg.output_buf, "printf(\", \");\n")
+            }
+            codegen_indent(ctx_cg, ctx_cg.indent_level + 1)
+            fmt.sbprintf(&ctx_cg.output_buf, "printf(\"%s: \");\n", field.name)
+            codegen_indent(ctx_cg, ctx_cg.indent_level + 1)
+            // Print field using C expression
+            field_expr: string
+            if temp_name != "" {
+                field_expr = fmt.tprintf("%s.%s", temp_name, field.name)
+            } else {
+                // Access directly from original expression - but we don't have it here
+                // This is a limitation - we'd need to pass the original expression
+                // For now, panic if we hit this case
+                panic("Cannot print anonymous struct - struct must have a name")
+            }
+            codegen_print_value_from_expr(ctx_cg, field_expr, -1, field.type, true, true)
+        }
+        codegen_indent(ctx_cg, ctx_cg.indent_level + 1)
+        strings.write_string(&ctx_cg.output_buf, "printf(\"}\");\n")
+        codegen_indent(ctx_cg, ctx_cg.indent_level)
+        strings.write_string(&ctx_cg.output_buf, "}\n")
+    
+    case Union_Type:
+        if !is_first do strings.write_string(&ctx_cg.output_buf, "printf(\" \");\n")
+        strings.write_string(&ctx_cg.output_buf, "printf(\"<union tag=%d>\", ")
+        codegen_node(ctx_cg, arg)
+        strings.write_string(&ctx_cg.output_buf, ".tag);\n")
+    
+    case:
+        panic(fmt.tprintf("Cannot print type: %v", type_info))
+    }
+}
+
 codegen_print_impl :: proc(ctx_cg: ^Codegen_Context, args: [dynamic]^Node, add_newline: bool) {
     if len(args) == 0 {
         if add_newline {
@@ -936,83 +1397,15 @@ codegen_print_impl :: proc(ctx_cg: ^Codegen_Context, args: [dynamic]^Node, add_n
         return
     }
     
-    // Build format string and collect arguments
-    format_parts := make([dynamic]string, context.temp_allocator)
-    
-    for arg in args {
+    // Print each argument
+    for arg, i in args {
         expr_type := arg.inferred_type.? or_else panic("Type not annotated")
-        
-        // Determine format specifier
-        format_spec := ""
-        #partial switch t in expr_type {
-        case Primitive_Type:
-            switch t {
-            case .I8, .U8, .I32, .I64: format_spec = "%d"
-            case .F32, .F64: format_spec = "%f"
-            case .Bool: format_spec = "%d"
-            case .Cstring: format_spec = "%s"
-            case .Void: panic("Cannot print void")
-            }
-        case Named_Type:
-            if t.name == "string" {
-                format_spec = "%.*s"
-            } else {
-                panic("Cannot print named type")
-            }
-        case Untyped_Int: format_spec = "%d"
-        case Untyped_Float: format_spec = "%f"
-        case Untyped_String: format_spec = "%.*s"  // Treat like string
-        case Pointer_Type:
-            format_spec = "%p"  // Print pointer address
-        case Vec_Type:
-            fmt.panicf("Cannot print vec directly. Use len(vec) or iterate over it. Type: %v", expr_type)
-        case:
-            fmt.panicf("Cannot print type: %v. If this is len(v), check that v is dereferenced (*v)", expr_type)
-        }
-        
-        append(&format_parts, format_spec)
+        codegen_print_value(ctx_cg, arg, expr_type, i == 0, i == len(args) - 1)
     }
     
-    // Write printf call
-    strings.write_string(&ctx_cg.output_buf, "printf(\"")
-    for part, i in format_parts {
-        strings.write_string(&ctx_cg.output_buf, part)
-        if i < len(format_parts) - 1 {
-            strings.write_string(&ctx_cg.output_buf, " ")
-        }
-    }
     if add_newline {
-        strings.write_string(&ctx_cg.output_buf, "\\n")
+        strings.write_string(&ctx_cg.output_buf, "printf(\"\\n\");\n")
     }
-    strings.write_string(&ctx_cg.output_buf, "\"")
-    
-    // Write arguments
-    for arg in args {
-        strings.write_string(&ctx_cg.output_buf, ", ")
-        
-        expr_type := arg.inferred_type.? or_else panic("Type not annotated")
-        
-        // Special handling for string and untyped string
-        is_str := false
-        if named, is_named := expr_type.(Named_Type); is_named && named.name == "string" {
-            is_str = true
-        }
-        if _, is_untyped_str := expr_type.(Untyped_String); is_untyped_str {
-            is_str = true
-        }
-        
-        if is_str {
-            strings.write_string(&ctx_cg.output_buf, "(int)(")
-            codegen_node(ctx_cg, arg)
-            strings.write_string(&ctx_cg.output_buf, ").len, (")
-            codegen_node(ctx_cg, arg)
-            strings.write_string(&ctx_cg.output_buf, ").data")
-        } else {
-            codegen_node(ctx_cg, arg)
-        }
-    }
-    
-    strings.write_string(&ctx_cg.output_buf, ");\n")
 }
 
 codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {

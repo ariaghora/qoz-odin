@@ -1,0 +1,21 @@
+Point := struct { x: f64, y: f64 }
+Line := struct { start: Point, end: Point }
+
+main := func() {
+    // Test printing arrays
+    numbers := arr<f64, 3>{1.0, 2.0, 3.0}
+    println("Array:", numbers)
+    
+    // Test printing structs
+    p := Point{x: 10.5, y: 20.3}
+    println("Point:", p)
+    
+    // Test nested structures
+    line := Line{start: Point{x: 0.0, y: 0.0}, end: Point{x: 1.0, y: 1.0}}
+    println("Line:", line)
+    
+    // Test array of structs
+    points := arr<Point, 2>{Point{x: 1.0, y: 2.0}, Point{x: 3.0, y: 4.0}}
+    println("Points array:", points)
+}
+
