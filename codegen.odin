@@ -652,23 +652,26 @@ codegen_composite_definition :: proc(ctx_cg: ^Codegen_Context, type_info: Type_I
         strings.write_string(&ctx_cg.output_buf, "union {\n")
         ctx_cg.indent_level += 1
         
-        for variant in t.variants {
+        for union_type, i in t.types {
             codegen_indent(ctx_cg, ctx_cg.indent_level)
             
-            // Resolve the variant type to handle type aliases
-            resolved_variant_type := variant.type
-            if named_type, is_named := variant.type.(Named_Type); is_named {
+            // Resolve the type to handle type aliases
+            resolved_type := union_type
+            if named_type, is_named := union_type.(Named_Type); is_named {
                 if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named_type, ctx_cg.current_pkg_name); ok {
-                    resolved_variant_type = resolved
+                    resolved_type = resolved
                 }
             }
             
-            if _, is_fn := resolved_variant_type.(Function_Type); is_fn {
-                codegen_type(ctx_cg, variant.type, variant.name)
+            // Generate field name based on type index
+            field_name := fmt.tprintf("variant_%d", i)
+            
+            if _, is_fn := resolved_type.(Function_Type); is_fn {
+                codegen_type(ctx_cg, union_type, field_name)
             } else {
-                codegen_type(ctx_cg, variant.type)
+                codegen_type(ctx_cg, union_type)
                 strings.write_string(&ctx_cg.output_buf, " ")
-                strings.write_string(&ctx_cg.output_buf, variant.name)
+                strings.write_string(&ctx_cg.output_buf, field_name)
             }
             
             strings.write_string(&ctx_cg.output_buf, ";\n")
@@ -731,8 +734,8 @@ codegen_scan_composite_types :: proc(ctx_cg: ^Codegen_Context, type_info: Type_I
             codegen_scan_composite_types(ctx_cg, field.type, only_primitives)
         }
     case Union_Type:
-        for variant in t.variants {
-            codegen_scan_composite_types(ctx_cg, variant.type, only_primitives)
+        for union_type in t.types {
+            codegen_scan_composite_types(ctx_cg, union_type, only_primitives)
         }
     case Function_Type:
         codegen_scan_composite_types(ctx_cg, t.return_type^, only_primitives)
@@ -769,8 +772,8 @@ codegen_collect_type_array_names :: proc(ctx_cg: ^Codegen_Context, type: Type_In
             codegen_collect_type_array_names(ctx_cg, field.type, names)
         }
     case Union_Type:
-        for variant in t.variants {
-            codegen_collect_type_array_names(ctx_cg, variant.type, names)
+        for union_type in t.types {
+            codegen_collect_type_array_names(ctx_cg, union_type, names)
         }
     case Function_Type:
         codegen_collect_type_array_names(ctx_cg, t.return_type^, names)
@@ -827,8 +830,8 @@ codegen_scan_type_for_arrays :: proc(ctx_cg: ^Codegen_Context, type: Type_Info, 
             codegen_scan_type_for_arrays(ctx_cg, field.type, only_primitives)
         }
     case Union_Type:
-        for variant in t.variants {
-            codegen_scan_type_for_arrays(ctx_cg, variant.type, only_primitives)
+        for union_type in t.types {
+            codegen_scan_type_for_arrays(ctx_cg, union_type, only_primitives)
         }
     case Function_Type:
         codegen_scan_type_for_arrays(ctx_cg, t.return_type^, only_primitives)
@@ -1293,7 +1296,46 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
             codegen_node(ctx_cg, fn_call.callee)
             strings.write_string(&ctx_cg.output_buf, "(")
             for arg, i in fn_call.args {
-                codegen_node(ctx_cg, arg)
+                // Check if we need to wrap argument in union constructor
+                if is_fn && i < len(fn_type.params) {
+                    param_type := fn_type.params[i]
+                    arg_type := arg.inferred_type.? or_else Primitive_Type.Void
+                    
+                    // Resolve parameter type if it's a named type
+                    resolved_param_type := param_type
+                    if named_param, is_named := param_type.(Named_Type); is_named {
+                        if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named_param, ctx_cg.current_pkg_name); ok {
+                            resolved_param_type = resolved
+                        }
+                    }
+                    
+                    // If parameter is a union and argument is compatible, wrap in union constructor
+                    if union_param, is_union := resolved_param_type.(Union_Type); is_union {
+                        // Find which union variant matches the argument type
+                        variant_index := -1
+                        for union_type, idx in union_param.types {
+                            if types_compatible(union_type, arg_type, ctx_cg.ctx_sem) {
+                                variant_index = idx
+                                break
+                            }
+                        }
+                        
+                        if variant_index >= 0 {
+                            // Generate union constructor: (UnionType){.tag = index, .data.variant_N = value}
+                            strings.write_string(&ctx_cg.output_buf, "(")
+                            codegen_type(ctx_cg, param_type)
+                            fmt.sbprintf(&ctx_cg.output_buf, "){{.tag = %d, .data.variant_%d = ", variant_index, variant_index)
+                            codegen_node(ctx_cg, arg)
+                            strings.write_string(&ctx_cg.output_buf, "}")
+                        } else {
+                            codegen_node(ctx_cg, arg)
+                        }
+                    } else {
+                        codegen_node(ctx_cg, arg)
+                    }
+                } else {
+                    codegen_node(ctx_cg, arg)
+                }
                 if i < len(fn_call.args)-1 do strings.write_string(&ctx_cg.output_buf, ", ")
             }
             

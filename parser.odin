@@ -58,6 +58,7 @@ Type_Info :: union {
     Function_Type,
     Pointer_Type,
     Struct_Type,
+    Union_Type,
     Named_Type,
     Untyped_Int,
     Untyped_Float,
@@ -87,6 +88,10 @@ Pointer_Type :: struct {
 Struct_Field :: struct { name: string, type: Type_Info }
 Struct_Type :: struct {
     fields: [dynamic]Struct_Field,
+}
+
+Union_Type :: struct {
+    types: [dynamic]Type_Info,
 }
 
 Named_Type :: struct {
@@ -1104,6 +1109,14 @@ parse_primary :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
         type_node.span = Span{start = span_start, end = ps.idx - 1}
         type_node.payload = Node_Type_Expr{type_info = struct_type}
         return type_node, nil
+    case .KW_Union:
+        union_type := parse_type(ps, allocator) or_return
+        type_node := new(Node, allocator)
+        type_node.node_kind = .Type_Expr
+        type_node.parent = parent
+        type_node.span = Span{start = span_start, end = ps.idx - 1}
+        type_node.payload = Node_Type_Expr{type_info = union_type}
+        return type_node, nil
     case .Lit_Number: return parse_literal_number(ps, parent, allocator)
     case .Lit_String: return parse_literal_string(ps, parent, allocator)
     case .Lit_Nil: return parse_literal_nil(ps, parent, allocator)
@@ -1857,6 +1870,32 @@ parse_type :: proc(ps: ^Parsing_State, allocator: mem.Allocator) -> (res:Type_In
         parser_consume(ps, .Right_Brace) or_return
         
         return Struct_Type{fields = fields}, nil
+    }
+
+    // Union type: union { type, type, type }
+    if ps.current_token.kind == .KW_Union {
+        parser_advance(ps)
+        parser_consume(ps, .Left_Brace) or_return
+        types := make([dynamic]Type_Info, allocator)
+        
+        for ps.current_token.kind != .Right_Brace {
+            if ps.current_token.kind == .EOF {
+                return nil, make_parse_error(ps, "Unexpected EOF in union definition")
+            }
+            
+            // Parse type
+            union_type := parse_type(ps, allocator) or_return
+            append(&types, union_type)
+            
+            // Optional comma
+            if ps.current_token.kind == .Comma {
+                parser_advance(ps)
+            }
+        }
+        
+        parser_consume(ps, .Right_Brace) or_return
+        
+        return Union_Type{types = types}, nil
     }
 
     // User-defined type name (identifier or qualified name like pkg.Type)
