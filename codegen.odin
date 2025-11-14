@@ -1085,7 +1085,20 @@ codegen_print_value_from_expr :: proc(ctx_cg: ^Codegen_Context, base_expr: strin
     case Union_Type:
         if !is_first do strings.write_string(&ctx_cg.output_buf, "printf(\" \");\n")
         codegen_indent(ctx_cg, ctx_cg.indent_level + 2)
-        fmt.sbprintf(&ctx_cg.output_buf, "printf(\"<union tag=%%d>\", %s.tag);\n", expr)
+        strings.write_string(&ctx_cg.output_buf, "switch (")
+        strings.write_string(&ctx_cg.output_buf, expr)
+        strings.write_string(&ctx_cg.output_buf, ".tag) {\n")
+        for variant_type, i in t.types {
+            codegen_indent(ctx_cg, ctx_cg.indent_level + 3)
+            fmt.sbprintf(&ctx_cg.output_buf, "case %d:\n", i)
+            codegen_indent(ctx_cg, ctx_cg.indent_level + 4)
+            variant_expr := fmt.tprintf("%s.data.variant_%d", expr, i)
+            codegen_print_value_from_expr(ctx_cg, variant_expr, -1, variant_type, true, true)
+            codegen_indent(ctx_cg, ctx_cg.indent_level + 4)
+            strings.write_string(&ctx_cg.output_buf, "break;\n")
+        }
+        codegen_indent(ctx_cg, ctx_cg.indent_level + 2)
+        strings.write_string(&ctx_cg.output_buf, "}\n")
     
     case:
         panic(fmt.tprintf("Cannot print type: %v", type_info))
@@ -1347,10 +1360,8 @@ codegen_print_value :: proc(ctx_cg: ^Codegen_Context, arg: ^Node, type_info: Typ
             codegen_node(ctx_cg, arg)
             strings.write_string(&ctx_cg.output_buf, ";\n")
         } else {
-            // Anonymous struct - can't easily print, but let's try to access fields directly
-            // Actually, for anonymous structs, we can't declare a variable without the type
-            // So we'll access fields directly from the expression
-            temp_name = ""  // Don't use temp, access directly
+            // Anonymous structs cannot be printed (no type name for C variable declaration)
+            temp_name = ""
         }
         codegen_indent(ctx_cg, ctx_cg.indent_level + 1)
         for field, i in t.fields {
@@ -1380,9 +1391,60 @@ codegen_print_value :: proc(ctx_cg: ^Codegen_Context, arg: ^Node, type_info: Typ
     
     case Union_Type:
         if !is_first do strings.write_string(&ctx_cg.output_buf, "printf(\" \");\n")
-        strings.write_string(&ctx_cg.output_buf, "printf(\"<union tag=%d>\", ")
-        codegen_node(ctx_cg, arg)
-        strings.write_string(&ctx_cg.output_buf, ".tag);\n")
+        // Generate temporary to avoid evaluating the expression multiple times
+        temp_name := fmt.tprintf("_union_%d", ctx_cg.temp_counter)
+        ctx_cg.temp_counter += 1
+        strings.write_string(&ctx_cg.output_buf, "{\n")
+        codegen_indent(ctx_cg, ctx_cg.indent_level + 1)
+        // Get union type name for C variable declaration
+        union_type_name := ""
+        if named, is_named := type_info.(Named_Type); is_named {
+            union_type_name = named.name
+            if !strings.contains(union_type_name, ".") && ctx_cg.current_pkg_name != "" {
+                union_type_name = fmt.tprintf("%s.%s", ctx_cg.current_pkg_name, union_type_name)
+            }
+            mangled_name := fmt.tprintf("%s%s__%s", MANGLE_PREFIX, ctx_cg.current_pkg_name, union_type_name)
+            if strings.contains(union_type_name, ".") {
+                dot_idx := strings.index(union_type_name, ".")
+                pkg_part := union_type_name[:dot_idx]
+                type_part := union_type_name[dot_idx+1:]
+                mangled_name = fmt.tprintf("%s%s__%s", MANGLE_PREFIX, pkg_part, type_part)
+            }
+            fmt.sbprintf(&ctx_cg.output_buf, "%s %s = ", mangled_name, temp_name)
+            codegen_node(ctx_cg, arg)
+            strings.write_string(&ctx_cg.output_buf, ";\n")
+        } else {
+            // Anonymous union - can't declare variable, access directly
+            temp_name = ""
+        }
+        codegen_indent(ctx_cg, ctx_cg.indent_level + 1)
+        strings.write_string(&ctx_cg.output_buf, "switch (")
+        if temp_name != "" {
+            strings.write_string(&ctx_cg.output_buf, temp_name)
+        } else {
+            codegen_node(ctx_cg, arg)
+        }
+        strings.write_string(&ctx_cg.output_buf, ".tag) {\n")
+        for variant_type, i in t.types {
+            codegen_indent(ctx_cg, ctx_cg.indent_level + 2)
+            fmt.sbprintf(&ctx_cg.output_buf, "case %d:\n", i)
+            codegen_indent(ctx_cg, ctx_cg.indent_level + 3)
+            if temp_name != "" {
+                variant_expr := fmt.tprintf("%s.data.variant_%d", temp_name, i)
+                codegen_print_value_from_expr(ctx_cg, variant_expr, -1, variant_type, true, true)
+            } else {
+                // Anonymous union - can't easily access variant
+                panic("Cannot print anonymous union")
+            }
+            codegen_indent(ctx_cg, ctx_cg.indent_level + 3)
+            strings.write_string(&ctx_cg.output_buf, "break;\n")
+        }
+        codegen_indent(ctx_cg, ctx_cg.indent_level + 1)
+        strings.write_string(&ctx_cg.output_buf, "}\n")
+        if temp_name != "" {
+            codegen_indent(ctx_cg, ctx_cg.indent_level)
+            strings.write_string(&ctx_cg.output_buf, "}\n")
+        }
     
     case:
         panic(fmt.tprintf("Cannot print type: %v", type_info))

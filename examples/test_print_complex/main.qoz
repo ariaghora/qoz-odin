@@ -1,5 +1,16 @@
 Point := struct { x: f64, y: f64 }
 Line := struct { start: Point, end: Point }
+Circle := struct { radius: f64 }
+
+Shape := union {
+    Point,
+    Circle,
+    f64
+}
+
+print_union := func(s: Shape) {
+    println("Union value:", s)
+}
 
 main := func() {
     // Test printing arrays
@@ -17,5 +28,10 @@ main := func() {
     // Test array of structs
     points := arr<Point, 2>{Point{x: 1.0, y: 2.0}, Point{x: 3.0, y: 4.0}}
     println("Points array:", points)
+    
+    // Test printing unions - pass directly to function to trigger union construction
+    print_union(Point{x: 5.0, y: 10.0})
+    print_union(Circle{radius: 3.14})
+    print_union(42.0)
 }
 
