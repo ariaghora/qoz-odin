@@ -569,6 +569,181 @@ codegen_indent :: proc(ctx_cg: ^Codegen_Context, level: int) {
     strings.write_string(&ctx_cg.output_buf, strings.repeat(" ", ctx_cg.indent_level * 4, context.temp_allocator))
 }
 
+// =============================================================================
+// CENTRALIZED COMPOSITE TYPE HANDLING
+// =============================================================================
+
+// Generate forward declaration for any composite type (struct, union, etc.)
+codegen_composite_forward_decl :: proc(ctx_cg: ^Codegen_Context, type_info: Type_Info, name: string) {
+    #partial switch t in type_info {
+    case Struct_Type, Union_Type:
+        strings.write_string(&ctx_cg.output_buf, "typedef struct ")
+        strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX)
+        strings.write_string(&ctx_cg.output_buf, ctx_cg.current_pkg_name)
+        strings.write_string(&ctx_cg.output_buf, "__")
+        strings.write_string(&ctx_cg.output_buf, name)
+        strings.write_string(&ctx_cg.output_buf, " ")
+        strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX)
+        strings.write_string(&ctx_cg.output_buf, ctx_cg.current_pkg_name)
+        strings.write_string(&ctx_cg.output_buf, "__")
+        strings.write_string(&ctx_cg.output_buf, name)
+        strings.write_string(&ctx_cg.output_buf, ";\n")
+    }
+}
+
+// Generate full definition for any composite type (struct, union, etc.)
+codegen_composite_definition :: proc(ctx_cg: ^Codegen_Context, type_info: Type_Info, name: string) {
+    #partial switch t in type_info {
+    case Struct_Type:
+        strings.write_string(&ctx_cg.output_buf, "typedef struct ")
+        strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX)
+        strings.write_string(&ctx_cg.output_buf, ctx_cg.current_pkg_name)
+        strings.write_string(&ctx_cg.output_buf, "__")
+        strings.write_string(&ctx_cg.output_buf, name) 
+        strings.write_string(&ctx_cg.output_buf, " {\n")
+        ctx_cg.indent_level += 1
+        
+        for field in t.fields {
+            codegen_indent(ctx_cg, ctx_cg.indent_level)
+
+            // Resolve the field type to handle type aliases
+            resolved_field_type := field.type
+            if named_type, is_named := field.type.(Named_Type); is_named {
+                if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named_type, ctx_cg.current_pkg_name); ok {
+                    resolved_field_type = resolved
+                }
+            }
+
+            if _, is_fn := resolved_field_type.(Function_Type); is_fn {
+                codegen_type(ctx_cg, field.type, field.name)
+            } else {
+                codegen_type(ctx_cg, field.type)
+                strings.write_string(&ctx_cg.output_buf, " ")
+                strings.write_string(&ctx_cg.output_buf, field.name)
+            }
+
+            strings.write_string(&ctx_cg.output_buf, ";\n")
+        }
+        
+        ctx_cg.indent_level -= 1
+        strings.write_string(&ctx_cg.output_buf, "} ")
+        strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX)
+        strings.write_string(&ctx_cg.output_buf, ctx_cg.current_pkg_name)
+        strings.write_string(&ctx_cg.output_buf, "__")
+        strings.write_string(&ctx_cg.output_buf, name)
+        strings.write_string(&ctx_cg.output_buf, ";\n\n")
+
+    case Union_Type:
+        // Generate C tagged union: struct with tag + union data
+        strings.write_string(&ctx_cg.output_buf, "typedef struct ")
+        strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX)
+        strings.write_string(&ctx_cg.output_buf, ctx_cg.current_pkg_name)
+        strings.write_string(&ctx_cg.output_buf, "__")
+        strings.write_string(&ctx_cg.output_buf, name) 
+        strings.write_string(&ctx_cg.output_buf, " {\n")
+        ctx_cg.indent_level += 1
+        
+        // Generate tag field
+        codegen_indent(ctx_cg, ctx_cg.indent_level)
+        strings.write_string(&ctx_cg.output_buf, "int tag;\n")
+        
+        // Generate union data field
+        codegen_indent(ctx_cg, ctx_cg.indent_level)
+        strings.write_string(&ctx_cg.output_buf, "union {\n")
+        ctx_cg.indent_level += 1
+        
+        for variant in t.variants {
+            codegen_indent(ctx_cg, ctx_cg.indent_level)
+            
+            // Resolve the variant type to handle type aliases
+            resolved_variant_type := variant.type
+            if named_type, is_named := variant.type.(Named_Type); is_named {
+                if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named_type, ctx_cg.current_pkg_name); ok {
+                    resolved_variant_type = resolved
+                }
+            }
+            
+            if _, is_fn := resolved_variant_type.(Function_Type); is_fn {
+                codegen_type(ctx_cg, variant.type, variant.name)
+            } else {
+                codegen_type(ctx_cg, variant.type)
+                strings.write_string(&ctx_cg.output_buf, " ")
+                strings.write_string(&ctx_cg.output_buf, variant.name)
+            }
+            
+            strings.write_string(&ctx_cg.output_buf, ";\n")
+        }
+        
+        ctx_cg.indent_level -= 1
+        codegen_indent(ctx_cg, ctx_cg.indent_level)
+        strings.write_string(&ctx_cg.output_buf, "} data;\n")
+        
+        ctx_cg.indent_level -= 1
+        strings.write_string(&ctx_cg.output_buf, "} ")
+        strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX)
+        strings.write_string(&ctx_cg.output_buf, ctx_cg.current_pkg_name)
+        strings.write_string(&ctx_cg.output_buf, "__")
+        strings.write_string(&ctx_cg.output_buf, name)
+        strings.write_string(&ctx_cg.output_buf, ";\n\n")
+    }
+}
+
+// Generate type alias for any composite type (struct, union, etc.)
+codegen_composite_alias :: proc(ctx_cg: ^Codegen_Context, type_info: Type_Info, name: string) {
+    #partial switch t in type_info {
+    case Struct_Type, Union_Type:
+        strings.write_string(&ctx_cg.output_buf, "typedef struct ")
+        strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX)
+        strings.write_string(&ctx_cg.output_buf, ctx_cg.current_pkg_name)
+        strings.write_string(&ctx_cg.output_buf, "__")
+        strings.write_string(&ctx_cg.output_buf, name)
+        strings.write_string(&ctx_cg.output_buf, " ")
+        strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX)
+        strings.write_string(&ctx_cg.output_buf, ctx_cg.current_pkg_name)
+        strings.write_string(&ctx_cg.output_buf, "__")
+        strings.write_string(&ctx_cg.output_buf, name)
+        strings.write_string(&ctx_cg.output_buf, ";\n")
+    }
+}
+
+// Check if a type is a composite type (struct, union, future enums, etc.)
+is_composite_type :: proc(type_info: Type_Info) -> bool {
+    #partial switch t in type_info {
+    case Struct_Type, Union_Type:
+        return true
+    }
+    return false
+}
+
+// Recursively scan composite types for processing
+codegen_scan_composite_types :: proc(ctx_cg: ^Codegen_Context, type_info: Type_Info, only_primitives := false) {
+    #partial switch t in type_info {
+    case Array_Type:
+        codegen_array_wrapper_struct(ctx_cg, t, only_primitives)
+        codegen_scan_composite_types(ctx_cg, t.element_type^, only_primitives)
+    case Vec_Type:
+        codegen_vec_wrapper_struct(ctx_cg, t, only_primitives)
+        codegen_scan_composite_types(ctx_cg, t.element_type^, only_primitives)
+    case Pointer_Type:
+        codegen_scan_composite_types(ctx_cg, t.pointee^, only_primitives)
+    case Struct_Type:
+        for field in t.fields {
+            codegen_scan_composite_types(ctx_cg, field.type, only_primitives)
+        }
+    case Union_Type:
+        for variant in t.variants {
+            codegen_scan_composite_types(ctx_cg, variant.type, only_primitives)
+        }
+    case Function_Type:
+        codegen_scan_composite_types(ctx_cg, t.return_type^, only_primitives)
+        for param in t.params {
+            codegen_scan_composite_types(ctx_cg, param, only_primitives)
+        }
+    }
+}
+
+// =============================================================================
+
 // Recursively scan a type for arrays and collect wrapper names (no generation)
 codegen_collect_type_array_names :: proc(ctx_cg: ^Codegen_Context, type: Type_Info, names: ^[dynamic]string) {
     #partial switch t in type {
@@ -592,6 +767,10 @@ codegen_collect_type_array_names :: proc(ctx_cg: ^Codegen_Context, type: Type_In
     case Struct_Type:
         for field in t.fields {
             codegen_collect_type_array_names(ctx_cg, field.type, names)
+        }
+    case Union_Type:
+        for variant in t.variants {
+            codegen_collect_type_array_names(ctx_cg, variant.type, names)
         }
     case Function_Type:
         codegen_collect_type_array_names(ctx_cg, t.return_type^, names)
@@ -647,6 +826,10 @@ codegen_scan_type_for_arrays :: proc(ctx_cg: ^Codegen_Context, type: Type_Info, 
         for field in t.fields {
             codegen_scan_type_for_arrays(ctx_cg, field.type, only_primitives)
         }
+    case Union_Type:
+        for variant in t.variants {
+            codegen_scan_type_for_arrays(ctx_cg, variant.type, only_primitives)
+        }
     case Function_Type:
         codegen_scan_type_for_arrays(ctx_cg, t.return_type^, only_primitives)
         for param in t.params {
@@ -700,18 +883,8 @@ codegen_struct_forward_decl :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         if var_def.content.node_kind == .Type_Expr {
             type_expr := var_def.content.payload.(Node_Type_Expr)
             
-            if _, is_struct := type_expr.type_info.(Struct_Type); is_struct {
-                strings.write_string(&ctx_cg.output_buf, "typedef struct ")
-                strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX)
-                strings.write_string(&ctx_cg.output_buf, ctx_cg.current_pkg_name)
-                strings.write_string(&ctx_cg.output_buf, "__")
-                strings.write_string(&ctx_cg.output_buf, var_def.name)
-                strings.write_string(&ctx_cg.output_buf, " ")
-                strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX)
-                strings.write_string(&ctx_cg.output_buf, ctx_cg.current_pkg_name)
-                strings.write_string(&ctx_cg.output_buf, "__")
-                strings.write_string(&ctx_cg.output_buf, var_def.name)
-                strings.write_string(&ctx_cg.output_buf, ";\n")
+            if is_composite_type(type_expr.type_info) {
+                codegen_composite_forward_decl(ctx_cg, type_expr.type_info, var_def.name)
             }
         }
     }
@@ -728,47 +901,10 @@ codegen_struct_defs :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         var_def := node.payload.(Node_Var_Def)
         
         if var_def.content.node_kind == .Type_Expr {
-            // Struct typedef
             type_expr := var_def.content.payload.(Node_Type_Expr)
                 
-            if struct_type, is_struct := type_expr.type_info.(Struct_Type); is_struct {
-                strings.write_string(&ctx_cg.output_buf, "typedef struct ")
-                strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX)
-                strings.write_string(&ctx_cg.output_buf, ctx_cg.current_pkg_name)
-                strings.write_string(&ctx_cg.output_buf, "__")
-                strings.write_string(&ctx_cg.output_buf, var_def.name) 
-                strings.write_string(&ctx_cg.output_buf, " {\n")
-                ctx_cg.indent_level += 1
-                
-                for field in struct_type.fields {
-                    codegen_indent(ctx_cg, ctx_cg.indent_level)
-
-                    // Resolve the field type to handle type aliases
-                    resolved_field_type := field.type
-                    if named_type, is_named := field.type.(Named_Type); is_named {
-                        if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named_type, ctx_cg.current_pkg_name); ok {
-                            resolved_field_type = resolved
-                        }
-                    }
-
-                    if _, is_fn := resolved_field_type.(Function_Type); is_fn {
-                        codegen_type(ctx_cg, field.type, field.name)
-                    } else {
-                        codegen_type(ctx_cg, field.type)
-                        strings.write_string(&ctx_cg.output_buf, " ")
-                        strings.write_string(&ctx_cg.output_buf, field.name)
-                    }
-
-                    strings.write_string(&ctx_cg.output_buf, ";\n")
-                }
-                
-                ctx_cg.indent_level -= 1
-                strings.write_string(&ctx_cg.output_buf, "} ")
-                strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX)
-                strings.write_string(&ctx_cg.output_buf, ctx_cg.current_pkg_name)
-                strings.write_string(&ctx_cg.output_buf, "__")
-                strings.write_string(&ctx_cg.output_buf, var_def.name)
-                strings.write_string(&ctx_cg.output_buf, ";\n\n")
+            if is_composite_type(type_expr.type_info) {
+                codegen_composite_definition(ctx_cg, type_expr.type_info, var_def.name)
             }
         }
     }
@@ -1952,6 +2088,10 @@ codegen_type :: proc(ctx_cg: ^Codegen_Context, type: Type_Info, name: string = "
         strings.write_string(&ctx_cg.output_buf, "*")
     case Struct_Type:
         panic("Internal error: FIXME(Aria): Cannot inline anonymous struct type")
+    case Union_Type:
+        // Generate the struct name - this happens when resolving named union types
+        // We can't know the actual name here, so this is a fallback
+        panic("Internal error: Union_Type should be handled as Named_Type, not inline")
     case Named_Type:
         // Check for builtin string type
         if t.name == "string" || t.name == "strings.string" {
@@ -1968,8 +2108,8 @@ codegen_type :: proc(ctx_cg: ^Codegen_Context, type: Type_Info, name: string = "
                 // This is a type alias to a concrete type, generate the underlying type
                 codegen_type(ctx_cg, resolved, name)
                 return
-            case Struct_Type:
-                // This is a typedef for a struct, keep using the name (don't inline the struct)
+            case Struct_Type, Union_Type:
+                // This is a typedef for a struct/union, keep using the name (don't inline)
                 // Fall through to normal Named_Type handling
             case Named_Type:
                 // Still named after resolution, fall through
@@ -2047,18 +2187,8 @@ codegen_forward_decl :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
                 if var_def.content.node_kind == .Type_Expr {
                     type_expr := var_def.content.payload.(Node_Type_Expr)
 
-                    if _, is_struct := type_expr.type_info.(Struct_Type); is_struct {
-                        strings.write_string(&ctx_cg.output_buf, "typedef struct ")
-                        strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX)
-                        strings.write_string(&ctx_cg.output_buf, ctx_cg.current_pkg_name)
-                        strings.write_string(&ctx_cg.output_buf, "__")
-                        strings.write_string(&ctx_cg.output_buf, var_def.name)
-                        strings.write_string(&ctx_cg.output_buf, " ")
-                        strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX)
-                        strings.write_string(&ctx_cg.output_buf, ctx_cg.current_pkg_name)
-                        strings.write_string(&ctx_cg.output_buf, "__")
-                        strings.write_string(&ctx_cg.output_buf, var_def.name)
-                        strings.write_string(&ctx_cg.output_buf, ";\n")
+                    if is_composite_type(type_expr.type_info) {
+                        codegen_composite_alias(ctx_cg, type_expr.type_info, var_def.name)
                     } else {
                         alias_c_name := ""
                         if ctx_cg.current_pkg_name != "" {
