@@ -102,7 +102,8 @@ sphere_hit := func(sphere: Sphere, ray: Ray, tmin: f64, tmax: f64, rec: HitRecor
     }
     rec.t = root
     rec.p = ray_at(ray, rec.t)
-    rec.normal = (rec.p - sphere.center) / sphere.radius
+    outward_normal := (rec.p - sphere.center) / sphere.radius
+    hit_record_set_face_normal(rec, ray, outward_normal)
     return true
 }
 

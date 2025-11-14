@@ -1,9 +1,21 @@
+Point := struct { x: f64, y: f64 }
+Circle := struct { radius: f64 }
+
 Shape := union {
-    Circle:  f64,
-    Square:  f64,
-    Triangle: i32
+    Point,
+    Circle,
+    f64
+}
+
+foo := func(s: Shape) {
+    println("Received a Shape value")
 }
 
 main := func() {
-    println("Union parsing test")
+    point := Point{x: 1.0, y: 2.0}
+    circle := Circle{radius: 5.0}
+    
+    foo(point)
+    foo(circle)
+    foo(3.14)
 }

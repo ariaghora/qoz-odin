@@ -359,6 +359,7 @@ is_allowed_at_top_level :: proc(type: Type_Info) -> bool {
     case Named_Type: return t.name == "string"
     case Function_Type: return true
     case Struct_Type:   return true
+    case Union_Type:    return true
     // Mutable globals with complex types are not allowed
     case Array_Type, Pointer_Type: return false
     }
@@ -549,6 +550,13 @@ qualify_type :: proc(ctx: ^Semantic_Context, t: Type_Info, pkg_name: string, all
             append(&qualified_fields, Struct_Field{name = field.name, type = qualified_field_type})
         }
         return Struct_Type{fields = qualified_fields}
+    case Union_Type:
+        qualified_types := make([dynamic]Type_Info, allocator)
+        for union_type in typ.types {
+            qualified_type := qualify_type(ctx, union_type, pkg_name, allocator)
+            append(&qualified_types, qualified_type)
+        }
+        return Union_Type{types = qualified_types}
     case:
         return t
     }
@@ -2071,6 +2079,15 @@ types_equal :: proc(a, b: Type_Info) -> bool {
             if !types_equal(field_a.type, field_b.type) do return false
         }
         return true
+    case Union_Type:
+        b_val, ok := b.(Union_Type)
+        if !ok do return false
+        if len(a_val.types) != len(b_val.types) do return false
+        for type_a, i in a_val.types {
+            type_b := b_val.types[i]
+            if !types_equal(type_a, type_b) do return false
+        }
+        return true
     case Named_Type:
         b_val, ok := b.(Named_Type)
         return ok && a_val.name==b_val.name
@@ -2149,6 +2166,15 @@ types_compatible :: proc(target: Type_Info, source: Type_Info, ctx: ^Semantic_Co
         }
         if prim, ok := source_ptr.pointee.(Primitive_Type); ok && prim == .Void {
             return true
+        }
+    }
+    
+    // Union type compatibility - check if source type is in the union
+    if union_target, is_union := resolved_target.(Union_Type); is_union {
+        for union_type in union_target.types {
+            if types_compatible(union_type, resolved_source, ctx) {
+                return true
+            }
         }
     }
     

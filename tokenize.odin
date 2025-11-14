@@ -15,7 +15,7 @@ Token_Kind :: enum {
     Lit_Number, Lit_String, Lit_Nil, Lit_True, Lit_False,
     KW_Fn, KW_External, KW_If, KW_Else, KW_Print, KW_Println, KW_Return, KW_As, KW_Defer, KW_Alias,
     KW_I8, KW_U8, KW_I32, KW_I64, KW_F32, KW_F64, KW_Void, KW_Bool, KW_Cstring, 
-    KW_Arr, KW_Vec, KW_Map, KW_For, KW_While, KW_In, KW_Struct,
+    KW_Arr, KW_Vec, KW_Map, KW_For, KW_While, KW_In, KW_Struct, KW_Union,
     KW_Size_Of, KW_Len, KW_New, KW_Del,
     KW_Import, KW_Link, Iden, EOF,
 }
@@ -135,6 +135,7 @@ make_id_or_kw :: proc(t: ^Tokenizer) {
     case "arr":      tok_kind = .KW_Arr
     case "vec":      tok_kind = .KW_Vec
     case "struct":   tok_kind = .KW_Struct
+    case "union":    tok_kind = .KW_Union
     case "size_of":  tok_kind = .KW_Size_Of
     case "new":      tok_kind = .KW_New
     case "while":    tok_kind = .KW_While
