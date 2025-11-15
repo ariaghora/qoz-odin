@@ -36,7 +36,6 @@ bar := func(w: Widget) {
     println("Received a Widget value:", w)
 }
 
-// Nested switch-case example: switch on Widget, then switch on nested unions
 process_widget := func(w: Widget) {
     switch w {
     case InnerWidget iw:

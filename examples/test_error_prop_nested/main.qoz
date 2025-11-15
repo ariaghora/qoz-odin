@@ -1,4 +1,4 @@
-// Union error types. Variants must be defined types (structs).
+// Union error types. Variants must be defined types 
 Success        := struct {}
 ParseError     := struct {}
 DivByZeroError := struct {}
