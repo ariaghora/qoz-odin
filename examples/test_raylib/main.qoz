@@ -1,54 +1,54 @@
 import rl "vendor:raylib"
 
+SCREEN_WIDTH  := 800
+SCREEN_HEIGHT := 600
+
 main := func() {
-    width := 800
-    height := 600
-    
-    rl.init_window(width, height, "Bouncing Ball")
+    rl.init_window(SCREEN_WIDTH, SCREEN_HEIGHT, "Bouncing Ball")
     defer rl.close_window()
     rl.set_target_fps(60)
 
+    black   := rl.Color{r: 0, g: 0, b: 0, a: 255}
     skyblue := rl.Color{r: 180, g: 200, b: 210, a: 255}
-    black := rl.Color{r: 0, g: 0, b: 0, a: 255}
-    red := rl.Color{r: 220, g: 100, b: 100, a: 255}
-    green := rl.Color{r: 100, g: 200, b: 120, a: 255}
-    blue := rl.Color{r: 100, g: 150, b: 220, a: 255}
-    yellow := rl.Color{r: 230, g: 210, b: 110, a: 255}
-    
+    red     := rl.Color{r: 220, g: 100, b: 100, a: 255}
+    green   := rl.Color{r: 100, g: 200, b: 120, a: 255}
+    blue    := rl.Color{r: 100, g: 150, b: 220, a: 255}
+    yellow  := rl.Color{r: 230, g: 210, b: 110, a: 255}
+
     // Ball properties
+    ball_radius := 50.0
     ball_x := 400
     ball_y := 300
-    ball_radius := 50.0
     speed_x := 5
     speed_y := 3
     current_color := red
-    
+
     while !rl.window_should_close() {
-        ball_x = ball_x + speed_x
-        ball_y = ball_y + speed_y
-        
+        // Update states
+        ball_x += speed_x
+        ball_y += speed_y
         if ball_x - 50 < 0 {
             ball_x = 50
-            speed_x = 0 - speed_x
+            speed_x = -speed_x
             current_color = green
         }
-        if ball_x + 50 > width {
-            ball_x = width - 50
-            speed_x = 0 - speed_x
+        if ball_x + 50 > SCREEN_WIDTH {
+            ball_x = SCREEN_WIDTH - 50
+            speed_x = -speed_x
             current_color = blue
         }
-        
         if ball_y - 50 < 0 {
             ball_y = 50
-            speed_y = 0 - speed_y
+            speed_y =  -speed_y
             current_color = yellow
         }
-        if ball_y + 50 > height {
-            ball_y = height - 50
-            speed_y = 0 - speed_y
+        if ball_y + 50 > SCREEN_HEIGHT {
+            ball_y = SCREEN_HEIGHT - 50
+            speed_y = -speed_y
             current_color = red
         }
-        
+
+        // Draw stuff
         rl.begin_drawing()
         rl.clear_background(skyblue)
         rl.draw_circle(ball_x, ball_y, ball_radius, current_color)

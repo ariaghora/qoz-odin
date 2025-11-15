@@ -74,7 +74,7 @@ Primitive_Type :: enum { I8, U8, I32, I64, F32, F64, Bool, Void, Cstring }
 
 Function_Type :: struct {
     params: []Type_Info,
-    return_type: ^Type_Info,  
+    return_type: ^Type_Info,
 }
 
 Array_Type :: struct {
@@ -127,8 +127,8 @@ Fn_Param :: struct { name: string, type: Type_Info, span: Span }
 Struct_Field_Init :: struct { name: string, value: ^Node }
 
 Node_Array_Literal  :: struct { element_type: Type_Info, size: int, elements: [dynamic]^Node, explicit_type: Maybe(Type_Info) }
-Node_Assign         :: struct { 
-    target: ^Node, 
+Node_Assign         :: struct {
+    target: ^Node,
     value: ^Node,
     compound_op: Maybe(Token_Kind), // For +=, -=, etc. Contains the base operator (.Plus, .Minus, etc.)
 }
@@ -166,7 +166,7 @@ Node_Literal_String :: struct { content: Token }
 Node_Literal_Bool   :: struct { content: Token }
 Node_Print          :: struct { args: [dynamic]^Node }
 Node_Println        :: struct { args: [dynamic]^Node }
-Node_Return         :: struct { values: [dynamic]^Node } 
+Node_Return         :: struct { values: [dynamic]^Node }
 Node_Statement_List :: struct { nodes: [dynamic]^Node }
 Node_Un_Op          :: struct { operand: ^Node, op: Token }
 Node_Var_Def        :: struct { names: [dynamic]string, content: ^Node, explicit_type: Maybe(Type_Info), is_alias: bool }
@@ -235,7 +235,7 @@ make_parse_error :: proc(ps: ^Parsing_State, message: string) -> Parse_Error {
 }
 
 make_parse_error_simple :: proc(message: string, file: string, line: int, column: int) -> Parse_Error {
-    return Parse_Error{
+    return Parse_Error {
         message = message,
         file = file,
         line = line,
@@ -247,7 +247,7 @@ make_parse_error_simple :: proc(message: string, file: string, line: int, column
 parser_expect :: proc(ps: ^Parsing_State, expected: Token_Kind) -> Maybe(Parse_Error) {
     if ps.current_token.kind != expected {
         return make_parse_error(ps, fmt.tprintf(
-            "Expected %v, got %v", 
+            "Expected %v, got %v",
             expected,
             ps.current_token.kind))
     }
@@ -275,29 +275,29 @@ resolve_import_path :: proc(current_file_dir: string, project_root: string, impo
         if qoz_root == "" {
             panic("QOZ_ROOT environment variable not set")
         }
-        
+
         // e.g., std:strings → $QOZ_ROOT/std/strings
         rel_path := import_path[4:]  // Remove "std:"
         return filepath.join({qoz_root, "std", rel_path}, context.temp_allocator)
     }
-    
+
     if strings.has_prefix(import_path, "vendor:") {
         qoz_root := os.get_env("QOZ_ROOT", context.temp_allocator)
         if qoz_root == "" {
             panic("QOZ_ROOT environment variable not set")
         }
-        
+
         // e.g., vendor:raylib → $QOZ_ROOT/vendor/raylib
         rel_path := import_path[7:]  // Remove "vendor:"
         return filepath.join({qoz_root, "vendor", rel_path}, context.temp_allocator)
     }
-    
+
     // Check for relative import
     if strings.has_prefix(import_path, "./") || strings.has_prefix(import_path, "../") {
         // Relative to current file's directory
         return filepath.clean(filepath.join({current_file_dir, import_path}, context.temp_allocator), context.temp_allocator)
     }
-    
+
     // Default: relative to project root
     return filepath.clean(filepath.join({project_root, import_path}, context.temp_allocator))
 }
@@ -307,31 +307,31 @@ parse_project :: proc(entry_package_dir: string, arena_lexer, arena_parser: mem.
     tokens_map = make(map[string][dynamic]Token, arena_parser)
     visited_packages := make(map[string]bool, arena_parser)
     packages_to_parse := make([dynamic]string, arena_parser)
-    
+
     append(&packages_to_parse, entry_package_dir)
-    
+
     for len(packages_to_parse) > 0 {
         pkg_dir := pop(&packages_to_parse)
         if pkg_dir in visited_packages do continue
         visited_packages[pkg_dir] = true
-        
+
         // Find all .qoz files in this directory
         qoz_files := find_qoz_files_in_dir(pkg_dir, arena_parser) or_return
-        
+
         // Parse all files in the package
         for file_path in qoz_files {
             source, read_ok := os.read_entire_file(file_path, arena_parser)
             if !read_ok {
                 return nil, nil, make_parse_error_simple(fmt.tprintf("Failed to read file: %s", file_path), file_path, 0, 0)
             }
-            
+
             tokens, err_tokenize := tokenize(string(source), arena_lexer)
             if err_tokenize != nil do return nil, nil, make_parse_error_simple(err_tokenize.(string), file_path, 0, 0)
 
             ast := parse_program(tokens, file_path, arena_parser) or_return
             asts[file_path] = ast
             tokens_map[file_path] = tokens
-            
+
             // Extract imports and add packages to queue
             if ast.node_kind == .Program {
                 for stmt in ast.payload.(Node_Statement_List).nodes {
@@ -346,7 +346,7 @@ parse_project :: proc(entry_package_dir: string, arena_lexer, arena_parser: mem.
             }
         }
     }
-    
+
     return asts, tokens_map, nil
 }
 
@@ -356,12 +356,12 @@ find_qoz_files_in_dir :: proc(dir: string, allocator := context.allocator) -> (f
         return nil, make_parse_error_simple(fmt.tprintf("Failed to open directory: %s", dir), dir, 0, 0)
     }
     defer os.close(handle)
-    
+
     file_infos, read_err := os.read_dir(handle, -1, allocator)
     if read_err != 0 {
         return nil, make_parse_error_simple(fmt.tprintf("Failed to read directory: %s", dir), dir, 0, 0)
     }
-    
+
     result := make([dynamic]string, allocator)
     for info in file_infos {
         if !info.is_dir && strings.has_suffix(info.name, ".qoz") {
@@ -369,7 +369,7 @@ find_qoz_files_in_dir :: proc(dir: string, allocator := context.allocator) -> (f
             append(&result, full_path)
         }
     }
-    
+
     return result[:], nil
 }
 
@@ -425,15 +425,15 @@ parse_iden_led_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator :=
     // Check for variable definition: x := val, x: type = val, or x, y := func()
     if next_tok == .Assign || next_tok == .Colon || next_tok == .Comma {
             return parse_var_def(ps, parent, allocator)
-        } 
+        }
 
         // Parse lvalue expression (could be x, x[i], x.field, etc.)
         expr := parse_expression(ps, parent, allocator) or_return
-        
+
         // Check for assignment or compound assignment
         is_assignment := false
         compound_op: Maybe(Token_Kind) = nil
-        
+
         #partial switch ps.current_token.kind {
         case .Eq:
             is_assignment = true
@@ -450,26 +450,26 @@ parse_iden_led_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator :=
             is_assignment = true
             compound_op = .Slash
         }
-        
+
         if is_assignment {
             parser_advance(ps)  // eat '=' or '+=' etc.
-            
+
             // Validate lvalue
             #partial switch expr.node_kind {
         case .Identifier, .Index, .Field_Access: // Valid
         case: return nil, make_parse_error(ps, "Invalid assignment target")
             }
-            
+
             value := parse_expression(ps, parent, allocator) or_return
-            
+
             assign_node := new(Node, allocator)
             assign_node.node_kind = .Assignment
             assign_node.parent = parent
             assign_node.span = Span{start = expr.span.start, end = ps.idx - 1}
         assign_node.payload = Node_Assign{ target = expr, value = value, compound_op = compound_op }
-        
+
             return assign_node, nil
-        } 
+        }
 
         expr_stmt := new(Node, allocator)
         expr_stmt.node_kind = .Expr_Statement
@@ -482,14 +482,14 @@ parse_del_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := cont
     parser_advance(ps) // eat 'del'
         parser_consume(ps, .Left_Paren) or_return
         ptr := parse_expression(ps, parent, allocator) or_return
-    
+
     // Check if there's a comma (allocator parameter is optional for vec types)
     alloc_expr: ^Node = nil
     if ps.current_token.kind == .Comma {
         parser_advance(ps)  // eat comma
         alloc_expr = parse_expression(ps, parent, allocator) or_return
     }
-    
+
         parser_consume(ps, .Right_Paren) or_return
         return new_clone(Node{
             node_kind = .Del,
@@ -505,20 +505,20 @@ parse_del_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := cont
 parse_import_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     span_start := ps.idx
     parser_advance(ps) // eat 'import'
-    
+
     alias: Maybe(string)
     if ps.current_token.kind == .Iden {
         alias = ps.current_token.source
         parser_advance(ps)
     }
-    
+
     if ps.current_token.kind != .Lit_String {
         return nil, make_parse_error(ps, fmt.tprintf("Expected import path (string), got %v", ps.current_token.kind))
     }
-    
+
     path := strings.trim(ps.current_token.source, "\"")
     parser_advance(ps)
-    
+
     return new_clone(Node{
         node_kind = .Import,
         parent = parent,
@@ -533,14 +533,14 @@ parse_import_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := c
 parse_link_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     span_start := ps.idx
     parser_advance(ps) // eat 'link'
-    
+
     if ps.current_token.kind != .Lit_String {
         return nil, make_parse_error(ps, fmt.tprintf("Expected link path (string), got %v", ps.current_token.kind))
     }
-    
+
     path := strings.trim(ps.current_token.source, "\"")
     parser_advance(ps)
-    
+
     return new_clone(Node{
         node_kind = .Link,
         parent = parent,
@@ -553,7 +553,7 @@ parse_link_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := con
 
 parse_var_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     span_start := ps.idx
-    
+
     // Parse multiple names for destructuring: value, ok := func()
     names := make([dynamic]string, allocator)
     for {
@@ -562,7 +562,7 @@ parse_var_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
         }
         append(&names, ps.current_token.source)
     parser_advance(ps)
-        
+
         if ps.current_token.kind == .Comma {
             parser_advance(ps) // eat ','
         } else {
@@ -572,7 +572,7 @@ parse_var_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
 
     explicit_type: Maybe(Type_Info)
     is_alias := false
-    
+
     // Check for explicit type annotation: name: type = expr
     // Note: explicit types with multiple names not supported (would be ambiguous)
     if ps.current_token.kind == .Colon {
@@ -585,7 +585,7 @@ parse_var_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
     } else {
         // Inferred type: name := expr or name := alias type
         parser_consume(ps, .Assign) or_return
-        
+
         // Check for alias keyword
         if ps.current_token.kind == .KW_Alias {
             is_alias = true
@@ -617,23 +617,23 @@ parse_var_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
             }
         }
     }
-    
+
     var_node := new(Node, allocator)
     var_node.node_kind = .Var_Def
     var_node.parent = parent
     var_node.span = Span{start = span_start, end = ps.idx-1}
     var_node.payload = Node_Var_Def{names = names, content = expr, explicit_type=explicit_type, is_alias=is_alias}
-    
+
     return var_node, nil
 }
 
 parse_try_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     span_start := ps.idx
     parser_advance(ps) // eat 'try'
-    
+
     // Parse the variable definition that follows try
     var_def := parse_var_def(ps, parent, allocator) or_return
-    
+
     // Wrap in Try node
     try_node := new(Node, allocator)
     try_node.node_kind = .Try
@@ -641,17 +641,17 @@ parse_try_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := cont
     try_node.span = Span{start = span_start, end = var_def.span.end}
     try_node.payload = Node_Try{var_def = var_def}
     var_def.parent = try_node
-    
+
     return try_node, nil
 }
 
 parse_if_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     span_start := ps.idx
-    
+
     parser_advance(ps) // eat 'if'
-    
+
     cond := parse_expression(ps, parent, allocator) or_return
-    
+
     // Check for single-line syntax: if expr: stmt
     if_body: [dynamic]^Node
     if ps.current_token.kind == .Colon {
@@ -660,7 +660,7 @@ parse_if_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := conte
         if_body = make([dynamic]^Node, allocator)
         stmt := parse_statement(ps, parent, allocator) or_return
         append(&if_body, stmt)
-        
+
         // Single-line if cannot have else
         return new_clone(Node{
             node_kind = .If,
@@ -673,10 +673,10 @@ parse_if_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := conte
             }
         }, allocator), nil
     }
-    
+
     // Multi-line syntax: if expr { ... }
     parser_consume(ps, .Left_Brace) or_return
-    
+
     // Parse if body
     if_body = make([dynamic]^Node, allocator)
     for ps.current_token.kind != .Right_Brace {
@@ -686,9 +686,9 @@ parse_if_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := conte
         stmt := parse_statement(ps, parent, allocator) or_return
         append(&if_body, stmt)
     }
-    
+
     parser_consume(ps, .Right_Brace) or_return
-    
+
     else_body: [dynamic]^Node
     if ps.current_token.kind == .KW_Else {
         parser_advance(ps)
@@ -701,7 +701,7 @@ parse_if_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := conte
         } else {
             // Regular else block
             parser_consume(ps, .Left_Brace) or_return
-            
+
             else_body = make([dynamic]^Node, allocator)
             for ps.current_token.kind != .Right_Brace {
                 if ps.current_token.kind == .EOF {
@@ -710,11 +710,11 @@ parse_if_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := conte
                 stmt := parse_statement(ps, parent, allocator) or_return
                 append(&else_body, stmt)
             }
-            
+
             parser_consume(ps, .Right_Brace) or_return
         }
     }
-    
+
     if_node := new(Node, allocator)
     if_node.node_kind = .If
     if_node.parent = parent
@@ -724,143 +724,143 @@ parse_if_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := conte
         if_body = if_body,
         else_body = else_body,
     }
-    
+
     return if_node, nil
 }
 
 parse_len_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     span_start := ps.idx
-    
+
     parser_advance(ps)
     parser_consume(ps, .Left_Paren) or_return
-    
+
     len_node := new(Node, allocator)
     len_node.node_kind = .Len
     len_node.parent = parent
     len_node.span = Span{start = span_start, end = ps.idx}
-    
+
     content := parse_expression(ps, len_node, allocator) or_return
     len_node.payload = Node_Len{value = content}
-    
+
     parser_consume(ps, .Right_Paren) or_return
-    
+
     return len_node, nil
 }
 
 parse_size_of_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     span_start := ps.idx
-    
+
     parser_advance(ps)
     parser_consume(ps, .Left_Paren) or_return
-    
+
     size_of_node := new(Node, allocator)
     size_of_node.node_kind = .Size_Of
     size_of_node.parent = parent
     size_of_node.span = Span{start = span_start, end = ps.idx}
-    
+
     content := parse_expression(ps, size_of_node, allocator) or_return
     size_of_node.payload = Node_Size_Of{type = content}
-    
+
     parser_consume(ps, .Right_Paren) or_return
-    
+
     return size_of_node, nil
 }
 
 parse_defer_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     span_start := ps.idx
-    
+
     parser_advance(ps) // consume 'defer'
-    
+
     defer_node := new(Node, allocator)
     defer_node.node_kind = .Defer
     defer_node.parent = parent
     defer_node.span = Span{start = span_start, end = ps.idx}
-    
+
     body := make([dynamic]^Node, allocator)
-    
+
     // Check if it's a block: defer { ... }
     if ps.current_token.kind == .Left_Brace {
         parser_advance(ps) // consume '{'
-        
+
         // Parse statements until we hit '}'
         for ps.current_token.kind != .Right_Brace && ps.current_token.kind != .EOF {
             stmt := parse_statement(ps, defer_node, allocator) or_return
             append(&body, stmt)
         }
-        
+
         parser_consume(ps, .Right_Brace) or_return
     } else {
         // Single statement: defer print(x)
         stmt := parse_statement(ps, defer_node, allocator) or_return
         append(&body, stmt)
     }
-    
+
     defer_node.payload = Node_Defer{body = body}
-    
+
     return defer_node, nil
 }
 
 parse_print_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     span_start := ps.idx
-    
+
     parser_advance(ps)
     parser_consume(ps, .Left_Paren) or_return
-    
+
     print_node := new(Node, allocator)
     print_node.node_kind = .Print
     print_node.parent = parent
     print_node.span = Span{start = span_start, end = ps.idx}
-    
+
     // Parse variable number of arguments
     args := make([dynamic]^Node, allocator)
     if ps.current_token.kind != .Right_Paren {
         for {
             arg := parse_expression(ps, print_node, allocator) or_return
             append(&args, arg)
-            
+
             if ps.current_token.kind != .Comma {
                 break
             }
             parser_advance(ps) // consume comma
         }
     }
-    
+
     print_node.payload = Node_Print{args = args}
-    
+
     parser_consume(ps, .Right_Paren) or_return
-    
+
     return print_node, nil
 }
 
 parse_println_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     span_start := ps.idx
-    
+
     parser_advance(ps)
     parser_consume(ps, .Left_Paren) or_return
-    
+
     println_node := new(Node, allocator)
     println_node.node_kind = .Println
     println_node.parent = parent
     println_node.span = Span{start = span_start, end = ps.idx}
-    
+
     // Parse variable number of arguments
     args := make([dynamic]^Node, allocator)
     if ps.current_token.kind != .Right_Paren {
         for {
             arg := parse_expression(ps, println_node, allocator) or_return
             append(&args, arg)
-            
+
             if ps.current_token.kind != .Comma {
                 break
             }
             parser_advance(ps) // consume comma
         }
     }
-    
+
     println_node.payload = Node_Println{args = args}
-    
+
     parser_consume(ps, .Right_Paren) or_return
-    
+
     return println_node, nil
 }
 
@@ -879,7 +879,7 @@ parse_logical_or :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context
         op := ps.current_token
         parser_advance(ps)
         right := parse_logical_and(ps, parent, allocator) or_return
-        
+
         left = new_clone(Node {
             node_kind = .Bin_Op,
             parent = parent,
@@ -898,7 +898,7 @@ parse_logical_and :: proc(ps: ^Parsing_State, parent: ^Node, allocator := contex
         op := ps.current_token
         parser_advance(ps)
         right := parse_equality(ps, parent, allocator) or_return
-        
+
         left = new_clone(Node {
             node_kind = .Bin_Op,
             parent = parent,
@@ -918,7 +918,7 @@ parse_equality :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.a
         op := ps.current_token
         parser_advance(ps)
         right := parse_comparison(ps, parent, allocator) or_return
-        
+
         left = new_clone(Node {
             node_kind = .Bin_Op,
             parent = parent,
@@ -932,13 +932,13 @@ parse_equality :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.a
 
 parse_comparison :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     left := parse_cast(ps, parent, allocator) or_return
-    
+
     for ps.current_token.kind == .Gt || ps.current_token.kind == .Gt_Eq || ps.current_token.kind == .Lt || ps.current_token.kind == .Lt_Eq {
         op_idx := ps.idx
         op := ps.current_token
         parser_advance(ps)
-        right := parse_cast(ps, parent, allocator) or_return 
-        
+        right := parse_cast(ps, parent, allocator) or_return
+
         left = new_clone(Node {
             node_kind = .Bin_Op,
             parent = parent,
@@ -951,11 +951,11 @@ parse_comparison :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context
 
 parse_cast :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     left := parse_term(ps, parent, allocator) or_return
-    
+
     if ps.current_token.kind == .KW_As {
         parser_advance(ps)
         target_type := parse_type(ps, allocator) or_return
-        
+
         return new_clone(Node{
             node_kind = .Cast,
             parent = parent,
@@ -963,7 +963,7 @@ parse_cast :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.alloc
             payload = Node_Cast{expr = left, target_type = target_type}
         }, allocator), nil
     }
-    
+
     return left, nil
 }
 
@@ -1004,25 +1004,25 @@ parse_factor :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.all
 }
 
 parse_unary :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
-    if ps.current_token.kind == .Minus || 
-       ps.current_token.kind == .Plus || 
-       ps.current_token.kind == .Amp || 
-       ps.current_token.kind == .Star || 
+    if ps.current_token.kind == .Minus ||
+       ps.current_token.kind == .Plus ||
+       ps.current_token.kind == .Amp ||
+       ps.current_token.kind == .Star ||
        ps.current_token.kind == .Not {
         op_idx := ps.idx
         op := ps.current_token
         parser_advance(ps)
-        
+
         operand := parse_unary(ps, parent, allocator) or_return
-        
+
         unop_node := new(Node, allocator)
         unop_node.node_kind = .Un_Op
         unop_node.parent = parent
         unop_node.span = Span{start = op_idx, end = operand.span.end}
         unop_node.payload = Node_Un_Op{op = op, operand = operand}
-        
+
         operand.parent = unop_node
-        
+
         return unop_node, nil
     } else if ps.current_token.kind == .KW_Size_Of {
         op_idx := ps.idx
@@ -1060,24 +1060,24 @@ parse_unary :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allo
         op_idx := ps.idx
         parser_advance(ps)  // eat 'new'
         parser_consume(ps, .Left_Paren) or_return
-        
+
         // Parse type
         type_info := parse_type(ps, allocator) or_return
-        
+
         parser_consume(ps, .Comma) or_return
-        
+
         // Parse allocator expression
         alloc_expr := parse_expression(ps, parent, allocator) or_return
-        
+
         parser_consume(ps, .Right_Paren) or_return
-        
+
         new_node := new_clone(Node {
             node_kind = .New,
             parent = parent,
             span = Span{start = op_idx, end = ps.idx - 1},
             payload = Node_New{type = type_info, allocator = alloc_expr}
         }, allocator)
-        
+
         return new_node, nil
     }
 
@@ -1086,7 +1086,7 @@ parse_unary :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allo
 
 parse_postfix :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res:^Node, err:Maybe(Parse_Error)) {
     left := parse_primary(ps, parent, allocator) or_return
-    
+
     for {
         #partial switch ps.current_token.kind {
         case .Left_Paren:
@@ -1117,14 +1117,14 @@ parse_postfix :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
         case .Dot:
             // Field access
             parser_advance(ps) // eat '.'
-            
+
             if ps.current_token.kind != .Iden {
                 return nil, make_parse_error(ps, "Expected field name after '.'")
             }
-            
+
             field_name := ps.current_token.source
             parser_advance(ps)
-            
+
             field_node := new(Node, allocator)
             field_node.node_kind = .Field_Access
             field_node.parent = parent
@@ -1133,15 +1133,15 @@ parse_postfix :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
                 object = left,
                 field_name = field_name,
             }
-            
+
             left.parent = field_node
             left = field_node
-        
+
         case .Left_Bracket:
             parser_advance(ps)  // eat '['
             index_expr := parse_expression(ps, left, allocator) or_return
             parser_consume(ps, .Right_Bracket) or_return
-            
+
             index_node := new(Node, allocator)
             index_node.node_kind = .Index
             index_node.parent = parent
@@ -1152,11 +1152,11 @@ parse_postfix :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
             }
             left.parent = index_node
             left = index_node
-        
+
         case .Question:
             // Error propagation operator: expr?
             parser_advance(ps) // eat '?'
-            
+
             error_prop_node := new(Node, allocator)
             error_prop_node.node_kind = .Error_Prop
             error_prop_node.parent = parent
@@ -1164,12 +1164,12 @@ parse_postfix :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
             error_prop_node.payload = Node_Error_Prop{expr = left}
             left.parent = error_prop_node
             left = error_prop_node
-        
+
         case .Left_Brace:
             // Check if it's a struct literal: TypeName{ field: value, ... }
             // Lookahead to distinguish from regular blocks
             next_idx := ps.idx + 1
-            if next_idx < len(ps.tokens) && 
+            if next_idx < len(ps.tokens) &&
                 ps.tokens[next_idx].kind == .Iden &&
                 next_idx + 1 < len(ps.tokens) &&
                 ps.tokens[next_idx + 1].kind == .Colon {
@@ -1179,7 +1179,7 @@ parse_postfix :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
             }
             // Otherwise just an identifier, let caller handle the {
             return left, nil
-            
+
         case:
             return left, nil
         }
@@ -1187,7 +1187,7 @@ parse_postfix :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
 }
 
 parse_primary :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
-    span_start := ps.idx        
+    span_start := ps.idx
     #partial switch ps.current_token.kind {
     case .Left_Paren: // Parenthesized expression
         parser_advance(ps)  // eat '('
@@ -1196,7 +1196,7 @@ parse_primary :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
         return expr, nil
     case .Iden: return parse_iden_expression(ps, parent, allocator)
     case .KW_Fn: return parse_fn_def(ps, parent, allocator)
-    case .KW_Struct: 
+    case .KW_Struct:
         struct_type := parse_type(ps, allocator) or_return
         type_node := new(Node, allocator)
         type_node.node_kind = .Type_Expr
@@ -1233,7 +1233,7 @@ parse_primary :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
 parse_iden_expression :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     span_start := ps.idx
     name := ps.current_token.source
-    
+
     parser_advance(ps)
 
     // Check if it's a struct literal: TypeName{ field: value, ... } or TypeName{ val1, val2, ... }
@@ -1241,14 +1241,14 @@ parse_iden_expression :: proc(ps: ^Parsing_State, parent: ^Node, allocator := co
         next_idx := ps.idx + 1
         if next_idx < len(ps.tokens) {
             next_token := ps.tokens[next_idx]
-            
+
             // Case 1: Named field initialization { identifier : value }
             if next_token.kind == .Iden &&
             next_idx + 1 < len(ps.tokens) &&
             ps.tokens[next_idx + 1].kind == .Colon {
             return parse_struct_literal(ps, name, parent, allocator)
             }
-            
+
             // Case 2: Positional initialization { value, value, ... } or empty { }
             // Allow any token that could start an expression or right brace for empty
             // But be more careful with identifiers - check what follows them
@@ -1265,7 +1265,7 @@ parse_iden_expression :: proc(ps: ^Parsing_State, parent: ^Node, allocator := co
                 // Try to parse as typed compound literal
                 return parse_typed_compound_literal(ps, name, parent, allocator)
             }
-            
+
             // Special handling for identifiers - need to check what follows
             if next_token.kind == .Iden &&
                next_idx + 1 < len(ps.tokens) {
@@ -1286,7 +1286,7 @@ parse_iden_expression :: proc(ps: ^Parsing_State, parent: ^Node, allocator := co
     iden_node.parent = parent
     iden_node.payload = Node_Identifier{name = name}
     iden_node.span = Span{start = span_start, end = ps.idx - 1}
-    
+
     return iden_node, nil
 }
 
@@ -1294,7 +1294,7 @@ parse_typed_compound_literal :: proc(ps: ^Parsing_State, type_name: string, pare
     // We already consumed the identifier, now we're at the '{'
     // Create a type info from the type name and parse compound literal
     span_start := ps.idx - 1  // Back up to include the type name
-    
+
     // Create type info from name
     type_info: Type_Info
     switch type_name {
@@ -1311,27 +1311,27 @@ parse_typed_compound_literal :: proc(ps: ^Parsing_State, type_name: string, pare
         // Assume it's a named type (like an alias)
         type_info = Named_Type{name = type_name}
     }
-    
+
     return parse_compound_literal_with_type(ps, parent, allocator, type_info, span_start)
 }
 
 parse_struct_literal :: proc(ps: ^Parsing_State, type_name: string, parent: ^Node, allocator := context.allocator) -> (res:^Node, err:Maybe(Parse_Error)) {
     span_start := ps.idx - 1
     parser_consume(ps, .Left_Brace) or_return
-    
+
     field_inits := make([dynamic]Struct_Field_Init, allocator)
-    
+
     for ps.current_token.kind != .Right_Brace {
         if ps.current_token.kind == .EOF {
             return nil, make_parse_error(ps, "Unexpected EOF in struct literal")
         }
-        
+
         if ps.current_token.kind != .Iden do return nil, make_parse_error(ps, "Expected field name")
-        
+
         field_name := ps.current_token.source
         parser_advance(ps)
         parser_consume(ps, .Colon) or_return
-        
+
         // Parse field value, allowing typed literals like Vec3{...}
         field_value := parse_expression(ps, parent, allocator) or_return
 
@@ -1347,16 +1347,16 @@ parse_struct_literal :: proc(ps: ^Parsing_State, type_name: string, parent: ^Nod
         }
 
         append(&field_inits, Struct_Field_Init{name = field_name, value = field_value})
-        
+
         if ps.current_token.kind == .Comma {
             parser_advance(ps)
         } else if ps.current_token.kind != .Right_Brace {
             return nil, make_parse_error(ps, fmt.tprintf("Expected ',' or '}' in struct literal, got %v", ps.current_token.kind))
         }
     }
-    
+
     parser_consume(ps, .Right_Brace) or_return
-    
+
     struct_node := new(Node, allocator)
     struct_node.node_kind = .Struct_Literal
     struct_node.parent = parent
@@ -1365,7 +1365,7 @@ parse_struct_literal :: proc(ps: ^Parsing_State, type_name: string, parent: ^Nod
         type_name = type_name,
         field_inits = field_inits,
     }
-    
+
     return struct_node, nil
 }
 
@@ -1392,31 +1392,31 @@ parse_struct_literal_with_type_expr :: proc(ps: ^Parsing_State, type_expr: ^Node
 parse_untyped_struct_literal :: proc(ps: ^Parsing_State, parent: ^Node, span_start: int, allocator := context.allocator) -> (res:^Node, err:Maybe(Parse_Error)) {
     // Left brace already consumed, parse field initializations
     field_inits := make([dynamic]Struct_Field_Init, allocator)
-    
+
     for ps.current_token.kind != .Right_Brace {
         if ps.current_token.kind == .EOF {
             return nil, make_parse_error(ps, "Unexpected EOF in struct literal")
         }
-        
+
         if ps.current_token.kind != .Iden do return nil, make_parse_error(ps, "Expected field name")
-        
+
         field_name := ps.current_token.source
         parser_advance(ps)
         parser_consume(ps, .Colon) or_return
-        
+
         // Parse field value
         field_value := parse_expression(ps, parent, allocator) or_return
         append(&field_inits, Struct_Field_Init{name = field_name, value = field_value})
-        
+
         if ps.current_token.kind == .Comma {
             parser_advance(ps)
         } else if ps.current_token.kind != .Right_Brace {
             return nil, make_parse_error(ps, "Expected ',' or '}' in struct literal")
         }
     }
-    
+
     parser_consume(ps, .Right_Brace) or_return
-    
+
     struct_node := new(Node, allocator)
     struct_node.node_kind = .Struct_Literal
     struct_node.parent = parent
@@ -1425,7 +1425,7 @@ parse_untyped_struct_literal :: proc(ps: ^Parsing_State, parent: ^Node, span_sta
         type_name = "",  // Empty = to be inferred
         field_inits = field_inits,
     }
-    
+
     return struct_node, nil
 }
 
@@ -1473,13 +1473,13 @@ parse_compound_literal_with_type :: proc(ps: ^Parsing_State, parent: ^Node, allo
         if ps.current_token.kind == .Left_Brace {
             saved := ps^
             parser_advance(&saved) // consume '{' in saved state
-            
+
             // Check if it's an empty struct literal: TypeName{}
             if saved.current_token.kind == .Right_Brace {
                 // Empty struct literal - parse as struct literal
                 return parse_struct_literal(ps, type_info_named.name, parent, allocator)
             }
-            
+
             // Check if it's a struct literal with named fields: TypeName{field: value}
             if saved.current_token.kind == .Iden &&
                 saved.idx + 1 < len(saved.tokens) &&
@@ -1521,65 +1521,65 @@ parse_compound_literal_with_type :: proc(ps: ^Parsing_State, parent: ^Node, allo
 parse_literal_number :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     span_start := ps.idx
     tok := ps.current_token
-    
+
     lit_node := new(Node, allocator)
     lit_node.node_kind = .Literal_Number
     lit_node.parent = parent
     lit_node.payload = Node_Literal_Number{content = tok}
-    
+
     parser_advance(ps)
     lit_node.span = Span{start = span_start, end = ps.idx - 1}
-    
+
     return lit_node, nil
 }
 
 parse_literal_string :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     span_start := ps.idx
     tok := ps.current_token
-    
+
     lit_node := new(Node, allocator)
     lit_node.node_kind = .Literal_String
     lit_node.parent = parent
     lit_node.payload = Node_Literal_String{content = tok}
-    
+
     parser_advance(ps)
     lit_node.span = Span{start = span_start, end = ps.idx - 1}
-    
+
     return lit_node, nil
 }
 
 parse_literal_nil :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     span_start := ps.idx
-    
+
     lit_node := new(Node, allocator)
     lit_node.node_kind = .Literal_Nil
     lit_node.parent = parent
     lit_node.payload = Node_Literal_Nil{}
-    
+
     parser_advance(ps)
     lit_node.span = Span{start = span_start, end = ps.idx - 1}
-    
+
     return lit_node, nil
 }
 
 parse_literal_bool :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     span_start := ps.idx
     tok := ps.current_token
-    
+
     lit_node := new(Node, allocator)
     lit_node.node_kind = .Literal_Bool
     lit_node.parent = parent
     lit_node.payload = Node_Literal_Bool{content = tok}
-    
+
     parser_advance(ps)
     lit_node.span = Span{start = span_start, end = ps.idx - 1}
-    
+
     return lit_node, nil
 }
 
 parse_fn_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     span_start := ps.idx
-    
+
     parser_advance(ps)
     parser_consume(ps, .Left_Paren) or_return
 
@@ -1593,12 +1593,12 @@ parse_fn_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.all
         for ps.current_token.kind == .Iden {
             param_span_start := ps.idx
             param_name :=ps.current_token.source
-            parser_advance(ps) 
+            parser_advance(ps)
             parser_consume(ps, .Colon) or_return
 
             param_type := parse_type(ps, allocator) or_return
             append(&param_list, Fn_Param{
-                name = param_name, 
+                name = param_name,
                 type = param_type,
                 span = Span{start = param_span_start, end = ps.idx - 1},
             })
@@ -1628,7 +1628,7 @@ parse_fn_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.all
     if ps.current_token.kind == .KW_External {
         is_external = true
         parser_advance(ps)
-        
+
         // Check for external("symbol_name") syntax
         if ps.current_token.kind == .Left_Paren {
             parser_advance(ps)
@@ -1656,59 +1656,59 @@ parse_fn_def :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.all
         }
         parser_consume(ps, .Right_Brace) or_return
     }
-    
+
     fn_node.node_kind = .Fn_Def
     fn_node.parent = parent
     fn_node.span = Span{start = span_start, end = ps.idx}
     fn_node.payload = Node_Fn_Def{params=param_list, body=stmts, return_type=return_type, is_external=is_external, external_name=external_name}
-    fn_node.span.end = ps.idx - 1  
-    
+    fn_node.span.end = ps.idx - 1
+
     return fn_node, nil
 }
 
 parse_return_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     span_start := ps.idx
     parser_advance(ps)
-    
+
     ret_node := new(Node, allocator)
     ret_node.node_kind = .Return
     ret_node.parent = parent
     ret_node.span = Span{start = span_start, end = ps.idx}
-    
+
     if ps.current_token.kind == .Right_Brace || ps.current_token.kind == .EOF {
         ret_node.payload = Node_Return{values = make([dynamic]^Node, allocator)}
         return ret_node, nil
     }
-    
+
     // Parse multiple return values (comma-separated)
     values := make([dynamic]^Node, allocator)
     for {
     expr := parse_expression(ps, ret_node, allocator) or_return
         append(&values, expr)
-        
+
         if ps.current_token.kind == .Comma {
             parser_advance(ps) // eat ','
         } else {
             break
         }
     }
-    
+
     ret_node.payload = Node_Return{values = values}
-    
+
     return ret_node, nil
 }
 
 parse_literal_array :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res:^Node, err:Maybe(Parse_Error)) {
     span_start := ps.idx
-    
+
     parser_advance(ps) // eat 'arr'
     parser_consume(ps, .Lt) or_return
-    
+
     // Parse element type
     elem_type := parse_type(ps, allocator) or_return
-    
+
     parser_consume(ps, .Comma) or_return
-    
+
     // Parse size (must be literal number)
     if ps.current_token.kind != .Lit_Number {
         return nil, make_parse_error(ps, "Array size must be a number literal")
@@ -1716,25 +1716,25 @@ parse_literal_array :: proc(ps: ^Parsing_State, parent: ^Node, allocator := cont
     size_str := ps.current_token.source
     size := strconv.atoi(size_str)  // You'll need core:strconv
     parser_advance(ps)
-    
+
     parser_consume(ps, .Gt) or_return
     parser_consume(ps, .Left_Brace) or_return
-    
+
     // Parse elements
     elements := make([dynamic]^Node, allocator)
     for ps.current_token.kind != .Right_Brace {
         elem := parse_expression(ps, parent, allocator) or_return
         append(&elements, elem)
-        
+
         if ps.current_token.kind == .Comma {
             parser_advance(ps)
         } else if ps.current_token.kind != .Right_Brace {
             return nil, make_parse_error(ps, "Expected ',' or '}' in array literal")
         }
     }
-    
+
     parser_consume(ps, .Right_Brace) or_return
-    
+
     arr_node := new(Node, allocator)
     arr_node.node_kind = .Literal_Arr
     arr_node.parent = parent
@@ -1744,15 +1744,15 @@ parse_literal_array :: proc(ps: ^Parsing_State, parent: ^Node, allocator := cont
         size = size,
         elements = elements,
     }
-    
+
     return arr_node, nil
 }
 
 parse_untyped_compound_literal :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res:^Node, err:Maybe(Parse_Error)) {
     span_start := ps.idx
-    
+
     parser_consume(ps, .Left_Brace) or_return
-    
+
     // Peek ahead to determine if this is a struct literal or array literal
     // Struct literal pattern: { identifier : value, ... }
     // Array literal pattern: { expression, ... }
@@ -1760,22 +1760,22 @@ parse_untyped_compound_literal :: proc(ps: ^Parsing_State, parent: ^Node, alloca
         // It's a struct literal without type name
         return parse_untyped_struct_literal(ps, parent, span_start, allocator)
     }
-    
+
     // Parse as array literal
     elements := make([dynamic]^Node, allocator)
     for ps.current_token.kind != .Right_Brace {
         elem := parse_expression(ps, parent, allocator) or_return
         append(&elements, elem)
-        
+
         if ps.current_token.kind == .Comma {
             parser_advance(ps)
         } else if ps.current_token.kind != .Right_Brace {
             return nil, make_parse_error(ps, "Expected ',' or '}' in compound literal")
         }
     }
-    
+
     parser_consume(ps, .Right_Brace) or_return
-    
+
     // Create an array literal node with nil type (to be inferred during semantic analysis)
     arr_node := new(Node, allocator)
     arr_node.node_kind = .Literal_Arr
@@ -1786,7 +1786,7 @@ parse_untyped_compound_literal :: proc(ps: ^Parsing_State, parent: ^Node, alloca
         size = len(elements),
         elements = elements,
     }
-    
+
     return arr_node, nil
 }
 
@@ -1811,23 +1811,23 @@ try_parse_typed_literal_initializer :: proc(ps: ^Parsing_State, parent: ^Node, a
 parse_for_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res:^Node, err:Maybe(Parse_Error)) {
     span_start := ps.idx
     parser_advance(ps) // eat 'for'
-    
+
     // Parse first identifier
     if ps.current_token.kind != .Iden {
         return nil, make_parse_error(ps, "Expected identifier after 'for'")
     }
-    
+
     // Lookahead to determine which type of for loop
     next_tok := ps.tokens[ps.idx + 1].kind
-    
+
     if next_tok == .KW_In {
         // For-in loop: for i in arr { }
         iterator := ps.current_token.source
         parser_advance(ps)
         parser_consume(ps, .KW_In) or_return
-        
+
         iterable := parse_expression(ps, parent, allocator) or_return
-        
+
         parser_consume(ps, .Left_Brace) or_return
         body := make([dynamic]^Node, allocator)
         for ps.current_token.kind != .Right_Brace {
@@ -1838,7 +1838,7 @@ parse_for_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := cont
             append(&body, stmt)
         }
         parser_consume(ps, .Right_Brace) or_return
-        
+
         return new_clone(Node{
             node_kind = .For_In,
             parent = parent,
@@ -1850,23 +1850,23 @@ parse_for_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := cont
             }
         }, allocator), nil
     }
-    
+
     // C-style for loop: for i := 0; i < n; i = i + 1 { } or for i := 0; i < n; i += 1: stmt
     init := parse_statement(ps, parent, allocator) or_return
     parser_consume(ps, .Semicolon) or_return
-    
+
     condition := parse_expression(ps, parent, allocator) or_return
     parser_consume(ps, .Semicolon) or_return
-    
+
     post := parse_statement(ps, parent, allocator) or_return
-    
+
     // Check for single-line syntax: for i := 0; i < n; i += 1: stmt
     if ps.current_token.kind == .Colon {
         parser_advance(ps) // eat ':'
         body := make([dynamic]^Node, allocator)
         stmt := parse_statement(ps, parent, allocator) or_return
         append(&body, stmt)
-        
+
         return new_clone(Node{
             node_kind = .For_C,
             parent = parent,
@@ -1879,7 +1879,7 @@ parse_for_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := cont
             }
         }, allocator), nil
     }
-    
+
     // Multi-line syntax: for i := 0; i < n; i += 1 { ... }
     parser_consume(ps, .Left_Brace) or_return
     body := make([dynamic]^Node, allocator)
@@ -1891,7 +1891,7 @@ parse_for_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := cont
         append(&body, stmt)
     }
     parser_consume(ps, .Right_Brace) or_return
-    
+
     return new_clone(Node{
         node_kind = .For_C,
         parent = parent,
@@ -1908,16 +1908,16 @@ parse_for_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := cont
 parse_while_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res:^Node, err:Maybe(Parse_Error)) {
     span_start := ps.idx
     parser_advance(ps) // eat 'while'
-    
+
     condition := parse_expression(ps, parent, allocator) or_return
-    
+
     // Check for single-line syntax: while expr: stmt
     if ps.current_token.kind == .Colon {
         parser_advance(ps) // eat ':'
         body := make([dynamic]^Node, allocator)
         stmt := parse_statement(ps, parent, allocator) or_return
         append(&body, stmt)
-        
+
         return new_clone(Node{
             node_kind = .While,
             parent = parent,
@@ -1928,7 +1928,7 @@ parse_while_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := co
             }
         }, allocator), nil
     }
-    
+
     // Multi-line syntax: while expr { ... }
     parser_consume(ps, .Left_Brace) or_return
     body := make([dynamic]^Node, allocator)
@@ -1940,7 +1940,7 @@ parse_while_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := co
         append(&body, stmt)
     }
     parser_consume(ps, .Right_Brace) or_return
-    
+
     return new_clone(Node{
         node_kind = .While,
         parent = parent,
@@ -1955,24 +1955,24 @@ parse_while_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := co
 parse_switch_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.allocator) -> (res: ^Node, err: Maybe(Parse_Error)) {
     span_start := ps.idx
     parser_advance(ps) // eat 'switch'
-    
+
     // Parse the value expression
     value := parse_expression(ps, parent, allocator) or_return
-    
+
     parser_consume(ps, .Left_Brace) or_return
-    
+
     cases := make([dynamic]Switch_Case, allocator)
     default_case: Maybe([dynamic]^Node)
-    
+
     for ps.current_token.kind != .Right_Brace {
         if ps.current_token.kind == .EOF {
             return nil, make_parse_error(ps, "Unexpected EOF in switch statement")
         }
-        
+
         if ps.current_token.kind == .KW_Default {
             parser_advance(ps) // eat 'default'
             parser_consume(ps, .Colon) or_return
-            
+
             default_body := make([dynamic]^Node, allocator)
             for ps.current_token.kind != .Right_Brace && ps.current_token.kind != .KW_Case && ps.current_token.kind != .KW_Default {
                 if ps.current_token.kind == .EOF {
@@ -1984,36 +1984,36 @@ parse_switch_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := c
             default_case = default_body
         } else if ps.current_token.kind == .KW_Case {
             parser_advance(ps) // eat 'case'
-            
+
             // Detect pattern type: if it's a literal, it's a value pattern; otherwise it's a type pattern
             pattern: Switch_Case_Pattern
-            
-            if ps.current_token.kind == .Lit_Number || 
-               ps.current_token.kind == .Lit_String || 
-               ps.current_token.kind == .Lit_True || 
+
+            if ps.current_token.kind == .Lit_Number ||
+               ps.current_token.kind == .Lit_String ||
+               ps.current_token.kind == .Lit_True ||
                ps.current_token.kind == .Lit_False ||
                ps.current_token.kind == .Lit_Nil {
                 // Value pattern: case 42: or case "hello":
                 value_expr := parse_expression(ps, parent, allocator) or_return
                 parser_consume(ps, .Colon) or_return
-                
+
                 pattern = Value_Pattern{value = value_expr}
             } else {
                 // Type pattern: case TypeName var:
                 pattern_type := parse_type(ps, allocator) or_return
-                
+
                 // Optional variable name for binding
                 pattern_name: Maybe(string)
                 if ps.current_token.kind == .Iden {
                     pattern_name = ps.current_token.source
                     parser_advance(ps) // eat identifier
                 }
-                
+
                 parser_consume(ps, .Colon) or_return
-                
+
                 pattern = Type_Pattern{type = pattern_type, var_name = pattern_name}
             }
-            
+
             // Parse case body
             case_body := make([dynamic]^Node, allocator)
             for ps.current_token.kind != .Right_Brace && ps.current_token.kind != .KW_Case && ps.current_token.kind != .KW_Default {
@@ -2023,7 +2023,7 @@ parse_switch_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := c
                 stmt := parse_statement(ps, parent, allocator) or_return
                 append(&case_body, stmt)
             }
-            
+
             append(&cases, Switch_Case{
                 pattern = pattern,
                 body = case_body,
@@ -2032,9 +2032,9 @@ parse_switch_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := c
             return nil, make_parse_error(ps, fmt.tprintf("Expected 'case' or 'default' in switch, got %v", ps.current_token.kind))
         }
     }
-    
+
     parser_consume(ps, .Right_Brace) or_return
-    
+
     switch_node := new(Node, allocator)
     switch_node.node_kind = .Switch
     switch_node.parent = parent
@@ -2044,7 +2044,7 @@ parse_switch_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := c
         cases = cases,
         default_case = default_case,
     }
-    
+
     return switch_node, nil
 }
 
@@ -2057,25 +2057,25 @@ parse_type :: proc(ps: ^Parsing_State, allocator: mem.Allocator) -> (res:Type_In
             pointee = new_clone(pointee_type, allocator),
         }, nil
     }
-    
+
     // Array type: arr<T, N>
     if ps.current_token.kind == .KW_Arr {
         parser_advance(ps)
         parser_consume(ps, .Lt) or_return
-        
+
         elem_type := parse_type(ps, allocator) or_return
-        
+
         parser_consume(ps, .Comma) or_return
-        
+
         if ps.current_token.kind != .Lit_Number {
             return nil, make_parse_error(ps, "Array size must be an integer and known at compile-time")
         }
         size_str := ps.current_token.source
         size := strconv.atoi(size_str)
         parser_advance(ps)
-        
+
         parser_consume(ps, .Gt) or_return
-        
+
         return Array_Type{
             element_type = new_clone(elem_type, allocator),
             size = size,
@@ -2086,11 +2086,11 @@ parse_type :: proc(ps: ^Parsing_State, allocator: mem.Allocator) -> (res:Type_In
     if ps.current_token.kind == .KW_Vec {
         parser_advance(ps)
         parser_consume(ps, .Lt) or_return
-        
+
         elem_type := parse_type(ps, allocator) or_return
-        
+
         parser_consume(ps, .Gt) or_return
-        
+
         return Vec_Type{
             element_type = new_clone(elem_type, allocator),
         }, nil
@@ -2100,34 +2100,34 @@ parse_type :: proc(ps: ^Parsing_State, allocator: mem.Allocator) -> (res:Type_In
         parser_advance(ps)
         parser_consume(ps, .Left_Brace) or_return
         fields := make([dynamic]Struct_Field, allocator)
-        
+
         for ps.current_token.kind != .Right_Brace {
             if ps.current_token.kind == .EOF {
                 return nil, make_parse_error(ps, "Unexpected EOF in struct definition")
             }
-            
+
             // Parse field name
             if ps.current_token.kind != .Iden {
                 return nil, make_parse_error(ps, "Expected field name")
             }
             field_name := ps.current_token.source
             parser_advance(ps)
-            
+
             parser_consume(ps, .Colon) or_return
-            
+
             // Parse field type
             field_type := parse_type(ps, allocator) or_return
-            
+
             append(&fields, Struct_Field{name = field_name, type = field_type})
-            
+
             // Optional comma
             if ps.current_token.kind == .Comma {
                 parser_advance(ps)
             }
         }
-        
+
         parser_consume(ps, .Right_Brace) or_return
-        
+
         return Struct_Type{fields = fields}, nil
     }
 
@@ -2136,17 +2136,17 @@ parse_type :: proc(ps: ^Parsing_State, allocator: mem.Allocator) -> (res:Type_In
     if ps.current_token.kind == .Left_Paren {
         parser_advance(ps) // eat '('
         types := make([dynamic]Type_Info, allocator)
-        
+
         // Parse types until we hit ')'
         for ps.current_token.kind != .Right_Paren {
             if ps.current_token.kind == .EOF {
                 return nil, make_parse_error(ps, "Unexpected EOF in tuple definition")
             }
-            
+
             // Parse type
             tuple_type := parse_type(ps, allocator) or_return
             append(&types, tuple_type)
-            
+
             // Optional comma
             if ps.current_token.kind == .Comma {
                 parser_advance(ps)
@@ -2154,14 +2154,14 @@ parse_type :: proc(ps: ^Parsing_State, allocator: mem.Allocator) -> (res:Type_In
                 return nil, make_parse_error(ps, "Expected ',' or ')' in tuple definition")
             }
         }
-        
+
         parser_consume(ps, .Right_Paren) or_return
-        
+
         // If only one type, it's not a tuple (just parentheses around a type)
         if len(types) == 1 {
             return types[0], nil
         }
-        
+
         return Tuple_Type{types = types}, nil
     }
 
@@ -2170,24 +2170,24 @@ parse_type :: proc(ps: ^Parsing_State, allocator: mem.Allocator) -> (res:Type_In
         parser_advance(ps)
         parser_consume(ps, .Left_Brace) or_return
         types := make([dynamic]Type_Info, allocator)
-        
+
         for ps.current_token.kind != .Right_Brace {
             if ps.current_token.kind == .EOF {
                 return nil, make_parse_error(ps, "Unexpected EOF in union definition")
             }
-            
+
             // Parse type
             union_type := parse_type(ps, allocator) or_return
             append(&types, union_type)
-            
+
             // Optional comma
             if ps.current_token.kind == .Comma {
                 parser_advance(ps)
             }
         }
-        
+
         parser_consume(ps, .Right_Brace) or_return
-        
+
         return Union_Type{types = types}, nil
     }
 
@@ -2195,7 +2195,7 @@ parse_type :: proc(ps: ^Parsing_State, allocator: mem.Allocator) -> (res:Type_In
     if ps.current_token.kind == .Iden {
         type_name := ps.current_token.source
         parser_advance(ps)
-        
+
         // Check for qualified name: pkg.Type
         if ps.current_token.kind == .Dot {
             parser_advance(ps) // eat '.'
@@ -2206,9 +2206,9 @@ parse_type :: proc(ps: ^Parsing_State, allocator: mem.Allocator) -> (res:Type_In
             type_name = fmt.tprintf("%s.%s", type_name, ps.current_token.source)
             parser_advance(ps)
         }
-        
+
         return Named_Type{name = type_name}, nil
-    } 
+    }
 
     prim: Type_Info
     #partial switch ps.current_token.kind {
@@ -2224,12 +2224,12 @@ parse_type :: proc(ps: ^Parsing_State, allocator: mem.Allocator) -> (res:Type_In
     case .KW_Fn:
         parser_advance(ps)
         parser_consume(ps, .Left_Paren) or_return
-        
+
         param_types := make([dynamic]Type_Info, allocator)
         for ps.current_token.kind != .Right_Paren {
             param_type := parse_type(ps, allocator) or_return
             append(&param_types, param_type)
-            
+
             if ps.current_token.kind == .Comma {
                 parser_advance(ps)
             } else if ps.current_token.kind != .Right_Paren {
@@ -2237,15 +2237,15 @@ parse_type :: proc(ps: ^Parsing_State, allocator: mem.Allocator) -> (res:Type_In
             }
         }
         parser_consume(ps, .Right_Paren) or_return
-        
+
         parser_consume(ps, .Colon) or_return
         return_type := parse_type(ps, allocator) or_return
-        
+
         return Function_Type{
             params = param_types[:],
             return_type = new_clone(return_type, allocator),
         }, nil
-    case: 
+    case:
         return nil, make_parse_error(ps, fmt.tprintf("Expected type at position %d, got %v", ps.idx, ps.current_token.kind))
     }
 
