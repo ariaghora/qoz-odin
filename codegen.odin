@@ -720,12 +720,7 @@ codegen_composite_definition :: proc(ctx_cg: ^Codegen_Context, type_info: Type_I
             codegen_indent(ctx_cg, ctx_cg.indent_level)
             
             // Resolve the type to handle type aliases
-            resolved_type := union_type
-            if named_type, is_named := union_type.(Named_Type); is_named {
-                if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named_type, ctx_cg.current_pkg_name); ok {
-                    resolved_type = resolved
-                }
-            }
+            resolved_type := resolve_type(ctx_cg.ctx_sem, union_type, ctx_cg.current_pkg_name)
             
             // Generate field name based on type index
             field_name := fmt.tprintf("variant_%d", i)
@@ -1171,13 +1166,11 @@ codegen_print_value_from_expr :: proc(ctx_cg: ^Codegen_Context, base_expr: strin
         expr = base_expr
     }
     
+    // Check if type is ultimately a string type (handles aliases)
+    is_string_named_type := is_ultimately_string_type(ctx_cg.ctx_sem, type_info, ctx_cg.current_pkg_name)
+    
     // Resolve named types first
-    resolved_type := type_info
-    if named, is_named := type_info.(Named_Type); is_named {
-        if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named, ctx_cg.current_pkg_name); ok {
-            resolved_type = resolved
-        }
-    }
+    resolved_type := resolve_type(ctx_cg.ctx_sem, type_info, ctx_cg.current_pkg_name)
     
     #partial switch t in resolved_type {
     case Primitive_Type:
@@ -1276,6 +1269,16 @@ codegen_print_value_from_expr :: proc(ctx_cg: ^Codegen_Context, base_expr: strin
         strings.write_string(&ctx_cg.output_buf, "printf(\"]\");\n")
     
     case Struct_Type:
+        // Only treat as string if the original type was the built-in "string" Named_Type
+        // This prevents user-defined structs with similar structure from being misidentified
+        if is_string_named_type {
+            // This is the built-in string type - print it as a string, not a struct
+            if !is_first do strings.write_string(&ctx_cg.output_buf, "printf(\" \");\n")
+            codegen_indent(ctx_cg, ctx_cg.indent_level + 2)
+            fmt.sbprintf(&ctx_cg.output_buf, "printf(\"%%.*s\", (int)(%s).len, (%s).data);\n", expr, expr)
+            return
+        }
+        
         // Recursively print struct fields
         if !is_first do strings.write_string(&ctx_cg.output_buf, "printf(\" \");\n")
         codegen_indent(ctx_cg, ctx_cg.indent_level + 2)
@@ -1371,12 +1374,7 @@ codegen_print_value_with_named_type :: proc(ctx_cg: ^Codegen_Context, arg: ^Node
 // Generate code to print a value of any type recursively
 codegen_print_value :: proc(ctx_cg: ^Codegen_Context, arg: ^Node, type_info: Type_Info, is_first: bool, is_last: bool) {
     // Resolve named types first
-    resolved_type := type_info
-    if named, is_named := type_info.(Named_Type); is_named {
-        if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named, ctx_cg.current_pkg_name); ok {
-            resolved_type = resolved
-        }
-    }
+    resolved_type := resolve_type(ctx_cg.ctx_sem, type_info, ctx_cg.current_pkg_name)
     
     #partial switch t in resolved_type {
     case Primitive_Type:
@@ -1728,12 +1726,7 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
                 }
                 
                 // Check if it's array-array or array-scalar
-                value_type := assign.value.inferred_type.? or_else Primitive_Type.Void
-                if named_type, is_named := value_type.(Named_Type); is_named {
-                    if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named_type, ctx_cg.current_pkg_name); ok {
-                        value_type = resolved
-                    }
-                }
+                value_type := resolve_type(ctx_cg.ctx_sem, assign.value.inferred_type.? or_else Primitive_Type.Void, ctx_cg.current_pkg_name)
                 
                 _, value_is_arr := value_type.(Array_Type)
                 
@@ -1773,12 +1766,7 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         result_type := node.inferred_type.? or_else Primitive_Type.Void
         
         // Resolve named types
-        resolved_result_type := result_type
-        if named_type, is_named := result_type.(Named_Type); is_named {
-            if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named_type, ctx_cg.current_pkg_name); ok {
-                resolved_result_type = resolved
-            }
-        }
+        resolved_result_type := resolve_type(ctx_cg.ctx_sem, result_type, ctx_cg.current_pkg_name)
         
         if arr_type, is_arr := resolved_result_type.(Array_Type); is_arr {
             // Array operation - could be array-array or array-scalar
@@ -1787,16 +1775,8 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
             right_type := binop.right.inferred_type.? or_else Primitive_Type.Void
             
             // Resolve named types
-            if named_type, is_named := left_type.(Named_Type); is_named {
-                if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named_type, ctx_cg.current_pkg_name); ok {
-                    left_type = resolved
-                }
-            }
-            if named_type, is_named := right_type.(Named_Type); is_named {
-                if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named_type, ctx_cg.current_pkg_name); ok {
-                    right_type = resolved
-                }
-            }
+            left_type = resolve_type(ctx_cg.ctx_sem, left_type, ctx_cg.current_pkg_name)
+            right_type = resolve_type(ctx_cg.ctx_sem, right_type, ctx_cg.current_pkg_name)
             
             _, left_is_arr := left_type.(Array_Type)
             _, right_is_arr := right_type.(Array_Type)

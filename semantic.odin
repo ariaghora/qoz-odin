@@ -104,6 +104,77 @@ is_string_type :: proc(t: Type_Info) -> bool {
     return false
 }
 
+// Recursively resolve type aliases and check if the underlying type matches a predicate
+// Prevents infinite loops by tracking seen type names
+// Returns (final_type, matched, found) where:
+//   - final_type: the resolved type after following all aliases
+//   - matched: whether the predicate returned true at any point
+//   - found: whether we successfully resolved the type
+resolve_named_type_with_predicate :: proc(
+    ctx: ^Semantic_Context,
+    type_info: Type_Info,
+    pkg_name: string,
+    predicate: proc(Type_Info) -> bool,
+    allocator := context.allocator,
+) -> (final_type: Type_Info, matched: bool, found: bool) {
+    if !predicate(type_info) {
+        // Check if it's a Named_Type and resolve recursively
+        if named, is_named := type_info.(Named_Type); is_named {
+            seen := make(map[string]bool, allocator)
+            current_type := type_info
+            
+            for {
+                if named_current, is_named_current := current_type.(Named_Type); is_named_current {
+                    // Check predicate on current type
+                    if predicate(named_current) {
+                        return named_current, true, true
+                    }
+                    
+                    // Prevent infinite loops
+                    if seen[named_current.name] {
+                        break
+                    }
+                    seen[named_current.name] = true
+                    
+                    // Resolve and continue
+                    if resolved, ok := resolve_named_type(ctx, named_current, pkg_name); ok {
+                        // Check predicate on resolved type
+                        if predicate(resolved) {
+                            return resolved, true, true
+                        }
+                        current_type = resolved
+                    } else {
+                        break
+                    }
+                } else {
+                    // Not a Named_Type anymore - check predicate and return
+                    if predicate(current_type) {
+                        return current_type, true, true
+                    }
+                    return current_type, false, true
+                }
+            }
+        }
+    } else {
+        // Predicate matched immediately
+        return type_info, true, true
+    }
+    
+    return type_info, false, false
+}
+
+// Check if a type is ultimately a string type (handles aliases)
+is_ultimately_string_type :: proc(ctx: ^Semantic_Context, type_info: Type_Info, pkg_name: string) -> bool {
+    predicate := proc(t: Type_Info) -> bool {
+        if named, is_named := t.(Named_Type); is_named {
+            return named.name == "string"
+        }
+        return false
+    }
+    _, matched, _ := resolve_named_type_with_predicate(ctx, type_info, pkg_name, predicate, context.temp_allocator)
+    return matched
+}
+
 is_cstring_type :: proc(t: Type_Info) -> bool {
     if prim, ok := t.(Primitive_Type); ok && prim == .Cstring {
         return true
@@ -137,6 +208,17 @@ is_typed_float :: proc(t: Type_Info) -> bool {
     p, ok := t.(Primitive_Type)
     if !ok do return false
     return p == .F32 || p == .F64
+}
+
+// Resolve a type, following aliases until we get a concrete type
+// This is a convenience wrapper that handles both Named_Type and other types
+resolve_type :: proc(ctx: ^Semantic_Context, type_info: Type_Info, pkg_name: string = "") -> Type_Info {
+    if named, is_named := type_info.(Named_Type); is_named {
+        if resolved, ok := resolve_named_type(ctx, named, pkg_name); ok {
+            return resolved
+        }
+    }
+    return type_info
 }
 
 // Resolve a potentially qualified type name (e.g., "mem.Allocator" or "string")
