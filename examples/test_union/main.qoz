@@ -8,7 +8,67 @@ Shape := union {
 }
 
 foo := func(s: Shape) {
-    println("Received a Shape value")
+    println("Received a Shape value:", s)
+}
+
+// Nested union: one variant is itself a union
+Text := struct { content: string }
+Image := struct { width: i32, height: i32 }
+
+Content := union {
+    Text,
+    Image
+}
+
+// 3-level nesting test
+InnerWidget := union {
+    Content,
+    i32
+}
+
+Widget := union {
+    InnerWidget,  // 3-level deep: Widget -> InnerWidget -> Content -> Text
+    Shape,        // 2-level deep: Widget -> Shape -> Point
+    f64
+}
+
+bar := func(w: Widget) {
+    println("Received a Widget value:", w)
+}
+
+// Nested switch-case example: switch on Widget, then switch on nested unions
+process_widget := func(w: Widget) {
+    switch w {
+    case InnerWidget iw:
+        println("Widget contains InnerWidget")
+        // Nested switch on InnerWidget
+        switch iw {
+        case Content c:
+            println("  InnerWidget contains Content")
+            // Nested switch on Content
+            switch c {
+            case Text t:
+                println("    Content contains Text:", t.content)
+            case Image img:
+                println("    Content contains Image:", img.width, "x", img.height)
+            }
+        case i32 n:
+            println("  InnerWidget contains i32:", n)
+        }
+    case Shape s:
+        println("Widget contains Shape")
+        // Nested switch on Shape
+        switch s {
+        case Point p:
+            println("  Shape contains Point:", p.x, p.y)
+        case Circle c:
+            println("  Shape contains Circle:", c.radius)
+        case f64 d:
+            println("  Shape contains f64:", d)
+        }
+    case f64 d:
+        println("Widget contains f64:", d)
+    }
 }
 
 main := func() {
@@ -18,4 +78,23 @@ main := func() {
     foo(point)
     foo(circle)
     foo(3.14)
+    
+    println("\n=== Testing nested union ===")
+    text := Text{content: "Hello"}
+    image := Image{width: 100, height: 200}
+    
+    bar(text)   // Should wrap: Text -> Content -> InnerWidget -> Widget (3 levels)
+    bar(image)  // Should wrap: Image -> Content -> InnerWidget -> Widget (3 levels)
+    bar(point)  // Should wrap: Point -> Shape -> Widget (2 levels)
+    bar(circle) // Should wrap: Circle -> Shape -> Widget (2 levels)
+    bar(42)     // Should wrap: i32 -> InnerWidget -> Widget (2 levels)
+    bar(3.14)   // Direct: f64 -> Widget (1 level)
+    
+    println("\n=== Testing nested switch-case ===")
+    process_widget(text)
+    process_widget(image)
+    process_widget(point)
+    process_widget(circle)
+    process_widget(42)
+    process_widget(3.14)
 }

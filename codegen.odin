@@ -782,6 +782,151 @@ is_composite_type :: proc(type_info: Type_Info) -> bool {
     return false
 }
 
+// Recursively find the variant path through nested unions
+// Returns the path: [outer_variant_index, nested_variant_index, ...] and the final variant type
+find_union_variant_path :: proc(
+    target_union: Union_Type,
+    arg_type: Type_Info,
+    ctx_sem: ^Semantic_Context,
+    pkg_name: string,
+    allocator := context.allocator,
+) -> (path: [dynamic]int, variant_type: Type_Info, found: bool) {
+    resolved_arg_type := arg_type
+    if named_arg, is_named := arg_type.(Named_Type); is_named {
+        if resolved, ok := resolve_named_type(ctx_sem, named_arg, pkg_name); ok {
+            resolved_arg_type = resolved
+        }
+    }
+    
+    // Try name-based matching first
+    arg_type_name := ""
+    if named_arg, is_named := arg_type.(Named_Type); is_named {
+        arg_type_name = named_arg.name
+    }
+    
+    if arg_type_name != "" {
+        for variant_type, idx in target_union.types {
+            if named_variant, is_named_variant := variant_type.(Named_Type); is_named_variant {
+                if arg_type_name == named_variant.name {
+                    // Direct match
+                    path := make([dynamic]int, 1, allocator)
+                    path[0] = idx
+                    return path, variant_type, true
+                }
+            }
+        }
+    }
+    
+    // Try type compatibility (handles primitives and nested unions)
+    for variant_type, idx in target_union.types {
+        resolved_variant_type := variant_type
+        if named_variant, is_named_variant := variant_type.(Named_Type); is_named_variant {
+            if resolved, ok := resolve_named_type(ctx_sem, named_variant, pkg_name); ok {
+                resolved_variant_type = resolved
+            }
+        }
+        
+        // Check if variant is a nested union
+        if nested_union, is_nested_union := resolved_variant_type.(Union_Type); is_nested_union {
+            // Recursively search in the nested union
+            nested_path, nested_variant_type, nested_found := find_union_variant_path(nested_union, arg_type, ctx_sem, pkg_name, allocator)
+            if nested_found {
+                // Prepend current variant index to the path
+                result_path := make([dynamic]int, 0, 1 + len(nested_path), allocator)
+                append(&result_path, idx)
+                for nested_idx in nested_path {
+                    append(&result_path, nested_idx)
+                }
+                return result_path, nested_variant_type, true
+            }
+        } else {
+            // Direct type compatibility check
+            if types_compatible(resolved_variant_type, resolved_arg_type, ctx_sem) {
+                path := make([dynamic]int, 1, allocator)
+                path[0] = idx
+                return path, variant_type, true
+            }
+        }
+    }
+    
+    return nil, Primitive_Type.Void, false
+}
+
+// Recursively generate union constructor from a variant path
+// Takes the union's Named_Type (for generating the type name) and resolves to Union_Type internally
+codegen_union_constructor_from_path :: proc(
+    ctx_cg: ^Codegen_Context,
+    union_named_type: Type_Info,  // Named_Type representing the union (e.g., Content)
+    path: []int,
+    arg: ^Node,
+    final_variant_type: Type_Info,
+) {
+    if len(path) == 0 {
+        // No path left - output argument directly
+        codegen_node(ctx_cg, arg)
+        return
+    }
+    
+    // Resolve union_named_type to get the actual Union_Type
+    target_union: Union_Type
+    union_resolved := false
+    if named_union, is_named_union := union_named_type.(Named_Type); is_named_union {
+        if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named_union, ctx_cg.current_pkg_name); ok {
+            if union_type, is_union := resolved.(Union_Type); is_union {
+                target_union = union_type
+                union_resolved = true
+            }
+        }
+    } else if union_type, is_union := union_named_type.(Union_Type); is_union {
+        target_union = union_type
+        union_resolved = true
+    }
+    
+    if !union_resolved {
+        // Should not happen - output argument as fallback
+        codegen_node(ctx_cg, arg)
+        return
+    }
+    
+    variant_index := path[0]
+    variant_type_at_level := target_union.types[variant_index]
+    
+    // Resolve variant type if it's a named type
+    resolved_variant_type := variant_type_at_level
+    if named_variant, is_named_variant := variant_type_at_level.(Named_Type); is_named_variant {
+        if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named_variant, ctx_cg.current_pkg_name); ok {
+            resolved_variant_type = resolved
+        }
+    }
+    
+    // Generate union constructor for this level using the union's Named_Type
+    strings.write_string(&ctx_cg.output_buf, "(")
+    codegen_type(ctx_cg, union_named_type)  // Use union_named_type to get the correct type name
+    strings.write_string(&ctx_cg.output_buf, "){.tag = ")
+    fmt.sbprintf(&ctx_cg.output_buf, "%d", variant_index)
+    strings.write_string(&ctx_cg.output_buf, ", .data.variant_")
+    fmt.sbprintf(&ctx_cg.output_buf, "%d", variant_index)
+    strings.write_string(&ctx_cg.output_buf, " = ")
+    
+    // Check if there's a deeper level
+    if len(path) > 1 {
+        // Recurse to next level (nested union) - pass the variant's Named_Type
+        if nested_union, is_nested_union := resolved_variant_type.(Union_Type); is_nested_union {
+            // Pass variant_type_at_level (Named_Type) for the next level
+            codegen_union_constructor_from_path(ctx_cg, variant_type_at_level, path[1:], arg, final_variant_type)
+        } else {
+            // Should not happen: path indicates nesting but variant is not a union
+            codegen_node(ctx_cg, arg)
+        }
+    } else {
+        // Final level: output argument directly (it's a struct/primitive, not a union)
+        codegen_node(ctx_cg, arg)
+    }
+    
+    // Close union constructor for this level
+    strings.write_string(&ctx_cg.output_buf, "}")
+}
+
 // Recursively scan composite types for processing
 codegen_scan_composite_types :: proc(ctx_cg: ^Codegen_Context, type_info: Type_Info, only_primitives := false) {
     #partial switch t in type_info {
@@ -2010,54 +2155,60 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
                     }
                     
                     if union_param, is_union := resolved_param_type.(Union_Type); is_union {
-                        // Match by name first (empty structs resolve to same type)
-                        variant_index := -1
-                        arg_type_name := ""
+                        // Handle struct literal type name extraction
+                        arg_type_for_search := arg_type
                         if arg.node_kind == .Struct_Literal {
                             struct_lit := arg.payload.(Node_Struct_Literal)
-                            arg_type_name = struct_lit.type_name
-                        } else if named_arg, is_named := arg_type.(Named_Type); is_named {
-                            arg_type_name = named_arg.name
-                        }
-                        
-                        if arg_type_name != "" {
-                            for variant_type, idx in union_param.types {
-                                if named_variant, is_named_variant := variant_type.(Named_Type); is_named_variant {
-                                    if arg_type_name == named_variant.name {
-                                        variant_index = idx
-                                        break
-                                    }
-                                }
+                            if struct_lit.type_name != "" {
+                                arg_type_for_search = Named_Type{name = struct_lit.type_name}
                             }
                         }
                         
-                        // Fallback to type comparison for primitives
-                        if variant_index == -1 {
-                            resolved_arg_type := arg_type
-                            if named_arg, is_named := arg_type.(Named_Type); is_named {
-                                if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named_arg, ctx_cg.current_pkg_name); ok {
-                                    resolved_arg_type = resolved
+                        // Recursively find the variant path through nested unions
+                        variant_path, final_variant_type, found := find_union_variant_path(
+                            union_param,
+                            arg_type_for_search,
+                            ctx_cg.ctx_sem,
+                            ctx_cg.current_pkg_name,
+                            context.temp_allocator,
+                        )
+                        
+                        if found && len(variant_path) > 0 {
+                            // Get the first union type to start wrapping
+                            first_variant_type := union_param.types[variant_path[0]]
+                            resolved_first_variant_type := first_variant_type
+                            if named_first, is_named_first := first_variant_type.(Named_Type); is_named_first {
+                                if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named_first, ctx_cg.current_pkg_name); ok {
+                                    resolved_first_variant_type = resolved
                                 }
                             }
                             
-                            for variant_type, idx in union_param.types {
-                                if _, is_named_variant := variant_type.(Named_Type); is_named_variant {
-                                    continue
-                                }
-                                if types_compatible(variant_type, resolved_arg_type, ctx_cg.ctx_sem) {
-                                    variant_index = idx
-                                    break
-                                }
-                            }
-                        }
-                        
-                        if variant_index >= 0 {
+                            // Start outer union constructor
                             strings.write_string(&ctx_cg.output_buf, "(")
                             codegen_type(ctx_cg, param_type)
-                            fmt.sbprintf(&ctx_cg.output_buf, "){{.tag = %d, .data.variant_%d = ", variant_index, variant_index)
-                            codegen_node(ctx_cg, arg)
+                            strings.write_string(&ctx_cg.output_buf, "){.tag = ")
+                            fmt.sbprintf(&ctx_cg.output_buf, "%d", variant_path[0])
+                            strings.write_string(&ctx_cg.output_buf, ", .data.variant_")
+                            fmt.sbprintf(&ctx_cg.output_buf, "%d", variant_path[0])
+                            strings.write_string(&ctx_cg.output_buf, " = ")
+                            
+                            // Recursively generate nested union constructors if there are more levels
+                            if len(variant_path) > 1 {
+                                if nested_union, is_nested_union := resolved_first_variant_type.(Union_Type); is_nested_union {
+                                    // Pass first_variant_type (Named_Type) so we can generate the type name
+                                    codegen_union_constructor_from_path(ctx_cg, first_variant_type, variant_path[1:], arg, final_variant_type)
+                                } else {
+                                    codegen_node(ctx_cg, arg)
+                                }
+                            } else {
+                                // Direct variant match (no nesting) - just output the argument
+                                codegen_node(ctx_cg, arg)
+                            }
+                            
+                            // Close outer union constructor
                             strings.write_string(&ctx_cg.output_buf, "}")
                         } else {
+                            // No variant match found, generate argument as-is
                             codegen_node(ctx_cg, arg)
                         }
                     } else {
