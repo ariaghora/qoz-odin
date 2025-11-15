@@ -17,9 +17,7 @@ parse_int := func(s: string): (i32, bool) {
 
 // Returns (result, ok). ok=false if divisor is zero.
 divide := func(a: i32, b: i32): (i32, bool) {
-    if b == 0 {
-        return 0, false
-    }
+    if b == 0: return 0, false
     return a / b, true
 }
 
@@ -32,16 +30,12 @@ compute := func(num_str: string, denom_str: string): (i32, bool) {
 }
 
 parse_int_union := func(s: string): (i32, Error) {
-    if len(s) == 2 {
-        return 42, Success{}
-    }
+    if len(s) == 2: return 42, Success{}
     return 0, ParseError{}
 }
 
 divide_union := func(a: i32, b: i32): (i32, Error) {
-    if b == 0 {
-        return 0, DivByZeroError{}
-    }
+    if b == 0: return 0, DivByZeroError{}
     return a / b, Success{}
 }
 
@@ -54,9 +48,7 @@ compute_union := func(num_str: string, denom_str: string): (i32, Error) {
 
 // Returns (x, y, ok). Tests tuple destructuring with try.
 parse_two_ints := func(s: string): (i32, i32, bool) {
-    if len(s) == 2 {
-        return 42, 24, true
-    }
+    if len(s) == 2: return 42, 24, true
     return 0, 0, false
 }
 

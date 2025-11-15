@@ -1,9 +1,6 @@
 gcd := func(a: i32, b: i32): i32 {
-    if b == 0 {
-        return a
-    } else {
-        return gcd(b, a % b)
-    }
+    if b == 0: return a
+    return gcd(b, a % b)
 }
 
 guess := func(number: i32): i32 {

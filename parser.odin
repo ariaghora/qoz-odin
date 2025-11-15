@@ -651,10 +651,33 @@ parse_if_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := conte
     
     cond := parse_expression(ps, parent, allocator) or_return
     
+    // Check for single-line syntax: if expr: stmt
+    if_body: [dynamic]^Node
+    if ps.current_token.kind == .Colon {
+        parser_advance(ps) // eat ':'
+        // Single statement body
+        if_body = make([dynamic]^Node, allocator)
+        stmt := parse_statement(ps, parent, allocator) or_return
+        append(&if_body, stmt)
+        
+        // Single-line if cannot have else
+        return new_clone(Node{
+            node_kind = .If,
+            parent = parent,
+            span = Span{start = span_start, end = ps.idx - 1},
+            payload = Node_If{
+                condition = cond,
+                if_body = if_body,
+                else_body = make([dynamic]^Node, allocator),
+            }
+        }, allocator), nil
+    }
+    
+    // Multi-line syntax: if expr { ... }
     parser_consume(ps, .Left_Brace) or_return
     
     // Parse if body
-    if_body := make([dynamic]^Node, allocator)
+    if_body = make([dynamic]^Node, allocator)
     for ps.current_token.kind != .Right_Brace {
         if ps.current_token.kind == .EOF {
             return nil, make_parse_error(ps, "Unexpected EOF in if statement")
@@ -1820,7 +1843,7 @@ parse_for_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := cont
         }, allocator), nil
     }
     
-    // C-style for loop: for i := 0; i < n; i = i + 1 { }
+    // C-style for loop: for i := 0; i < n; i = i + 1 { } or for i := 0; i < n; i += 1: stmt
     init := parse_statement(ps, parent, allocator) or_return
     parser_consume(ps, .Semicolon) or_return
     
@@ -1829,6 +1852,27 @@ parse_for_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := cont
     
     post := parse_statement(ps, parent, allocator) or_return
     
+    // Check for single-line syntax: for i := 0; i < n; i += 1: stmt
+    if ps.current_token.kind == .Colon {
+        parser_advance(ps) // eat ':'
+        body := make([dynamic]^Node, allocator)
+        stmt := parse_statement(ps, parent, allocator) or_return
+        append(&body, stmt)
+        
+        return new_clone(Node{
+            node_kind = .For_C,
+            parent = parent,
+            span = Span{start = span_start, end = ps.idx - 1},
+            payload = Node_For_C{
+                init = init,
+                condition = condition,
+                post = post,
+                body = body,
+            }
+        }, allocator), nil
+    }
+    
+    // Multi-line syntax: for i := 0; i < n; i += 1 { ... }
     parser_consume(ps, .Left_Brace) or_return
     body := make([dynamic]^Node, allocator)
     for ps.current_token.kind != .Right_Brace {
@@ -1859,6 +1903,25 @@ parse_while_statement :: proc(ps: ^Parsing_State, parent: ^Node, allocator := co
     
     condition := parse_expression(ps, parent, allocator) or_return
     
+    // Check for single-line syntax: while expr: stmt
+    if ps.current_token.kind == .Colon {
+        parser_advance(ps) // eat ':'
+        body := make([dynamic]^Node, allocator)
+        stmt := parse_statement(ps, parent, allocator) or_return
+        append(&body, stmt)
+        
+        return new_clone(Node{
+            node_kind = .While,
+            parent = parent,
+            span = Span{start = span_start, end = ps.idx - 1},
+            payload = Node_While{
+                condition = condition,
+                body = body,
+            }
+        }, allocator), nil
+    }
+    
+    // Multi-line syntax: while expr { ... }
     parser_consume(ps, .Left_Brace) or_return
     body := make([dynamic]^Node, allocator)
     for ps.current_token.kind != .Right_Brace {

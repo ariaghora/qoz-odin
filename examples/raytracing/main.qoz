@@ -22,11 +22,9 @@ hit_sphere := func(center: Vec3, radius: f64, ray: Ray): f64 {
     c := vec_dot(oc, oc) - radius*radius
     disc := b*b - 4.0*a*c
 
-    if disc < 0.0 {
-        return -1.0
-    } else {
-        return (-b - math.sqrt(disc)) / (2.0*a)
-    }
+    if disc < 0.0: return -1.0
+
+    return (-b - math.sqrt(disc)) / (2.0*a)
 }
 
 vec_dot := func(v1: Vec3, v2: Vec3): f64 {
