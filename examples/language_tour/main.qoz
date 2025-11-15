@@ -61,6 +61,11 @@ main := func() {
     // defer del(full_name, alloc)
     println(full_name)
 
+    // @tmp provides a function-scoped temporary arena allocator
+    // The arena is automatically created at function start and destroyed at function end
+    temp_greeting := strings.string_concat("Hello from ", "temporary arena", @tmp)
+    println(temp_greeting)
+    // No need to manually free, since temporary arena is automatically cleaned up at function exit
 
     banner("Static Array Example")
     // You can create a static array like this. The size must be a compile-time constant.

@@ -2655,6 +2655,18 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
         add_error(ctx, node.span, "Undefined variable '%s'", iden.name)
         node.inferred_type = Primitive_Type.I32
         return Primitive_Type.I32
+    
+    case .Tmp_Allocator:
+        // @tmp can only be used inside function bodies
+        if _, in_function := ctx.current_function_return_type.?; !in_function {
+            add_error(ctx, node.span, "@tmp can only be used inside function bodies")
+            return Primitive_Type.Void
+        }
+        
+        // @tmp returns an Allocator type
+        allocator_type := Named_Type{name = "mem.Allocator"}
+        node.inferred_type = allocator_type
+        return allocator_type
         
     case: 
         fmt.panicf("Cannot check %v yet", node.node_kind)

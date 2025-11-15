@@ -20,6 +20,7 @@ Token_Kind :: enum {
     KW_Size_Of, KW_Len, KW_New, KW_Del,
     KW_Switch, KW_Case, KW_Default,
     KW_Try,
+    KW_Tmp,
     KW_Import, KW_Link, Iden, EOF,
 }
 
@@ -317,6 +318,13 @@ tokenize :: proc(source: string, allocator := context.allocator) -> (tokens: [dy
                 make_tok(&t, .Eq_Eq, "==")
             } else {
                 make_tok(&t, .Eq, "=")
+            }
+        case '@':
+            // Check for @tmp
+            if t.offset + 3 < len(t.source) && t.source[t.offset:t.offset+4] == "@tmp" {
+                make_tok(&t, .KW_Tmp, "@tmp")
+            } else {
+                return nil, fmt.tprintf("Unknown symbol `@` at line %d, column %d (expected @tmp)", t.line, t.column)
             }
         case:
             if unicode.is_alpha(c) || c == '_' {

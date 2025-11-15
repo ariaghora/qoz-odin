@@ -52,6 +52,7 @@ Node_Kind :: enum {
     Un_Op,
     Var_Def,
     While,
+    Tmp_Allocator,
 }
 
 Type_Info :: union {
@@ -1217,6 +1218,13 @@ parse_primary :: proc(ps: ^Parsing_State, parent: ^Node, allocator := context.al
     case .Lit_True, .Lit_False: return parse_literal_bool(ps, parent, allocator)
     case .KW_Arr: return parse_literal_array(ps, parent, allocator)
     case .Left_Brace: return parse_untyped_compound_literal(ps, parent, allocator)
+    case .KW_Tmp:
+        parser_advance(ps)  // eat '@tmp'
+        tmp_node := new(Node, allocator)
+        tmp_node.node_kind = .Tmp_Allocator
+        tmp_node.parent = parent
+        tmp_node.span = Span{start = span_start, end = ps.idx - 1}
+        return tmp_node, nil
     case:
         return nil, make_parse_error(ps, fmt.tprintf("Expected expression at position %d, got %v", ps.idx, ps.current_token.kind))
     }

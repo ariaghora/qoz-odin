@@ -1679,6 +1679,76 @@ codegen_print_impl :: proc(ctx_cg: ^Codegen_Context, args: [dynamic]^Node, add_n
     }
 }
 
+// Check if a node (or its children) uses @tmp
+function_uses_tmp_allocator :: proc(node: ^Node) -> bool {
+    if node == nil do return false
+    if node.node_kind == .Tmp_Allocator do return true
+    #partial switch node.node_kind {
+    case .Var_Def:
+        var_def := node.payload.(Node_Var_Def)
+        if function_uses_tmp_allocator(var_def.content) do return true
+    case .Fn_Call:
+        call := node.payload.(Node_Call)
+        if function_uses_tmp_allocator(call.callee) do return true
+        for arg in call.args {
+            if function_uses_tmp_allocator(arg) do return true
+        }
+    case .Bin_Op:
+        binop := node.payload.(Node_Bin_Op)
+        if function_uses_tmp_allocator(binop.left) || function_uses_tmp_allocator(binop.right) do return true
+    case .Un_Op:
+        unop := node.payload.(Node_Un_Op)
+        if function_uses_tmp_allocator(unop.operand) do return true
+    case .Field_Access:
+        field := node.payload.(Node_Field_Access)
+        if function_uses_tmp_allocator(field.object) do return true
+    case .Index:
+        index := node.payload.(Node_Index)
+        if function_uses_tmp_allocator(index.object) || function_uses_tmp_allocator(index.index) do return true
+    case .Cast:
+        cast_node := node.payload.(Node_Cast)
+        if function_uses_tmp_allocator(cast_node.expr) do return true
+    case .If:
+        if_stmt := node.payload.(Node_If)
+        if function_uses_tmp_allocator(if_stmt.condition) do return true
+        for stmt in if_stmt.if_body {
+            if function_uses_tmp_allocator(stmt) do return true
+        }
+        for stmt in if_stmt.else_body {
+            if function_uses_tmp_allocator(stmt) do return true
+        }
+    case .While:
+        while_stmt := node.payload.(Node_While)
+        if function_uses_tmp_allocator(while_stmt.condition) do return true
+        for stmt in while_stmt.body {
+            if function_uses_tmp_allocator(stmt) do return true
+        }
+    case .For_C:
+        for_c := node.payload.(Node_For_C)
+        if function_uses_tmp_allocator(for_c.init) || function_uses_tmp_allocator(for_c.condition) || function_uses_tmp_allocator(for_c.post) do return true
+        for stmt in for_c.body {
+            if function_uses_tmp_allocator(stmt) do return true
+        }
+    case .For_In:
+        for_in := node.payload.(Node_For_In)
+        if function_uses_tmp_allocator(for_in.iterable) do return true
+        for stmt in for_in.body {
+            if function_uses_tmp_allocator(stmt) do return true
+        }
+    case .Return:
+        ret := node.payload.(Node_Return)
+        for value in ret.values {
+            if function_uses_tmp_allocator(value) do return true
+        }
+    case .Statement_List:
+        stmts := node.payload.(Node_Statement_List)
+        for stmt in stmts.nodes {
+            if function_uses_tmp_allocator(stmt) do return true
+        }
+    }
+    return false
+}
+
 codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
     #partial switch node.node_kind {
     case .Program:
@@ -2941,6 +3011,9 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         src := lit.content.source
         strings.write_string(&ctx_cg.output_buf, src)
     
+    case .Tmp_Allocator:
+        strings.write_string(&ctx_cg.output_buf, "_tmp_alloc")
+    
     case .Defer:
         // Collect defer, don't emit yet
         defer_node := node.payload.(Node_Defer)
@@ -3214,6 +3287,23 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
             }
             strings.write_string(&ctx_cg.output_buf, " {\n")
             
+            // Check if function uses @tmp
+            uses_tmp := false
+            for stmt in fn_def.body {
+                if function_uses_tmp_allocator(stmt) {
+                    uses_tmp = true
+                    break
+                }
+            }
+            
+            // Generate temporary arena if @tmp is used
+            if uses_tmp {
+                codegen_indent(ctx_cg, ctx_cg.indent_level)
+                strings.write_string(&ctx_cg.output_buf, "qoz__mem__Arena _tmp_arena = qoz__mem__arena_make_growable(4096);\n")
+                codegen_indent(ctx_cg, ctx_cg.indent_level)
+                strings.write_string(&ctx_cg.output_buf, "qoz__mem__Allocator _tmp_alloc = qoz__mem__arena_allocator(&_tmp_arena);\n")
+            }
+            
             // Create implicit return variable for error propagation
             has_explicit_return := false
             is_void_return := false
@@ -3242,6 +3332,12 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
             }
             
             codegen_emit_defers(ctx_cg)
+            
+            // Clean up temporary arena if @tmp was used
+            if uses_tmp {
+                codegen_indent(ctx_cg, ctx_cg.indent_level)
+                strings.write_string(&ctx_cg.output_buf, "qoz__mem__arena_free(&_tmp_arena);\n")
+            }
             
             if !is_void_return && !has_explicit_return {
                 codegen_indent(ctx_cg, ctx_cg.indent_level)
