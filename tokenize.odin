@@ -9,6 +9,7 @@ Token_Kind :: enum {
     Lt, Gt, Lt_Eq, Gt_Eq, Amp, Not, And_And, Or_Or,
     Plus, Minus, Star, Slash, Percent,
     Plus_Eq, Minus_Eq, Star_Eq, Slash_Eq, 
+    Question,
     Left_Paren, Right_Paren,
     Left_Brace, Right_Brace,
     Left_Bracket, Right_Bracket,
@@ -18,6 +19,7 @@ Token_Kind :: enum {
     KW_Arr, KW_Vec, KW_Map, KW_For, KW_While, KW_In, KW_Struct, KW_Union,
     KW_Size_Of, KW_Len, KW_New, KW_Del,
     KW_Switch, KW_Case, KW_Default,
+    KW_Try,
     KW_Import, KW_Link, Iden, EOF,
 }
 
@@ -120,6 +122,7 @@ make_id_or_kw :: proc(t: ^Tokenizer) {
     case "println":  tok_kind = .KW_Println
     case "return":   tok_kind = .KW_Return
     case "defer":    tok_kind = .KW_Defer
+    case "try":      tok_kind = .KW_Try
     case "alias":    tok_kind = .KW_Alias
     case "nil":      tok_kind = .Lit_Nil
     case "i8":       tok_kind = .KW_I8
@@ -274,6 +277,7 @@ tokenize :: proc(source: string, allocator := context.allocator) -> (tokens: [dy
                 make_tok(&t, .Slash, "/")
             }
         case '%': make_tok(&t, .Percent, "%")
+        case '?': make_tok(&t, .Question, "?")
         case '&':
             if peek(&t, source) == '&' {
                 tokenizer_advance(&t)

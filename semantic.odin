@@ -34,7 +34,7 @@ Semantic_Context :: struct {
     errors: [dynamic]Semantic_Error,
     allocator: mem.Allocator,
     current_function_return_type: Maybe(Type_Info),
-    current_struct_name: Maybe(string),
+    current_struct_name: Maybe(string), 
     current_union_name: Maybe(string),
     external_functions: map[string]bool,
     global_symbols: map[string]bool,
@@ -172,8 +172,8 @@ resolve_named_type :: proc(ctx: ^Semantic_Context, named: Named_Type, pkg_name: 
                         return resolve_named_type(ctx, nested_named, pkg_name)
                     }
                     return resolved_type, true
-                }
             }
+        }
         }
         
         return {}, false
@@ -373,12 +373,12 @@ is_allowed_at_top_level :: proc(type: Type_Info) -> bool {
     case Primitive_Type: return true
     // Untyped literals are fine, they'll become primitives
     case Untyped_Int, Untyped_Float, Untyped_String: return true
-    // Allow string and user-defined types (which are checked separately)
+        // Allow string and user-defined types (which are checked separately)
     case Named_Type: return t.name == "string"
     case Function_Type: return true
     case Struct_Type:   return true
     case Union_Type:    return true
-    // Mutable globals with complex types are not allowed
+        // Mutable globals with complex types are not allowed
     case Array_Type, Pointer_Type: return false
     }
     return false
@@ -607,7 +607,7 @@ collect_declarations :: proc(ctx: ^Semantic_Context, node: ^Node, pkg_dir, proje
         } else {
             alias = extract_alias_from_path(import_node.path)
         }
-
+        
         resolved_path := resolve_import_path(pkg_dir, project_root, import_node.path)
         ctx.import_aliases[alias] = resolved_path 
 
@@ -901,25 +901,25 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
                 return .Void
             }
             
-            allocator_type := check_node(ctx, del_node.allocator)
-            
-            // Validate first argument - must be pointer, string, or array
-            valid_first_arg := false
-            #partial switch t in ptr_type {
+        allocator_type := check_node(ctx, del_node.allocator)
+        
+        // Validate first argument - must be pointer, string, or array
+        valid_first_arg := false
+        #partial switch t in ptr_type {
             case Pointer_Type:
                 valid_first_arg = true
             case Array_Type:
-                valid_first_arg = true
-            case Named_Type:
-                if t.name == "string" do valid_first_arg = true
-            }
-            
-            if !valid_first_arg {
-                add_error(ctx, del_node.pointer.span, "del() requires pointer, string, or array type, got %v", ptr_type)
-            }
-            
-            // Validate allocator - structural typing
-            validate_allocator_struct(ctx, allocator_type, del_node.allocator.span)
+            valid_first_arg = true
+        case Named_Type:
+            if t.name == "string" do valid_first_arg = true
+        }
+        
+        if !valid_first_arg {
+            add_error(ctx, del_node.pointer.span, "del() requires pointer, string, or array type, got %v", ptr_type)
+        }
+        
+        // Validate allocator - structural typing
+        validate_allocator_struct(ctx, allocator_type, del_node.allocator.span)
         }
         
         return .Void
@@ -1095,7 +1095,7 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
         
         semantic_pop_scope(ctx)
         return Primitive_Type.Void
-    
+
     case .While:
         while_loop := node.payload.(Node_While)
         
@@ -1114,6 +1114,166 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
         
         return Primitive_Type.Void
 
+    case .Try:
+        try_node := node.payload.(Node_Try)
+        var_def_node := try_node.var_def
+        var_def := var_def_node.payload.(Node_Var_Def)
+        
+        // Check that we're in a function context
+        expected_ret_type, in_function := ctx.current_function_return_type.?
+        if !in_function {
+            add_error(ctx, node.span, "try statement can only be used inside a function")
+            return Primitive_Type.Void
+        }
+        
+        // Check the variable definition's content (the expression)
+        // try statement requires a function call that returns a tuple
+        if var_def.content.node_kind != .Fn_Call {
+            add_error(ctx, node.span, "try statement requires a function call")
+            return Primitive_Type.Void
+        }
+        
+        // Check the expression type
+        expr_type := check_node(ctx, var_def.content)
+        
+        // Resolve if it's a Named_Type
+        resolved_expr_type := expr_type
+        if named, is_named := expr_type.(Named_Type); is_named {
+            if resolved, ok := resolve_named_type(ctx, named); ok {
+                resolved_expr_type = resolved
+            }
+        }
+        
+        // Must be a tuple type
+        tuple_type, is_tuple := resolved_expr_type.(Tuple_Type)
+        if !is_tuple {
+            add_error(ctx, node.span, "try statement requires expression to return a tuple, got %v", expr_type)
+            return Primitive_Type.Void
+        }
+        
+        if len(tuple_type.types) == 0 {
+            add_error(ctx, node.span, "try statement requires tuple with at least one element")
+            return Primitive_Type.Void
+        }
+        
+        // Last element must be bool, pointer, or union containing them
+        error_type := tuple_type.types[len(tuple_type.types) - 1]
+        
+        // Resolve error type if it's a Named_Type
+        resolved_error_type := error_type
+        if named, is_named := error_type.(Named_Type); is_named {
+            if resolved, ok := resolve_named_type(ctx, named); ok {
+                resolved_error_type = resolved
+            }
+        }
+        
+        // Check if error type is bool, pointer, or union containing them
+        is_valid_error := false
+        if prim, is_prim := resolved_error_type.(Primitive_Type); is_prim {
+            if prim == .Bool {
+                is_valid_error = true
+            }
+        } else if ptr, is_ptr := resolved_error_type.(Pointer_Type); is_ptr {
+            is_valid_error = true
+        } else if union_type, is_union := resolved_error_type.(Union_Type); is_union {
+            for variant in union_type.types {
+                if prim, is_prim := variant.(Primitive_Type); is_prim && prim == .Bool {
+                    is_valid_error = true
+                    break
+                }
+                if _, is_ptr_variant := variant.(Pointer_Type); is_ptr_variant {
+                    is_valid_error = true
+                    break
+                }
+                if named_variant, is_named_variant := variant.(Named_Type); is_named_variant {
+                    if named_variant.name == "Success" {
+                        is_valid_error = true
+                        break
+                    }
+                }
+            }
+        }
+        
+        if !is_valid_error {
+            add_error(ctx, node.span, "try statement requires last tuple element to be bool, pointer, or union containing bool/pointer/Success, got %v", error_type)
+            return Primitive_Type.Void
+        }
+        
+        // Check that function return type is compatible with error type
+        resolved_expected_ret := expected_ret_type
+        if named, is_named := expected_ret_type.(Named_Type); is_named {
+            if resolved, ok := resolve_named_type(ctx, named); ok {
+                resolved_expected_ret = resolved
+            }
+        }
+        
+        // Function must return the same error type (or compatible)
+        if !types_compatible(resolved_expected_ret, error_type, ctx) {
+            if expected_tuple, is_expected_tuple := resolved_expected_ret.(Tuple_Type); is_expected_tuple {
+                if len(expected_tuple.types) > 0 {
+                    expected_error := expected_tuple.types[len(expected_tuple.types) - 1]
+                    if !types_compatible(expected_error, error_type, ctx) {
+                        add_error(ctx, node.span, "Function return type error (%v) does not match propagated error type (%v)", expected_error, error_type)
+                    }
+                }
+            } else {
+                if !types_compatible(resolved_expected_ret, error_type, ctx) {
+                    add_error(ctx, node.span, "Function return type (%v) does not match propagated error type (%v)", resolved_expected_ret, error_type)
+                }
+            }
+        }
+        
+        // Extract value type from tuple (without error)
+        value_type: Type_Info
+        if len(tuple_type.types) == 2 {
+            // (value, error) -> value
+            value_type = tuple_type.types[0]
+        } else if len(tuple_type.types) > 2 {
+            // (val1, val2, ..., error) -> (val1, val2, ...)
+            result_types := make([dynamic]Type_Info, 0, len(tuple_type.types) - 1, ctx.allocator)
+            for i in 0..<len(tuple_type.types) - 1 {
+                append(&result_types, tuple_type.types[i])
+            }
+            value_type = Tuple_Type{types = result_types}
+        } else {
+            add_error(ctx, node.span, "try statement requires tuple with at least value and error")
+            return Primitive_Type.Void
+        }
+        
+        // Define variables directly with the value type (bypassing normal Var_Def logic)
+        if len(var_def.names) == 1 {
+            // Single variable: define it with the value type
+            semantic_define_symbol(ctx, var_def.names[0], value_type, node.span)
+            var_def_node.inferred_type = value_type
+        } else if len(var_def.names) > 1 {
+            // Multiple variables: destructure the value type
+            if value_tuple, is_value_tuple := value_type.(Tuple_Type); is_value_tuple {
+                if len(var_def.names) != len(value_tuple.types) {
+                    add_error(ctx, node.span, "try statement: expected %d variable names, got %d", len(value_tuple.types), len(var_def.names))
+                    return Primitive_Type.Void
+                }
+                for name, i in var_def.names {
+                    if i < len(value_tuple.types) {
+                        semantic_define_symbol(ctx, name, value_tuple.types[i], node.span)
+                    }
+                }
+                var_def_node.inferred_type = value_type
+            } else {
+                // Single value type but multiple variable names - error
+                add_error(ctx, node.span, "try statement: single value type cannot be destructured into %d variables", len(var_def.names))
+                return Primitive_Type.Void
+            }
+        }
+        
+        node.inferred_type = Primitive_Type.Void
+        return Primitive_Type.Void
+    
+    case .Error_Prop:
+        // Reserved for future use - should not be reached in current implementation
+        error_prop := node.payload.(Node_Error_Prop)
+        add_error(ctx, node.span, "Error propagation operator '?' is reserved for future use. Use 'try' statement instead.")
+        return Primitive_Type.Void
+    
     case .Index:
         index_node := node.payload.(Node_Index)
         object_type := check_node(ctx, index_node.object)
@@ -1150,7 +1310,7 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
                 element_type = vec_t.element_type^
             } else {
                 // Regular pointer dereference
-                element_type = ptr_type.pointee^
+            element_type = ptr_type.pointee^
             }
         } else {
             add_error(ctx, node.span, "Cannot index non-array/vec/pointer type")
@@ -1604,8 +1764,8 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
             append(&arg_types, arg_type)
             
             if i < len(fn_type.params) {
-                expected := fn_type.params[i]
-                if !types_compatible(expected, arg_type, ctx) {
+            expected := fn_type.params[i]
+            if !types_compatible(expected, arg_type, ctx) {
                     add_error(ctx, arg.span, "Argument %d: expected %v, got %v", i, expected, arg_type)
                 }
             }
@@ -1714,28 +1874,46 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
                     continue
                 }
                 
-                // Resolve pattern type
-                pattern_type := type_pattern.type
-                if named_pattern, is_named := pattern_type.(Named_Type); is_named {
-                    if resolved, ok := resolve_named_type(ctx, named_pattern); ok {
-                        pattern_type = resolved
+                // Find matching variant index
+                // CRITICAL: Match by name FIRST, not by resolved type
+                // This is because empty structs (struct {}) all resolve to the same Struct_Type{fields = []}
+                // So we must match by the original Named_Type name, not the resolved type
+                variant_index := -1
+                
+                // First, try matching by name (for Named_Type variants) - exact match by name
+                pattern_named, is_pattern_named := type_pattern.type.(Named_Type)
+                if is_pattern_named {
+                    for variant_type, i in union_type.types {
+                        if named_variant, is_named_variant := variant_type.(Named_Type); is_named_variant {
+                            if pattern_named.name == named_variant.name {
+                                variant_index = i
+                                break
+                            }
+                        }
                     }
                 }
                 
-                // Find matching variant index
-                variant_index := -1
-                for variant_type, i in union_type.types {
-                    // Resolve variant type if it's a Named_Type
-                    resolved_variant_type := variant_type
-                    if named_variant, is_named := variant_type.(Named_Type); is_named {
-                        if resolved, ok := resolve_named_type(ctx, named_variant); ok {
-                            resolved_variant_type = resolved
+                // If name match didn't work, try matching by resolved type (for primitives like bool)
+                if variant_index == -1 {
+                    // Resolve pattern type for comparison
+                    resolved_pattern_type := type_pattern.type
+                    if is_pattern_named {
+                        if resolved, ok := resolve_named_type(ctx, pattern_named); ok {
+                            resolved_pattern_type = resolved
                         }
                     }
                     
-                    if types_equal(pattern_type, resolved_variant_type) {
-                        variant_index = i
-                        break
+                    for variant_type, i in union_type.types {
+                        // Skip named types - we already checked by name
+                        if _, is_named_variant := variant_type.(Named_Type); is_named_variant {
+                            continue
+                        }
+                        
+                        // For primitive types, compare resolved types
+                        if types_equal(resolved_pattern_type, variant_type) {
+                            variant_index = i
+                            break
+                        }
                     }
                 }
                 
@@ -1744,8 +1922,9 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
                 } else {
                     if variant_index in covered_variants {
                         add_error(ctx, node.span, "Duplicate case for variant %v", type_pattern.type)
+                    } else {
+                        covered_variants[variant_index] = true
                     }
-                    covered_variants[variant_index] = true
                 }
                 
                 // If pattern has a name, introduce it into the case body scope
@@ -2160,6 +2339,39 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
         result_type_name := normalize_struct_literal_type_name(ctx, type_name, &struct_lit)
         node.payload = struct_lit
         
+        // If expected_type is a union, check if this struct is a variant of that union
+        // If so, infer the union type instead of the struct type
+        if expected_type != nil {
+            resolved_expected := expected_type
+            if named_expected, is_named := expected_type.(Named_Type); is_named {
+                if resolved, ok := resolve_named_type(ctx, named_expected); ok {
+                    resolved_expected = resolved
+                }
+            }
+            
+            if union_expected, is_union := resolved_expected.(Union_Type); is_union {
+                // Check if this struct type is a variant in the union
+                struct_named_type := Named_Type{name = result_type_name}
+                for variant_type in union_expected.types {
+                    // Resolve variant type if it's a Named_Type
+                    resolved_variant := variant_type
+                    if named_variant, is_named := variant_type.(Named_Type); is_named {
+                        if resolved, ok := resolve_named_type(ctx, named_variant); ok {
+                            resolved_variant = resolved
+                        }
+                    }
+                    
+                    // Check if struct type matches variant type
+                    if types_compatible(variant_type, struct_named_type, ctx) || 
+                       types_equal(resolved_variant, struct_type) {
+                        // This struct is a variant of the union - infer union type
+                        node.inferred_type = expected_type
+                        return expected_type
+                    }
+                }
+            }
+        }
+        
         result := Named_Type{name = result_type_name}
         node.inferred_type = result
         return result
@@ -2323,9 +2535,9 @@ check_node_with_context :: proc(ctx: ^Semantic_Context, node: ^Node, expected_ty
                 node.inferred_type = Primitive_Type.Cstring
                 return Primitive_Type.Cstring
             } else if is_string_type(expected_type) {
-                result := Named_Type{name = "string"}
-                node.inferred_type = result
-                return result
+        result := Named_Type{name = "string"}
+        node.inferred_type = result
+        return result
             }
         }
         // Otherwise, return untyped

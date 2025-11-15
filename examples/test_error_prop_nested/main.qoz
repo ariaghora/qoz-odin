@@ -1,0 +1,135 @@
+// Simulate parsing an integer from a string
+// Returns (value, ok) where ok=true means success, ok=false means error
+parse_int := func(s: string): (i32, bool) {
+    // Simple validation: only accept strings of length 2 (like "42")
+    if len(s) == 2 {
+        return 42, true  // true = success
+    } else if len(s) == 1 {
+        return 0, true  // Return 0 for single char (to test division by zero)
+    }
+    return 0, false  // false = error (invalid input)
+}
+
+// Simulate dividing two numbers (can fail if divisor is zero)
+divide := func(a: i32, b: i32): (i32, bool) {
+    if b == 0 {
+        return 0, false  // false = error (division by zero)
+    }
+    return a / b, true  // true = success
+}
+
+// Chain operations: parse two numbers and divide them
+// Uses try to propagate errors automatically - if any step fails, return early
+compute := func(num_str: string, denom_str: string): (i32, bool) {
+    // If parse_int fails, try will return early with the error
+    try numerator := parse_int(num_str)
+    try denominator := parse_int(denom_str)
+    
+    // If divide fails, try will return early with the error
+    try result := divide(numerator, denominator)
+    
+    return result, true  // true = success
+}
+
+// Test with union types as error
+// Each variant must be a defined type (struct)
+Success := struct {}
+ParseError := struct {}
+DivByZeroError := struct {}
+
+Error := union { bool, Success, ParseError, DivByZeroError }
+
+parse_int_union := func(s: string): (i32, Error) {
+    if len(s) == 2 {
+        return 42, Success{}  // Success struct = no error
+    }
+    return 0, ParseError{}  // ParseError struct = error
+}
+
+divide_union := func(a: i32, b: i32): (i32, Error) {
+    if b == 0 {
+        return 0, DivByZeroError{}  // DivByZeroError struct = error
+    }
+    return a / b, Success{}  // Success struct = no error
+}
+
+compute_union := func(num_str: string, denom_str: string): (i32, Error) {
+    // If parse fails, try will return early with the error
+    try numerator := parse_int_union(num_str)
+    try denominator := parse_int_union(denom_str)
+    
+    // If divide fails, try will return early with the error
+    try result := divide_union(numerator, denominator)
+    
+    return result, Success{}  // Success struct = no error
+}
+
+main := func() {
+    println("=== Testing bool error type ===")
+    // Test case 1: Success path (both strings have length 2)
+    result1, ok1 := compute("ab", "cd")
+    if !ok1 {
+        println("Error: computation failed")
+    } else {
+        println("Success: 42 / 42 =", result1)
+    }
+    
+    // Test case 2: Parse error (invalid numerator - wrong length)
+    result2, ok2 := compute("invalid", "cd")
+    if !ok2 {
+        println("Error: failed to parse numerator")
+    } else {
+        println("Unexpected success:", result2)
+    }
+    
+    // Test case 3: Parse error (invalid denominator - wrong length)
+    result3, ok3 := compute("ab", "invalid")
+    if !ok3 {
+        println("Error: failed to parse denominator")
+    } else {
+        println("Unexpected success:", result3)
+    }
+    
+    // Test case 4: Division by zero error
+    result4, ok4 := compute("ab", "x")
+    if !ok4 {
+        println("Error: division by zero")
+    } else {
+        println("Unexpected success:", result4)
+    }
+    
+    println("\n=== Testing union error type ===")
+    // Test case 1: Success (returns Success struct)
+    result_u1, err1 := compute_union("ab", "cd")
+    switch err1 {
+    case Success s:
+        println("Success: 42 / 42 =", result_u1)
+    case ParseError p:
+        println("Error: parse failed")
+    case DivByZeroError d:
+        println("Error: division by zero")
+    case bool b:
+        if !b {
+            println("Error: bool error", b)
+        } else {
+            println("Success: bool true")
+        }
+    }
+    
+    // Test case 2: Parse error (returns ParseError struct)
+    result_u2, err2 := compute_union("invalid", "cd")
+    switch err2 {
+    case Success s:
+        println("Unexpected success:", result_u2)
+    case ParseError p:
+        println("Error: parse failed (as expected)")
+    case DivByZeroError d:
+        println("Error: division by zero")
+    case bool b:
+        if !b {
+            println("Error: bool error (false)")
+        } else {
+            println("Unexpected success: bool true")
+        }
+    }
+}
