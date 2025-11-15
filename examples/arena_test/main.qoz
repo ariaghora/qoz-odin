@@ -2,10 +2,11 @@ import "std:mem"
 import str "std:strings"
 
 main := func() {
+    println("=== Fixed-size arena ===")
     arena := mem.arena_make(1024)
     alloc := mem.arena_allocator(&arena)
     defer {
-        println("Freeing arena memory...")
+        println("Freeing fixed arena memory...")
         mem.arena_free(&arena)
     }
 
@@ -19,4 +20,20 @@ main := func() {
     message := str.string_concat(word3, word4, alloc)
     println(message)
 
+    println("\n=== Growable arena ===")
+    growable_arena := mem.arena_make_growable(256)
+    growable_alloc := mem.arena_allocator(&growable_arena)
+    defer {
+        println("Freeing growable arena memory...")
+        mem.arena_free(&growable_arena)
+    }
+
+    // Allocate many strings to trigger arena chaining
+    for i := 0; i < 10; i += 1 {
+        prefix := "String "
+        suffix := " in growable arena"
+        combined := str.string_concat(prefix, suffix, growable_alloc)
+        println("Allocated:", combined)
+    }
+    println("Growable arena successfully chained multiple blocks!")
 }

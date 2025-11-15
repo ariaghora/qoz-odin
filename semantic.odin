@@ -2922,6 +2922,39 @@ semantic_binop_type_resolve :: proc(t1, t2: Type_Info, op: Token, span: Span, ct
         }
     }
     
+    // Handle pointer comparisons with nil (== and !=)
+    #partial switch op.kind {
+    case .Eq_Eq, .Not_Eq:
+        left_is_ptr := false
+        right_is_ptr := false
+        left_is_nil := false
+        right_is_nil := false
+        
+        if _, is_ptr := left_type.(Pointer_Type); is_ptr {
+            left_is_ptr = true
+        }
+        if _, is_ptr := right_type.(Pointer_Type); is_ptr {
+            right_is_ptr = true
+        }
+        
+        // Check if one side is nil (which is *void)
+        if void_ptr, is_void_ptr := left_type.(Pointer_Type); is_void_ptr {
+            if prim, is_prim := void_ptr.pointee.(Primitive_Type); is_prim && prim == .Void {
+                left_is_nil = true
+            }
+        }
+        if void_ptr, is_void_ptr := right_type.(Pointer_Type); is_void_ptr {
+            if prim, is_prim := void_ptr.pointee.(Primitive_Type); is_prim && prim == .Void {
+                right_is_nil = true
+            }
+        }
+        
+        // Pointer == nil or nil == pointer or pointer == pointer
+        if (left_is_ptr && right_is_nil) || (left_is_nil && right_is_ptr) || (left_is_ptr && right_is_ptr) {
+            return Primitive_Type.Bool
+        }
+    }
+    
     // Regular type checking
     if !types_equal(left_type, right_type) {
         add_error(ctx, span, "Type mismatch in binary operation")
