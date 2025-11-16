@@ -197,6 +197,11 @@ codegen_array_wrapper_struct :: proc(ctx_cg: ^Codegen_Context, arr_type: Array_T
 // Generate struct wrapper for vec type
 // only_primitives: if true, skip generation (vec always depends on Allocator struct)
 codegen_vec_wrapper_struct :: proc(ctx_cg: ^Codegen_Context, vec_type: Vec_Type, only_primitives := false) {
+    codegen_vec_wrapper_struct_with_type(ctx_cg, vec_type, vec_type.element_type^, only_primitives)
+}
+
+// Generate struct wrapper for vec type with explicit element type (preserves package context)
+codegen_vec_wrapper_struct_with_type :: proc(ctx_cg: ^Codegen_Context, vec_type: Vec_Type, element_type: Type_Info, only_primitives := false) {
     wrapper_name := get_vec_wrapper_name(vec_type.element_type)
     
     // Check if we already generated this wrapper
@@ -205,7 +210,7 @@ codegen_vec_wrapper_struct :: proc(ctx_cg: ^Codegen_Context, vec_type: Vec_Type,
     }
     
     // Skip vec wrappers if only_primitives is true
-    // Vec always depends on mem.Allocator struct, so must wait for Pass 2.5
+    // Vec always depends on mem.Allocator struct, so must wait until after struct definitions
     if only_primitives {
         return
     }
@@ -225,7 +230,8 @@ codegen_vec_wrapper_struct :: proc(ctx_cg: ^Codegen_Context, vec_type: Vec_Type,
     strings.write_string(&ctx_cg.output_buf, "typedef struct ")
     strings.write_string(&ctx_cg.output_buf, wrapper_name)
     strings.write_string(&ctx_cg.output_buf, " {\n    ")
-    codegen_type(ctx_cg, vec_type.element_type^)
+    // Use the explicit element_type which preserves package context
+    codegen_type(ctx_cg, element_type)
     strings.write_string(&ctx_cg.output_buf, "* data;\n    int64_t len;\n    int64_t cap;\n    ")
     // Use the actual Qoz mem.Allocator type (mangled)
     strings.write_string(&ctx_cg.output_buf, "qoz__mem__Allocator allocator;\n} ")
@@ -517,6 +523,7 @@ codegen :: proc(asts: map[string]^Node, sorted_packages: []string, ctx_sem: ^Sem
         generated_tuple_types = make(map[string]string, allocator=allocator),
     }
 
+
     strings.write_string(&ctx_cg.output_buf, string(#load("qoz_runtime.c")))
     strings.write_string(&ctx_cg.output_buf, "\n\n")
     strings.write_string(&ctx_cg.output_buf, "#include <stdio.h>\n")
@@ -559,7 +566,9 @@ codegen :: proc(asts: map[string]^Node, sorted_packages: []string, ctx_sem: ^Sem
     
     // Pass 1.75: Generate array wrapper bodies for primitive types ONLY
     // (These are needed by struct fields before struct definitions)
+    // NOTE: Vec wrappers are NOT generated here - they depend on Allocator struct
     for pkg_dir in sorted_packages {
+        ctx_cg.current_pkg_name = filepath.base(pkg_dir)
         for file_path, ast in asts {
             file_dir := filepath.dir(file_path, context.temp_allocator)
             if file_dir == pkg_dir {
@@ -570,9 +579,42 @@ codegen :: proc(asts: map[string]^Node, sorted_packages: []string, ctx_sem: ^Sem
     
     strings.write_string(&ctx_cg.output_buf, "\n")
     
-    // Pass 2: Struct definitions for ALL packages (complete typedefs with bodies)
+    // Pass 2: Generate structs and vec wrappers per package
+    // Strategy: Process std/mem first to define Allocator, then for each remaining package:
+    //   1. Generate vec wrappers needed by struct fields (Allocator is now defined)
+    //   2. Generate struct definitions (vec wrappers are now defined)
+    
+    // First, process std/mem completely to define Allocator
     for pkg_dir in sorted_packages {
-        ctx_cg.current_pkg_name = filepath.base(pkg_dir)
+        pkg_base := filepath.base(pkg_dir)
+        if pkg_base == "mem" {
+            ctx_cg.current_pkg_name = pkg_base
+            for file_path, ast in asts {
+                file_dir := filepath.dir(file_path, context.temp_allocator)
+                if file_dir == pkg_dir {
+                    codegen_struct_defs(&ctx_cg, ast)
+                }
+            }
+            break
+        }
+    }
+    
+    // Then, for all other packages: generate vec wrappers, then structs
+    for pkg_dir in sorted_packages {
+        pkg_base := filepath.base(pkg_dir)
+        if pkg_base == "mem" do continue  // Already processed
+        
+        ctx_cg.current_pkg_name = pkg_base
+        
+        // First, generate vec wrappers needed by struct fields in this package
+        for file_path, ast in asts {
+            file_dir := filepath.dir(file_path, context.temp_allocator)
+            if file_dir == pkg_dir {
+                codegen_scan_struct_fields_for_vecs(&ctx_cg, ast)
+            }
+        }
+        
+        // Then, generate struct definitions for this package
         for file_path, ast in asts {
             file_dir := filepath.dir(file_path, context.temp_allocator)
             if file_dir == pkg_dir {
@@ -1093,6 +1135,99 @@ codegen_struct_forward_decl :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
             if is_composite_type(type_expr.type_info) {
                 if len(var_def.names) > 0 {
                     codegen_composite_forward_decl(ctx_cg, type_expr.type_info, var_def.names[0])
+                }
+            }
+        }
+    }
+}
+
+// Scan struct definitions for vec fields and generate vec wrappers
+codegen_scan_struct_fields_for_vecs :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
+    #partial switch node.node_kind {
+    case .Program:
+        for stmt in node.payload.(Node_Statement_List).nodes {
+            codegen_scan_struct_fields_for_vecs(ctx_cg, stmt)
+        }
+    case .Var_Def:
+        var_def := node.payload.(Node_Var_Def)
+        
+        if var_def.content.node_kind == .Type_Expr {
+            type_expr := var_def.content.payload.(Node_Type_Expr)
+            
+            if struct_type, is_struct := type_expr.type_info.(Struct_Type); is_struct {
+                // Scan all fields for vec types
+                for field in struct_type.fields {
+                    // Resolve the field type to handle type aliases
+                    resolved_field_type := field.type
+                    if named_type, is_named := field.type.(Named_Type); is_named {
+                        if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named_type, ctx_cg.current_pkg_name); ok {
+                            resolved_field_type = resolved
+                        }
+                    }
+                    
+                    // Check if it's a vec type (directly or via pointer)
+                    if vec_type, is_vec := resolved_field_type.(Vec_Type); is_vec {
+                        // Extract element type from original field.type to preserve package context
+                        element_type := vec_type.element_type^
+                        if orig_vec_type, is_orig_vec := field.type.(Vec_Type); is_orig_vec {
+                            element_type = orig_vec_type.element_type^
+                        }
+                        codegen_vec_wrapper_struct_with_type(ctx_cg, vec_type, element_type, only_primitives = false)
+                    } else if ptr_type, is_ptr := resolved_field_type.(Pointer_Type); is_ptr {
+                        if vec_type, is_vec := ptr_type.pointee^.(Vec_Type); is_vec {
+                            // Extract element type from original field.type to preserve package context
+                            element_type := vec_type.element_type^
+                            if ptr_field_type, is_ptr_field := field.type.(Pointer_Type); is_ptr_field {
+                                if orig_vec_type, is_orig_vec := ptr_field_type.pointee^.(Vec_Type); is_orig_vec {
+                                    element_type = orig_vec_type.element_type^
+                                }
+                            }
+                            codegen_vec_wrapper_struct_with_type(ctx_cg, vec_type, element_type, only_primitives = false)
+                        }
+                    }
+                }
+            } else if union_type, is_union := type_expr.type_info.(Union_Type); is_union {
+                // Scan union variants for vec types
+                for variant_type in union_type.types {
+                    // Resolve if it's a Named_Type
+                    resolved_variant := variant_type
+                    if named_type, is_named := variant_type.(Named_Type); is_named {
+                        if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named_type, ctx_cg.current_pkg_name); ok {
+                            resolved_variant = resolved
+                        }
+                    }
+                    
+                    // Check if variant is a struct with vec fields
+                    if struct_type, is_struct := resolved_variant.(Struct_Type); is_struct {
+                        for field in struct_type.fields {
+                            resolved_field_type := field.type
+                            if named_type, is_named := field.type.(Named_Type); is_named {
+                                if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named_type, ctx_cg.current_pkg_name); ok {
+                                    resolved_field_type = resolved
+                                }
+                            }
+                            
+                            if vec_type, is_vec := resolved_field_type.(Vec_Type); is_vec {
+                                // Extract element type from original field.type to preserve package context
+                                element_type := vec_type.element_type^
+                                if orig_vec_type, is_orig_vec := field.type.(Vec_Type); is_orig_vec {
+                                    element_type = orig_vec_type.element_type^
+                                }
+                                codegen_vec_wrapper_struct_with_type(ctx_cg, vec_type, element_type, only_primitives = false)
+                            } else if ptr_type, is_ptr := resolved_field_type.(Pointer_Type); is_ptr {
+                                if vec_type, is_vec := ptr_type.pointee^.(Vec_Type); is_vec {
+                                    // Extract element type from original field.type to preserve package context
+                                    element_type := vec_type.element_type^
+                                    if ptr_field_type, is_ptr_field := field.type.(Pointer_Type); is_ptr_field {
+                                        if orig_vec_type, is_orig_vec := ptr_field_type.pointee^.(Vec_Type); is_orig_vec {
+                                            element_type = orig_vec_type.element_type^
+                                        }
+                                    }
+                                    codegen_vec_wrapper_struct_with_type(ctx_cg, vec_type, element_type, only_primitives = false)
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
