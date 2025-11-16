@@ -4,6 +4,7 @@ import "core:path/filepath"
 import "core:fmt"
 import "core:mem"
 import "core:strings"
+import "core:slice"
 
 Codegen_Context :: struct {
     output_buf: strings.Builder,
@@ -512,6 +513,22 @@ codegen_builtin_function :: proc(ctx_cg: ^Codegen_Context, name: string, args: [
     }
 }
 
+// Helper to get sorted files for a package (ensures deterministic order)
+// Note: This uses alphabetical sorting, not dependency order. Forward declarations
+// should handle cross-file dependencies within a package, but if files have
+// circular dependencies or order-sensitive codegen, this may need enhancement.
+get_sorted_package_files :: proc(asts: map[string]^Node, pkg_dir: string, allocator := context.allocator) -> []string {
+    pkg_files := make([dynamic]string, allocator)
+    for file_path, _ in asts {
+        file_dir := filepath.dir(file_path, context.temp_allocator)
+        if file_dir == pkg_dir {
+            append(&pkg_files, file_path)
+        }
+    }
+    slice.sort(pkg_files[:])
+    return pkg_files[:]
+}
+
 codegen :: proc(asts: map[string]^Node, sorted_packages: []string, ctx_sem: ^Semantic_Context, allocator := context.allocator) -> (res: string, err: mem.Allocator_Error) {
     sb := strings.builder_make(allocator) or_return
     ctx_cg := Codegen_Context { 
@@ -533,26 +550,22 @@ codegen :: proc(asts: map[string]^Node, sorted_packages: []string, ctx_sem: ^Sem
     // Pass 1: Struct forward declarations for ALL packages
     for pkg_dir in sorted_packages {
         ctx_cg.current_pkg_name = filepath.base(pkg_dir)
-        for file_path, ast in asts {
-            file_dir := filepath.dir(file_path, context.temp_allocator)
-            if file_dir == pkg_dir {
-                codegen_struct_forward_decl(&ctx_cg, ast)
-            }
+        pkg_files := get_sorted_package_files(asts, pkg_dir, allocator)
+        for file_path in pkg_files {
+            codegen_struct_forward_decl(&ctx_cg, asts[file_path])
         }
     }
     
     strings.write_string(&ctx_cg.output_buf, "\n")
     
-    // Pass 1.5: Collect and forward-declare all array wrappers
+    // Pass 2: Collect and forward-declare all array wrappers
     array_wrapper_names := make([dynamic]string, context.temp_allocator)
     forward_decl_map := make(map[string]bool, context.temp_allocator)
     ctx_cg.generated_array_wrappers = forward_decl_map
     for pkg_dir in sorted_packages {
-        for file_path, ast in asts {
-            file_dir := filepath.dir(file_path, context.temp_allocator)
-            if file_dir == pkg_dir {
-                codegen_collect_array_wrappers(&ctx_cg, ast, &array_wrapper_names)
-            }
+        pkg_files := get_sorted_package_files(asts, pkg_dir, allocator)
+        for file_path in pkg_files {
+            codegen_collect_array_wrappers(&ctx_cg, asts[file_path], &array_wrapper_names)
         }
     }
     // Forward declare array wrappers
@@ -564,103 +577,85 @@ codegen :: proc(asts: map[string]^Node, sorted_packages: []string, ctx_sem: ^Sem
     // Reset the map for actual generation
     ctx_cg.generated_array_wrappers = make(map[string]bool, allocator)
     
-    // Pass 1.75: Generate array wrapper bodies for primitive types ONLY
+    // Pass 3: Generate array wrapper bodies for primitive types ONLY
     // (These are needed by struct fields before struct definitions)
     // NOTE: Vec wrappers are NOT generated here - they depend on Allocator struct
     for pkg_dir in sorted_packages {
         ctx_cg.current_pkg_name = filepath.base(pkg_dir)
-        for file_path, ast in asts {
-            file_dir := filepath.dir(file_path, context.temp_allocator)
-            if file_dir == pkg_dir {
-                codegen_scan_array_returns(&ctx_cg, ast, only_primitives = true)
-            }
+        pkg_files := get_sorted_package_files(asts, pkg_dir, allocator)
+        for file_path in pkg_files {
+            codegen_scan_array_returns(&ctx_cg, asts[file_path], only_primitives = true)
         }
     }
     
     strings.write_string(&ctx_cg.output_buf, "\n")
     
-    // Pass 2: Generate structs and vec wrappers per package
-    // Strategy: Process std/mem first to define Allocator, then for each remaining package:
-    //   1. Generate vec wrappers needed by struct fields (Allocator is now defined)
-    //   2. Generate struct definitions (vec wrappers are now defined)
-    
-    // First, process std/mem completely to define Allocator
+    // Pass 4: Generate structs WITHOUT vec fields (defines foundational types like Allocator)
     for pkg_dir in sorted_packages {
         pkg_base := filepath.base(pkg_dir)
-        if pkg_base == "mem" {
-            ctx_cg.current_pkg_name = pkg_base
-            for file_path, ast in asts {
-                file_dir := filepath.dir(file_path, context.temp_allocator)
-                if file_dir == pkg_dir {
-                    codegen_struct_defs(&ctx_cg, ast)
-                }
-            }
-            break
-        }
-    }
-    
-    // Then, for all other packages: generate vec wrappers, then structs
-    for pkg_dir in sorted_packages {
-        pkg_base := filepath.base(pkg_dir)
-        if pkg_base == "mem" do continue  // Already processed
-        
         ctx_cg.current_pkg_name = pkg_base
-        
-        // First, generate vec wrappers needed by struct fields in this package
-        for file_path, ast in asts {
-            file_dir := filepath.dir(file_path, context.temp_allocator)
-            if file_dir == pkg_dir {
-                codegen_scan_struct_fields_for_vecs(&ctx_cg, ast)
-            }
-        }
-        
-        // Then, generate struct definitions for this package
-        for file_path, ast in asts {
-            file_dir := filepath.dir(file_path, context.temp_allocator)
-            if file_dir == pkg_dir {
-                codegen_struct_defs(&ctx_cg, ast)
-            }
+        pkg_files := get_sorted_package_files(asts, pkg_dir, allocator)
+        for file_path in pkg_files {
+            codegen_struct_defs_skip_vec(&ctx_cg, asts[file_path])
         }
     }
     
     strings.write_string(&ctx_cg.output_buf, "\n")
     
-    // Pass 2.5: Generate array wrapper bodies for struct-based arrays
+    // Pass 5: Generate all vec wrapper definitions (Allocator is now fully defined)
+    for pkg_dir in sorted_packages {
+        pkg_base := filepath.base(pkg_dir)
+        ctx_cg.current_pkg_name = pkg_base
+        pkg_files := get_sorted_package_files(asts, pkg_dir, allocator)
+        for file_path in pkg_files {
+            codegen_scan_struct_fields_for_vecs(&ctx_cg, asts[file_path])
+        }
+    }
+    
+    strings.write_string(&ctx_cg.output_buf, "\n")
+    
+    // Pass 6: Generate structs WITH vec fields (vec wrappers are now fully defined)
+    for pkg_dir in sorted_packages {
+        pkg_base := filepath.base(pkg_dir)
+        ctx_cg.current_pkg_name = pkg_base
+        pkg_files := get_sorted_package_files(asts, pkg_dir, allocator)
+        for file_path in pkg_files {
+            codegen_struct_defs_only_vec(&ctx_cg, asts[file_path])
+        }
+    }
+    
+    strings.write_string(&ctx_cg.output_buf, "\n")
+    
+    // Pass 7: Generate array wrapper bodies for struct-based arrays
     // (These can now reference fully defined struct types)
     for pkg_dir in sorted_packages {
         ctx_cg.current_pkg_name = filepath.base(pkg_dir)
-        for file_path, ast in asts {
-            file_dir := filepath.dir(file_path, context.temp_allocator)
-            if file_dir == pkg_dir {
-                codegen_scan_array_returns(&ctx_cg, ast, only_primitives = false)
-            }
+        pkg_files := get_sorted_package_files(asts, pkg_dir, allocator)
+        for file_path in pkg_files {
+            codegen_scan_array_returns(&ctx_cg, asts[file_path], only_primitives = false)
         }
     }
     
     strings.write_string(&ctx_cg.output_buf, "\n")
     
-    // Pass 3: Function forward declarations for ALL packages
+    // Pass 8: Function forward declarations for ALL packages
     for pkg_dir in sorted_packages {
         ctx_cg.current_pkg_name = filepath.base(pkg_dir)
-        for file_path, ast in asts {
-            file_dir := filepath.dir(file_path, context.temp_allocator)
-            if file_dir == pkg_dir {
-                codegen_forward_decl(&ctx_cg, ast)
-            }
+        pkg_files := get_sorted_package_files(asts, pkg_dir, allocator)
+        for file_path in pkg_files {
+            codegen_forward_decl(&ctx_cg, asts[file_path])
         }
     }
     
     strings.write_string(&ctx_cg.output_buf, "\n")
     
-    // Pass 4: Function implementations for ALL packages (skip struct defs)
+    // Pass 9: Function implementations for ALL packages (skip struct defs)
     ctx_cg.skip_struct_defs = true
     for pkg_dir in sorted_packages {
         ctx_cg.current_pkg_name = filepath.base(pkg_dir)
-        for file_path, ast in asts {
-            file_dir := filepath.dir(file_path, context.temp_allocator)
-            if file_dir == pkg_dir {
-                codegen_node(&ctx_cg, ast)
-            }
+        pkg_files := get_sorted_package_files(asts, pkg_dir, allocator)
+        for file_path in pkg_files {
+            codegen_node(&ctx_cg, asts[file_path])
         }
     }
 
@@ -1141,6 +1136,127 @@ codegen_struct_forward_decl :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
     }
 }
 
+// Collect vec wrapper names without generating them (for forward declarations)
+codegen_collect_vec_wrappers :: proc(ctx_cg: ^Codegen_Context, node: ^Node, names: ^[dynamic]string) {
+    #partial switch node.node_kind {
+    case .Program:
+        for stmt in node.payload.(Node_Statement_List).nodes {
+            codegen_collect_vec_wrappers(ctx_cg, stmt, names)
+        }
+    case .Var_Def:
+        var_def := node.payload.(Node_Var_Def)
+        
+        if var_def.content.node_kind == .Type_Expr {
+            type_expr := var_def.content.payload.(Node_Type_Expr)
+            
+            if struct_type, is_struct := type_expr.type_info.(Struct_Type); is_struct {
+                for field in struct_type.fields {
+                    resolved_field_type := field.type
+                    if named_type, is_named := field.type.(Named_Type); is_named {
+                        if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named_type, ctx_cg.current_pkg_name); ok {
+                            resolved_field_type = resolved
+                        }
+                    }
+                    
+                    if vec_type, is_vec := resolved_field_type.(Vec_Type); is_vec {
+                        wrapper_name := get_vec_wrapper_name(vec_type.element_type)
+                        found := false
+                        for n in names {
+                            if n == wrapper_name {
+                                found = true
+                                break
+                            }
+                        }
+                        if !found {
+                            append(names, wrapper_name)
+                        }
+                    } else if ptr_type, is_ptr := resolved_field_type.(Pointer_Type); is_ptr {
+                        if vec_type, is_vec := ptr_type.pointee^.(Vec_Type); is_vec {
+                            wrapper_name := get_vec_wrapper_name(vec_type.element_type)
+                            found := false
+                            for n in names {
+                                if n == wrapper_name {
+                                    found = true
+                                    break
+                                }
+                            }
+                            if !found {
+                                append(names, wrapper_name)
+                            }
+                        }
+                    }
+                }
+            } else if union_type, is_union := type_expr.type_info.(Union_Type); is_union {
+                for variant_type in union_type.types {
+                    resolved_variant := variant_type
+                    if named_type, is_named := variant_type.(Named_Type); is_named {
+                        if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named_type, ctx_cg.current_pkg_name); ok {
+                            resolved_variant = resolved
+                        }
+                    }
+                    
+                    if struct_type, is_struct := resolved_variant.(Struct_Type); is_struct {
+                        for field in struct_type.fields {
+                            resolved_field_type := field.type
+                            if named_type, is_named := field.type.(Named_Type); is_named {
+                                if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named_type, ctx_cg.current_pkg_name); ok {
+                                    resolved_field_type = resolved
+                                }
+                            }
+                            
+                            if vec_type, is_vec := resolved_field_type.(Vec_Type); is_vec {
+                                wrapper_name := get_vec_wrapper_name(vec_type.element_type)
+                                found := false
+                                for n in names {
+                                    if n == wrapper_name {
+                                        found = true
+                                        break
+                                    }
+                                }
+                                if !found {
+                                    append(names, wrapper_name)
+                                }
+                            } else if ptr_type, is_ptr := resolved_field_type.(Pointer_Type); is_ptr {
+                                if vec_type, is_vec := ptr_type.pointee^.(Vec_Type); is_vec {
+                                    wrapper_name := get_vec_wrapper_name(vec_type.element_type)
+                                    found := false
+                                    for n in names {
+                                        if n == wrapper_name {
+                                            found = true
+                                            break
+                                        }
+                                    }
+                                    if !found {
+                                        append(names, wrapper_name)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Check if a struct type has vec fields (directly, not via pointer)
+struct_has_vec_fields :: proc(ctx_cg: ^Codegen_Context, struct_type: Struct_Type, pkg_name: string) -> bool {
+    for field in struct_type.fields {
+        resolved_field_type := field.type
+        if named_type, is_named := field.type.(Named_Type); is_named {
+            if resolved, ok := resolve_named_type(ctx_cg.ctx_sem, named_type, pkg_name); ok {
+                resolved_field_type = resolved
+            }
+        }
+        
+        if _, is_vec := resolved_field_type.(Vec_Type); is_vec {
+            return true
+        }
+        // Note: We don't check Pointer_Type here because pointers can use forward declarations
+    }
+    return false
+}
+
 // Scan struct definitions for vec fields and generate vec wrappers
 codegen_scan_struct_fields_for_vecs :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
     #partial switch node.node_kind {
@@ -1250,6 +1366,59 @@ codegen_struct_defs :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
             if is_composite_type(type_expr.type_info) {
                 if len(var_def.names) > 0 {
                     codegen_composite_definition(ctx_cg, type_expr.type_info, var_def.names[0])
+                }
+            }
+        }
+    }
+}
+
+// Generate struct definitions, skipping those with vec fields
+codegen_struct_defs_skip_vec :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
+    #partial switch node.node_kind {
+    case .Program:
+        for stmt in node.payload.(Node_Statement_List).nodes {
+            codegen_struct_defs_skip_vec(ctx_cg, stmt)
+        }
+    case .Var_Def:
+        var_def := node.payload.(Node_Var_Def)
+        
+        if var_def.content.node_kind == .Type_Expr {
+            type_expr := var_def.content.payload.(Node_Type_Expr)
+            
+            if struct_type, is_struct := type_expr.type_info.(Struct_Type); is_struct {
+                if len(var_def.names) > 0 {
+                    if !struct_has_vec_fields(ctx_cg, struct_type, ctx_cg.current_pkg_name) {
+                        codegen_composite_definition(ctx_cg, type_expr.type_info, var_def.names[0])
+                    }
+                }
+            } else if is_composite_type(type_expr.type_info) {
+                // Unions and other composite types don't have vec fields, generate them
+                if len(var_def.names) > 0 {
+                    codegen_composite_definition(ctx_cg, type_expr.type_info, var_def.names[0])
+                }
+            }
+        }
+    }
+}
+
+// Generate struct definitions, only those with vec fields
+codegen_struct_defs_only_vec :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
+    #partial switch node.node_kind {
+    case .Program:
+        for stmt in node.payload.(Node_Statement_List).nodes {
+            codegen_struct_defs_only_vec(ctx_cg, stmt)
+        }
+    case .Var_Def:
+        var_def := node.payload.(Node_Var_Def)
+        
+        if var_def.content.node_kind == .Type_Expr {
+            type_expr := var_def.content.payload.(Node_Type_Expr)
+            
+            if struct_type, is_struct := type_expr.type_info.(Struct_Type); is_struct {
+                if len(var_def.names) > 0 {
+                    if struct_has_vec_fields(ctx_cg, struct_type, ctx_cg.current_pkg_name) {
+                        codegen_composite_definition(ctx_cg, type_expr.type_info, var_def.names[0])
+                    }
                 }
             }
         }
