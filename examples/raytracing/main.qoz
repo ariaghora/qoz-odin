@@ -15,6 +15,15 @@ HitRecord := struct {
     front_face: bool
 }
 
+Hittable := union {
+    Sphere
+}
+
+HittableList := struct {
+    objects: vec<Hittable>
+}
+
+
 hit_sphere := func(center: Vec3, radius: f64, ray: Ray): f64 {
     oc := center - ray.origin
     a := vec_dot(ray.direction, ray.direction)
@@ -66,8 +75,8 @@ ray_at := func(r: Ray, t: f64): Vec3 {
     return r.origin + t * r.direction
 }
 
-ray_color := func(r: Ray): Color {
-    t := hit_sphere(Vec3{0.0, 0.0, -1.0}, 0.5, r) 
+ray_color := func(r: Ray, objects: *vec<Hittable>): Color {
+    t := hit_sphere(Vec3{0.0, 0.0, -1.0}, 0.5, r)
     if t > 0.0 {
         N := vec_unit_vector(ray_at(r, t) - Vec3{0.0, 0.0, -1.0})
         color := Color{ N[0] + 1.0, N[1] + 1.0, N[2] + 1.0 }
@@ -85,15 +94,15 @@ sphere_hit := func(sphere: Sphere, ray: Ray, tmin: f64, tmax: f64, rec: HitRecor
     a := vec_length_squared(ray.direction)
     h := vec_dot(ray.direction, oc)
     c := vec_length_squared(oc) - sphere.radius*sphere.radius
-    disc := h*h - a*c 
-    if disc < 0.0 { return false }
 
-    sqrtd := math.sqrt(disc)
+    disc := h*h - a*c
+    if disc < 0.0: return false
 
     // find the nearest root that lies in the acceptable range
+    sqrtd := math.sqrt(disc)
     root := (h-sqrtd) / a
     if root <= tmin || tmax <= root {
-        root = (h + sqrtd) / a 
+        root = (h + sqrtd) / a
         if root <= tmin || tmax <= root {
             return false
         }
@@ -116,7 +125,7 @@ write_color := func(sb: *Stream, color: Color, alloc: mem.Allocator) {
 }
 
 main := func() {
-    arena := mem.arena_make(10*1024*1024)
+    arena := mem.arena_make_growable(4*1024*1024)
     defer mem.arena_free(&arena)
     alloc := mem.arena_allocator(&arena)
     sb := strings.builder_init(alloc)
@@ -143,6 +152,9 @@ main := func() {
     viewport_upper_left := camera_center - Vec3{0.0, 0.0, focal_length} - viewport_u/2 - viewport_v/2
     pixel00_loc := viewport_upper_left + 0.5 * (pixel_delta_u + pixel_delta_v)
 
+    objects := new(vec<Hittable>, alloc)
+
+
     // Render
     dim_line := format("P3\n%d %d\n", image_width, image_height, alloc)
     strings.builder_append_string(&sb, dim_line)
@@ -154,7 +166,7 @@ main := func() {
             ray_direction := pixel_center - camera_center
 
             ray := Ray{origin: camera_center, direction: ray_direction}
-            color := ray_color(ray)
+            color := ray_color(ray, objects)
             write_color(&sb, color, alloc)
         }
     }
