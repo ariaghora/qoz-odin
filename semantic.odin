@@ -4,6 +4,7 @@ import "core:strings"
 import "core:path/filepath"
 import "core:fmt"
 import "core:mem"
+import "core:slice"
 
 Symbol :: struct {
     name:         string,
@@ -44,6 +45,7 @@ Semantic_Context :: struct {
     current_file: string,                 // Which file we're analyzing
     import_aliases: map[string]string,    // alias -> package_dir
     link_directives: [dynamic]string,     // Collected link paths for linker
+    sorted_packages: []string,            // Packages in dependency order (for deterministic lookups)
 }
 
 semantic_push_scope :: proc(ctx: ^Semantic_Context) {
@@ -245,17 +247,20 @@ resolve_named_type :: proc(ctx: ^Semantic_Context, named: Named_Type, pkg_name: 
         // Fallback: check if pkg_alias matches a package directory name
         // This handles cases where normalize_struct_literal_type_name converted
         // "rl.Color" to "raylib.Color" (using package dir name instead of alias)
-        for pkg_dir, pkg_info in ctx.packages {
+        // Use sorted_packages for deterministic iteration (preserves dependency order)
+        for pkg_dir in ctx.sorted_packages {
             if filepath.base(pkg_dir) == pkg_alias {
-                if symbol, found := pkg_info.symbols[type_name]; found {
-                    resolved_type := symbol.type
-                    // Recursively resolve if it's another named type
-                    if nested_named, is_named := resolved_type.(Named_Type); is_named {
-                        return resolve_named_type(ctx, nested_named, pkg_name)
+                if pkg_info, ok := ctx.packages[pkg_dir]; ok {
+                    if symbol, found := pkg_info.symbols[type_name]; found {
+                        resolved_type := symbol.type
+                        // Recursively resolve if it's another named type
+                        if nested_named, is_named := resolved_type.(Named_Type); is_named {
+                            return resolve_named_type(ctx, nested_named, pkg_name)
+                        }
+                        return resolved_type, true
                     }
-                    return resolved_type, true
+                }
             }
-        }
         }
         
         return {}, false
@@ -273,15 +278,18 @@ resolve_named_type :: proc(ctx: ^Semantic_Context, named: Named_Type, pkg_name: 
     
     // If not found in scope and we have a package name, search in that package's symbols
     if pkg_name != "" {
-        for pkg_dir, pkg_info in ctx.packages {
+        // Use sorted_packages for deterministic iteration (preserves dependency order)
+        for pkg_dir in ctx.sorted_packages {
             if filepath.base(pkg_dir) == pkg_name {
-                if symbol, found := pkg_info.symbols[named.name]; found {
-                    resolved_type := symbol.type
-                    // Recursively resolve if it's another named type
-                    if nested_named, is_named := resolved_type.(Named_Type); is_named {
-                        return resolve_named_type(ctx, nested_named, pkg_name)
+                if pkg_info, ok := ctx.packages[pkg_dir]; ok {
+                    if symbol, found := pkg_info.symbols[named.name]; found {
+                        resolved_type := symbol.type
+                        // Recursively resolve if it's another named type
+                        if nested_named, is_named := resolved_type.(Named_Type); is_named {
+                            return resolve_named_type(ctx, nested_named, pkg_name)
+                        }
+                        return resolved_type, true
                     }
-                    return resolved_type, true
                 }
             }
         }
@@ -304,6 +312,7 @@ semantic_analyze_project :: proc(
         packages = make(map[string]Package_Symbols, allocator),
         import_aliases = make(map[string]string, allocator),
         link_directives = make([dynamic]string, allocator),
+        sorted_packages = sorted_packages,
     }
 
     fields := make([dynamic]Struct_Field, allocator)

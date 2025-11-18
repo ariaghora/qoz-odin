@@ -278,7 +278,8 @@ resolve_import_path :: proc(current_file_dir: string, project_root: string, impo
 
         // e.g., std:strings → $QOZ_ROOT/std/strings
         rel_path := import_path[4:]  // Remove "std:"
-        return filepath.join({qoz_root, "std", rel_path}, context.temp_allocator)
+        joined := filepath.join({qoz_root, "std", rel_path}, context.temp_allocator)
+        return filepath.clean(joined, context.temp_allocator)
     }
 
     if strings.has_prefix(import_path, "vendor:") {
@@ -289,7 +290,8 @@ resolve_import_path :: proc(current_file_dir: string, project_root: string, impo
 
         // e.g., vendor:raylib → $QOZ_ROOT/vendor/raylib
         rel_path := import_path[7:]  // Remove "vendor:"
-        return filepath.join({qoz_root, "vendor", rel_path}, context.temp_allocator)
+        joined := filepath.join({qoz_root, "vendor", rel_path}, context.temp_allocator)
+        return filepath.clean(joined, context.temp_allocator)
     }
 
     // Check for relative import
