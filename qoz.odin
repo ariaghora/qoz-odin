@@ -113,7 +113,12 @@ parse_cli_args :: proc() -> (Compiler_Options, bool) {
 
 	// Set default output name to directory basename if not specified
 	if opts.output_file == "" {
-		opts.output_file = filepath.base(opts.entry_dir)
+		abs_path, ok := filepath.abs(opts.entry_dir, context.temp_allocator)
+		if !ok {
+			fmt.eprintfln("Error: Failed to resolve entry directory path")
+			return opts, false
+		}
+		opts.output_file = filepath.base(abs_path)
 	}
 
 	return opts, true
@@ -185,7 +190,7 @@ main :: proc() {
 		os.exit(1)
 	}
 	
-	packages, err_deps := build_dependency_graph(asts, context.temp_allocator)
+	packages, err_deps := build_dependency_graph(asts, opts.entry_dir, context.temp_allocator)
 	if err_deps != nil {
 		print_parse_error(err_deps.(Parse_Error))
 		os.exit(1)

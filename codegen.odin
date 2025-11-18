@@ -21,9 +21,26 @@ Codegen_Context :: struct {
     current_function_locals: map[string]bool, // Track parameters and local variables in current function
     current_function_return_type: Maybe(Type_Info), // Track current function's return type for union wrapping
     defer_stack: [dynamic][dynamic]^Node, // Stack of defer lists per scope
+    sorted_packages: []string, // Packages in dependency order (for deterministic lookups)
 }
 
 MANGLE_PREFIX :: "qoz__"
+
+// Sanitize package/type name for C identifier (replace invalid chars with underscore)
+sanitize_c_identifier :: proc(name: string, allocator := context.allocator) -> string {
+    result, err := strings.builder_make(allocator)
+    if err != nil {
+        return name  // Fallback to original name if allocation fails
+    }
+    for char in name {
+        if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '_' {
+            strings.write_rune(&result, char)
+        } else {
+            strings.write_rune(&result, '_')
+        }
+    }
+    return strings.to_string(result)
+}
 
 should_mangle :: proc(name: string, is_external: bool) -> bool {
     if name == "main" do return false
@@ -61,7 +78,8 @@ get_array_wrapper_name :: proc(elem_type: ^Type_Info, size: int) -> string {
     case Pointer_Type:
         type_name = "ptr"
     case Named_Type:
-        type_name, _ = strings.replace_all(t.name, ".", "_", context.temp_allocator)
+        // Sanitize type name for C identifier
+        type_name = sanitize_c_identifier(t.name, context.temp_allocator)
     case:
         type_name = "unknown"
     }
@@ -87,8 +105,8 @@ get_tuple_signature :: proc(tuple_type: Tuple_Type) -> string {
             case: append(&parts, "unknown")
             }
         case Named_Type:
-            // Use the name, but replace dots with underscores
-            name, _ := strings.replace_all(t.name, ".", "_", context.temp_allocator)
+            // Sanitize type name for C identifier
+            name := sanitize_c_identifier(t.name, context.temp_allocator)
             append(&parts, name)
         case: append(&parts, "unknown")
         }
@@ -142,7 +160,8 @@ get_vec_wrapper_name :: proc(elem_type: ^Type_Info) -> string {
     case Pointer_Type:
         type_name = "ptr"
     case Named_Type:
-        type_name, _ = strings.replace_all(t.name, ".", "_", context.temp_allocator)
+        // Sanitize type name for C identifier
+        type_name = sanitize_c_identifier(t.name, context.temp_allocator)
     case:
         type_name = "unknown"
     }
@@ -519,9 +538,13 @@ codegen_builtin_function :: proc(ctx_cg: ^Codegen_Context, name: string, args: [
 // circular dependencies or order-sensitive codegen, this may need enhancement.
 get_sorted_package_files :: proc(asts: map[string]^Node, pkg_dir: string, allocator := context.allocator) -> []string {
     pkg_files := make([dynamic]string, allocator)
+    // Normalize pkg_dir for comparison
+    normalized_pkg_dir := filepath.clean(pkg_dir, context.temp_allocator)
     for file_path, _ in asts {
         file_dir := filepath.dir(file_path, context.temp_allocator)
-        if file_dir == pkg_dir {
+        // Normalize file_dir for comparison
+        normalized_file_dir := filepath.clean(file_dir, context.temp_allocator)
+        if normalized_file_dir == normalized_pkg_dir {
             append(&pkg_files, file_path)
         }
     }
@@ -538,6 +561,7 @@ codegen :: proc(asts: map[string]^Node, sorted_packages: []string, ctx_sem: ^Sem
         temp_counter = 0,
         generated_array_wrappers = make(map[string]bool, allocator=allocator),
         generated_tuple_types = make(map[string]string, allocator=allocator),
+        sorted_packages = sorted_packages,
     }
 
 
@@ -549,7 +573,7 @@ codegen :: proc(asts: map[string]^Node, sorted_packages: []string, ctx_sem: ^Sem
 
     // Pass 1: Struct forward declarations for ALL packages
     for pkg_dir in sorted_packages {
-        ctx_cg.current_pkg_name = filepath.base(pkg_dir)
+        ctx_cg.current_pkg_name = sanitize_c_identifier(filepath.base(pkg_dir), allocator)
         pkg_files := get_sorted_package_files(asts, pkg_dir, allocator)
         for file_path in pkg_files {
             codegen_struct_forward_decl(&ctx_cg, asts[file_path])
@@ -568,7 +592,8 @@ codegen :: proc(asts: map[string]^Node, sorted_packages: []string, ctx_sem: ^Sem
             codegen_collect_array_wrappers(&ctx_cg, asts[file_path], &array_wrapper_names)
         }
     }
-    // Forward declare array wrappers
+    // Forward declare array wrappers (sort for deterministic output)
+    slice.sort(array_wrapper_names[:])
     for name in array_wrapper_names {
         fmt.sbprintf(&ctx_cg.output_buf, "typedef struct %s %s;\n", name, name)
     }
@@ -581,7 +606,7 @@ codegen :: proc(asts: map[string]^Node, sorted_packages: []string, ctx_sem: ^Sem
     // (These are needed by struct fields before struct definitions)
     // NOTE: Vec wrappers are NOT generated here - they depend on Allocator struct
     for pkg_dir in sorted_packages {
-        ctx_cg.current_pkg_name = filepath.base(pkg_dir)
+        ctx_cg.current_pkg_name = sanitize_c_identifier(filepath.base(pkg_dir), allocator)
         pkg_files := get_sorted_package_files(asts, pkg_dir, allocator)
         for file_path in pkg_files {
             codegen_scan_array_returns(&ctx_cg, asts[file_path], only_primitives = true)
@@ -592,7 +617,7 @@ codegen :: proc(asts: map[string]^Node, sorted_packages: []string, ctx_sem: ^Sem
     
     // Pass 4: Generate structs WITHOUT vec fields (defines foundational types like Allocator)
     for pkg_dir in sorted_packages {
-        pkg_base := filepath.base(pkg_dir)
+        pkg_base := sanitize_c_identifier(filepath.base(pkg_dir), allocator)
         ctx_cg.current_pkg_name = pkg_base
         pkg_files := get_sorted_package_files(asts, pkg_dir, allocator)
         for file_path in pkg_files {
@@ -604,7 +629,7 @@ codegen :: proc(asts: map[string]^Node, sorted_packages: []string, ctx_sem: ^Sem
     
     // Pass 5: Generate all vec wrapper definitions (Allocator is now fully defined)
     for pkg_dir in sorted_packages {
-        pkg_base := filepath.base(pkg_dir)
+        pkg_base := sanitize_c_identifier(filepath.base(pkg_dir), allocator)
         ctx_cg.current_pkg_name = pkg_base
         pkg_files := get_sorted_package_files(asts, pkg_dir, allocator)
         for file_path in pkg_files {
@@ -616,7 +641,7 @@ codegen :: proc(asts: map[string]^Node, sorted_packages: []string, ctx_sem: ^Sem
     
     // Pass 6: Generate structs WITH vec fields (vec wrappers are now fully defined)
     for pkg_dir in sorted_packages {
-        pkg_base := filepath.base(pkg_dir)
+        pkg_base := sanitize_c_identifier(filepath.base(pkg_dir), allocator)
         ctx_cg.current_pkg_name = pkg_base
         pkg_files := get_sorted_package_files(asts, pkg_dir, allocator)
         for file_path in pkg_files {
@@ -629,7 +654,7 @@ codegen :: proc(asts: map[string]^Node, sorted_packages: []string, ctx_sem: ^Sem
     // Pass 7: Generate array wrapper bodies for struct-based arrays
     // (These can now reference fully defined struct types)
     for pkg_dir in sorted_packages {
-        ctx_cg.current_pkg_name = filepath.base(pkg_dir)
+        ctx_cg.current_pkg_name = sanitize_c_identifier(filepath.base(pkg_dir), allocator)
         pkg_files := get_sorted_package_files(asts, pkg_dir, allocator)
         for file_path in pkg_files {
             codegen_scan_array_returns(&ctx_cg, asts[file_path], only_primitives = false)
@@ -640,7 +665,7 @@ codegen :: proc(asts: map[string]^Node, sorted_packages: []string, ctx_sem: ^Sem
     
     // Pass 8: Function forward declarations for ALL packages
     for pkg_dir in sorted_packages {
-        ctx_cg.current_pkg_name = filepath.base(pkg_dir)
+        ctx_cg.current_pkg_name = sanitize_c_identifier(filepath.base(pkg_dir), allocator)
         pkg_files := get_sorted_package_files(asts, pkg_dir, allocator)
         for file_path in pkg_files {
             codegen_forward_decl(&ctx_cg, asts[file_path])
@@ -652,7 +677,7 @@ codegen :: proc(asts: map[string]^Node, sorted_packages: []string, ctx_sem: ^Sem
     // Pass 9: Function implementations for ALL packages (skip struct defs)
     ctx_cg.skip_struct_defs = true
     for pkg_dir in sorted_packages {
-        ctx_cg.current_pkg_name = filepath.base(pkg_dir)
+        ctx_cg.current_pkg_name = sanitize_c_identifier(filepath.base(pkg_dir), allocator)
         pkg_files := get_sorted_package_files(asts, pkg_dir, allocator)
         for file_path in pkg_files {
             codegen_node(&ctx_cg, asts[file_path])
@@ -2425,7 +2450,7 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
             // Check if this identifier is a package alias
             if pkg_dir, is_pkg := ctx_cg.ctx_sem.import_aliases[iden.name]; is_pkg {
                 // Get actual package name from directory path
-                actual_pkg_name := filepath.base(pkg_dir)  
+                actual_pkg_name := sanitize_c_identifier(filepath.base(pkg_dir), context.temp_allocator)  
                 symbol_name := field_access.field_name
                 
                 if symbol_name == "main" {
@@ -3133,9 +3158,12 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
         
         // 3) Check if it's a package-level symbol (needs mangling)
         // Look in current package's symbols
+        // Note: current_pkg_name is already sanitized, so we need to sanitize dir base for comparison
+        // Use sorted_packages for deterministic iteration (preserves dependency order)
         pkg_dir := ""
-        for dir, pkg_info in ctx_cg.ctx_sem.packages {
-            if filepath.base(dir) == ctx_cg.current_pkg_name {
+        for dir in ctx_cg.sorted_packages {
+            dir_base := sanitize_c_identifier(filepath.base(dir), context.temp_allocator)
+            if dir_base == ctx_cg.current_pkg_name {
                 pkg_dir = dir
                 break
             }
@@ -3557,13 +3585,16 @@ codegen_node :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
             // Look up qualified type from current package's symbol table
             qualified_fn_type: Maybe(Function_Type)
             // Find the package dir that matches current package name
-            for pkg_dir, pkg_info in ctx_cg.ctx_sem.packages {
+            // Use sorted_packages for deterministic iteration (preserves dependency order)
+            for pkg_dir in ctx_cg.sorted_packages {
                 if filepath.base(pkg_dir) == ctx_cg.current_pkg_name {
-                    if len(var_def.names) > 0 {
-                        if sym, found := pkg_info.symbols[var_def.names[0]]; found {
-                            if fn_type, is_fn := sym.type.(Function_Type); is_fn {
-                                qualified_fn_type = fn_type
-                                break
+                    if pkg_info, ok := ctx_cg.ctx_sem.packages[pkg_dir]; ok {
+                        if len(var_def.names) > 0 {
+                            if sym, found := pkg_info.symbols[var_def.names[0]]; found {
+                                if fn_type, is_fn := sym.type.(Function_Type); is_fn {
+                                    qualified_fn_type = fn_type
+                                    break
+                                }
                             }
                         }
                     }
@@ -4049,10 +4080,22 @@ codegen_type :: proc(ctx_cg: ^Codegen_Context, type: Type_Info, name: string = "
         
         // Check if type name contains a dot (qualified)
         if strings.contains(t.name, ".") {
-            // Qualified name like "mem.Allocator" -> "qoz__mem__Allocator"
-            mangled_name, _ := strings.replace_all(t.name, ".", "__", context.temp_allocator)
+            // Qualified name like "rl.Texture" or "mem.Allocator" -> "qoz__raylib__Texture" or "qoz__mem__Allocator"
+            // Split by dot, resolve alias to actual package name, then sanitize
+            dot_idx := strings.index(t.name, ".")
+            pkg_alias := t.name[:dot_idx]
+            type_name := t.name[dot_idx+1:]
+            
+            // Resolve import alias to actual package name
+            actual_pkg_name := pkg_alias
+            if pkg_dir, is_alias := ctx_cg.ctx_sem.import_aliases[pkg_alias]; is_alias {
+                actual_pkg_name = filepath.base(pkg_dir)
+            }
+            
             strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX)
-            strings.write_string(&ctx_cg.output_buf, mangled_name)
+            strings.write_string(&ctx_cg.output_buf, sanitize_c_identifier(actual_pkg_name, context.temp_allocator))
+            strings.write_string(&ctx_cg.output_buf, "__")
+            strings.write_string(&ctx_cg.output_buf, sanitize_c_identifier(type_name, context.temp_allocator))
         } else {
             // Unqualified name like "Arena" -> qualify with current package
             strings.write_string(&ctx_cg.output_buf, MANGLE_PREFIX)
@@ -4086,13 +4129,16 @@ codegen_forward_decl :: proc(ctx_cg: ^Codegen_Context, node: ^Node) {
                     fn_def := var_def.content.payload.(Node_Fn_Def)
                     qualified_fn_type: Maybe(Function_Type)
                     // Find the package dir that matches current package name
-                    for pkg_dir, pkg_info in ctx_cg.ctx_sem.packages {
+                    // Use sorted_packages for deterministic iteration (preserves dependency order)
+                    for pkg_dir in ctx_cg.sorted_packages {
                         if filepath.base(pkg_dir) == ctx_cg.current_pkg_name {
-                            if len(var_def.names) > 0 {
-                                if sym, found := pkg_info.symbols[var_def.names[0]]; found {
-                                    if fn_type, is_fn := sym.type.(Function_Type); is_fn {
-                                        qualified_fn_type = fn_type
-                                        break
+                            if pkg_info, ok := ctx_cg.ctx_sem.packages[pkg_dir]; ok {
+                                if len(var_def.names) > 0 {
+                                    if sym, found := pkg_info.symbols[var_def.names[0]]; found {
+                                        if fn_type, is_fn := sym.type.(Function_Type); is_fn {
+                                            qualified_fn_type = fn_type
+                                            break
+                                        }
                                     }
                                 }
                             }
