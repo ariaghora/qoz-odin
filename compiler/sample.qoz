@@ -1,18 +1,15 @@
 import std/fmt
 
-type Shape =
-    | Circle(i64)
-    | Square(i64)
-    | Origin
-
-let area_of(s: Shape): i64 = match s {
-| Circle(r)  -> r * r
-| Square(s2) -> s2 * s2
-| Origin     -> 0
-}
-
 let main() = {
-    fmt.println(area_of(Circle(5)))
-    fmt.println(area_of(Square(3)))
-    fmt.println(area_of(Origin))
+    var total: i64 = 0
+    for i in 0..<5 {
+        total = total + i
+    }
+    fmt.println("range sum:", total)
+
+    var inclusive: i64 = 0
+    for i in 1..=4 {
+        inclusive = inclusive + i
+    }
+    fmt.println("inclusive sum:", inclusive)
 }

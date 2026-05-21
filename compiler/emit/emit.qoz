@@ -219,6 +219,9 @@ let emit_stmt_expr(e: *Emitter, expr: Expr) = {
         push(e, ") ")
         emit_branch_as_statement(e, body)
     }
+    | EFor(_, binding, iter, body) -> {
+        emit_for_loop(e, binding, iter, body)
+    }
     | EReturn(_, value) -> {
         if is_nil_expr(value) {
             push(e, "return;")
@@ -661,6 +664,45 @@ let emit_extern_proto(e: *Emitter, symbol: string, params: Vec<FnParam>, ret: Ty
         i = i + 1
     }
     push(e, ");\n")
+}
+
+let is_range_op(op: BinaryOp): bool =
+    match op {
+    | BOpRange          -> true
+    | BOpRangeInclusive -> true
+    | _                 -> false
+    }
+
+let range_cmp_op(op: BinaryOp): string =
+    match op {
+    | BOpRangeInclusive -> "<="
+    | _                 -> "<"
+    }
+
+let emit_for_loop(e: *Emitter, binding: string, iter: Expr, body: Expr) = {
+    match iter {
+    | EBinary(_, op, lo, hi) -> {
+        if is_range_op(op) {
+            push(e, "for (int64_t ")
+            push(e, binding)
+            push(e, " = ")
+            emit_expr(e, lo)
+            push(e, "; ")
+            push(e, binding)
+            push(e, " ")
+            push(e, range_cmp_op(op))
+            push(e, " ")
+            emit_expr(e, hi)
+            push(e, "; ")
+            push(e, binding)
+            push(e, "++) ")
+            emit_branch_as_statement(e, body)
+            return
+        }
+    }
+    | _ -> { }
+    }
+    push(e, "/* unsupported for iter */;")
 }
 
 let scrutinee_enum(e: *Emitter, scrut: Expr): string = {
