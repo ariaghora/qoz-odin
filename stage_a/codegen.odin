@@ -2674,9 +2674,19 @@ materialise_scrutinee :: proc(cg: ^Codegen, scrut: Expr) -> Expr {
 }
 
 cg_match_arm_statement :: proc(cg: ^Codegen, scrut: Expr, enum_name: string, arm: Match_Arm) {
+    if _, is_wild := arm.pat.(^Pat_Wild); is_wild {
+        cg_emit_indent(cg)
+        cg_emit(cg, "default: ")
+        cg_emit(cg, "{\n")
+        cg.indent_lvl += 1
+        cg_emit_arm_body_statement(cg, arm)
+        cg.indent_lvl -= 1
+        cg_emit_indent(cg); cg_emit(cg, "}\n")
+        return
+    }
     pat, ok := arm.pat.(^Pat_Variant)
     if !ok {
-        cg_error(cg, "Stage A supports only variant patterns in match arms")
+        cg_error(cg, "Stage A supports only variant or wildcard patterns in match arms")
         return
     }
     variant_name := pat.path.segs[len(pat.path.segs)-1]
@@ -2703,6 +2713,16 @@ cg_match_arm_statement :: proc(cg: ^Codegen, scrut: Expr, enum_name: string, arm
     saved_locals := make(map[string]string, context.temp_allocator)
     for k, val in cg.locals do saved_locals[k] = val
 
+    cg_emit_arm_body_statement(cg, arm)
+
+    clear(&cg.locals)
+    for k, val in saved_locals do cg.locals[k] = val
+
+    cg.indent_lvl -= 1
+    cg_emit_indent(cg); cg_emit(cg, "}\n")
+}
+
+cg_emit_arm_body_statement :: proc(cg: ^Codegen, arm: Match_Arm) {
     if blk, is_blk := arm.body.(^Expr_Block); is_blk {
         cg_block_body(cg, blk)
         cg_emit(cg, "\n")
@@ -2712,12 +2732,6 @@ cg_match_arm_statement :: proc(cg: ^Codegen, scrut: Expr, enum_name: string, arm
         cg_emit(cg, ";\n")
     }
     cg_emit_indent(cg); cg_emit(cg, "break;\n")
-
-    clear(&cg.locals)
-    for k, val in saved_locals do cg.locals[k] = val
-
-    cg.indent_lvl -= 1
-    cg_emit_indent(cg); cg_emit(cg, "}\n")
 }
 
 cg_emit_match_as_expression :: proc(cg: ^Codegen, m: ^Expr_Match) {
@@ -2766,9 +2780,20 @@ cg_emit_match_as_expression :: proc(cg: ^Codegen, m: ^Expr_Match) {
 }
 
 cg_match_arm_expression :: proc(cg: ^Codegen, scrut: Expr, enum_name: string, arm: Match_Arm, result_tmp: string) {
+    if _, is_wild := arm.pat.(^Pat_Wild); is_wild {
+        cg_emit(cg, "default: { ")
+        cg_emitf(cg, "%s = ", result_tmp)
+        if blk, is_blk := arm.body.(^Expr_Block); is_blk {
+            cg_emit_block_as_expr(cg, blk)
+        } else {
+            cg_expr(cg, arm.body)
+        }
+        cg_emit(cg, "; break; } ")
+        return
+    }
     pat, ok := arm.pat.(^Pat_Variant)
     if !ok {
-        cg_error(cg, "Stage A supports only variant patterns in match arms")
+        cg_error(cg, "Stage A supports only variant or wildcard patterns in match arms")
         return
     }
     variant_name := pat.path.segs[len(pat.path.segs)-1]
@@ -2864,9 +2889,26 @@ enum_of_scrutinee :: proc(cg: ^Codegen, scrut: Expr) -> string {
 }
 
 cg_match_arm_return :: proc(cg: ^Codegen, scrut: Expr, enum_name: string, arm: Match_Arm) {
+    if _, is_wild := arm.pat.(^Pat_Wild); is_wild {
+        cg_emit_indent(cg)
+        cg_emit(cg, "default: ")
+        cg_emit(cg, "{\n")
+        cg.indent_lvl += 1
+        cg_emit_indent(cg)
+        cg_emit(cg, "return ")
+        if blk, is_blk := arm.body.(^Expr_Block); is_blk {
+            cg_emit_block_as_expr(cg, blk)
+        } else {
+            cg_expr(cg, arm.body)
+        }
+        cg_emit(cg, ";\n")
+        cg.indent_lvl -= 1
+        cg_emit_indent(cg); cg_emit(cg, "}\n")
+        return
+    }
     pat, ok := arm.pat.(^Pat_Variant)
     if !ok {
-        cg_error(cg, "Stage A supports only variant patterns in match arms")
+        cg_error(cg, "Stage A supports only variant or wildcard patterns in match arms")
         return
     }
     variant_name := pat.path.segs[len(pat.path.segs)-1]
