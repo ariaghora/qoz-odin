@@ -488,8 +488,42 @@ let parse_top_type(p: *Parser): Decl = {
         let fields = parse_struct_fields(p)
         return DStruct(span, name, type_params, fields)
     }
+    if is_punct(peek(p), "|") {
+        let variants = parse_variants(p)
+        return DEnum(span, name, type_params, variants)
+    }
     let target = parse_type(p)
     DTypeAlias(span, name, type_params, target)
+}
+
+let parse_variants(p: *Parser): Vec<VariantDecl> = {
+    var out: Vec<VariantDecl> = vec.make()
+    while is_punct(peek(p), "|") {
+        let bar_tok = peek(p)
+        let v_span = span_of(p, bar_tok)
+        advance(p)
+        let vname = expect_ident(p)
+        var kind: VariantPayloadKind = VPKNone
+        var pos: Vec<TypeExpr> = vec.make()
+        var named: Vec<StructField> = vec.make()
+        if is_punct(peek(p), "(") {
+            kind = VPKPositional
+            advance(p)
+            if !is_punct(peek(p), ")") {
+                vec.push(&pos, parse_type(p))
+                while is_punct(peek(p), ",") {
+                    advance(p)
+                    vec.push(&pos, parse_type(p))
+                }
+            }
+            expect_punct(p, ")")
+        } else if is_punct(peek(p), "{") {
+            kind = VPKNamed
+            named = parse_struct_fields(p)
+        }
+        vec.push(&out, VariantDecl { span: v_span, name: vname, kind: kind, pos: pos, named: named })
+    }
+    out
 }
 
 let parse_fn_params(p: *Parser): Vec<FnParam> = {

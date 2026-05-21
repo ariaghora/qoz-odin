@@ -1,18 +1,13 @@
 import std/fmt
-import std/strings as s
 
-type Point = { x: i64, y: i64 }
-type Pair<A, B> = { fst: A, snd: B }
+type Shape =
+    | Circle(f64)
+    | Square(f64)
+    | Rect { width: f64, height: f64 }
+    | Origin
 
-let answer = 42
-let pi = 314
-let total = answer + pi * 2
+type Option<T> =
+    | Some(T)
+    | None
 
-let add(x: i64, y: i64): i64 = x + y
-let identity<T>(x: T): T = x
-
-let main() = {
-    let p = answer
-    var q = total
-    fmt.println("hello", p, q)
-}
+let area = 42
