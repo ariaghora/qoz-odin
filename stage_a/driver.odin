@@ -264,7 +264,25 @@ compile_and_link :: proc(c_source: string, out_name: string) -> bool {
         "clang",
         "-std=c11",
         "-O2",
+        "-Wall",
+        "-Werror",
+        // The codegen emits some style patterns that clang would flag, none
+        // of which represent real bugs:
+        //
+        //   -Wno-unused-function:        variant constructors and auto-derived
+        //                                hash/eq are emitted per type and may
+        //                                not be called; linker drops them.
+        //   -Wno-unused-variable:        user-written `let x = ...` bindings
+        //                                that the user never reads. Treated as
+        //                                a style choice, not a bug.
+        //   -Wno-unused-but-set-variable: same shape on the assignment side.
+        //   -Wno-parentheses-equality:   binary expressions defensively wrap
+        //                                their operands, producing `((a == b))`
+        //                                inside if-conditions.
         "-Wno-unused-function",
+        "-Wno-unused-variable",
+        "-Wno-unused-but-set-variable",
+        "-Wno-parentheses-equality",
         include_flag,
         tmp_c,
         qoz_rt_c,

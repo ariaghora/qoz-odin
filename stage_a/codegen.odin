@@ -3005,7 +3005,7 @@ cg_emit_variant_bindings :: proc(cg: ^Codegen, scrut: Expr, enum_name: string, v
             if b, is_bind := sub_pat.(^Pat_Bind); is_bind {
                 c_type := c_type_of_type_expr(cg, vd.pos[i])
                 cg_emit_indent(cg)
-                cg_emitf(cg, "%s %s = %s.payload.%s.f%d;\n", c_type, b.name, base, vd.name, i)
+                cg_emitf(cg, "%s %s = %s.payload.%s.f%d; (void)%s;\n", c_type, b.name, base, vd.name, i, b.name)
                 cg.locals[b.name] = c_type
             }
         }
@@ -3019,7 +3019,7 @@ cg_emit_variant_bindings :: proc(cg: ^Codegen, scrut: Expr, enum_name: string, v
             if b, is_bind := nf.pat.(^Pat_Bind); is_bind {
                 c_type := c_type_of_type_expr(cg, vd.named[field_index].type)
                 cg_emit_indent(cg)
-                cg_emitf(cg, "%s %s = %s.payload.%s.%s;\n", c_type, b.name, base, vd.name, nf.name)
+                cg_emitf(cg, "%s %s = %s.payload.%s.%s; (void)%s;\n", c_type, b.name, base, vd.name, nf.name, b.name)
                 cg.locals[b.name] = c_type
             }
         }
