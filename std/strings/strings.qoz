@@ -26,6 +26,9 @@ external let slice(s: string, from: i64, to: i64): string
 @link_name("qoz_string_parse_int")
 external let parse_int(s: string): i64
 
+@link_name("qoz_string_cat")
+external let cat(a: string, b: string): string
+
 @operator("==")
 let eq(a: *string, b: *string): bool = eq_raw(*a, *b)
 

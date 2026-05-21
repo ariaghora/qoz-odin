@@ -27,6 +27,7 @@ bool     qoz_string_has_prefix(qoz_string s, qoz_string p);
 bool     qoz_string_has_suffix(qoz_string s, qoz_string suf);
 int64_t  qoz_string_index_byte(qoz_string s, int64_t byte);
 int64_t  qoz_string_byte_at(qoz_string s, int64_t i);
+qoz_string qoz_string_cat(qoz_string a, qoz_string b);
 qoz_string qoz_string_slice(qoz_string s, int64_t from, int64_t to);
 int64_t  qoz_string_parse_int(qoz_string s);
 

@@ -67,6 +67,14 @@ bool qoz_string_has_suffix(qoz_string s, qoz_string suf) {
     return memcmp(s.data + s.len - suf.len, suf.data, (size_t)suf.len) == 0;
 }
 
+qoz_string qoz_string_cat(qoz_string a, qoz_string b) {
+    int64_t n = (a.len < 0 ? 0 : a.len) + (b.len < 0 ? 0 : b.len);
+    char *buf = (char *)qoz_alloc(n);
+    if (a.len > 0) memcpy(buf,         a.data, (size_t)a.len);
+    if (b.len > 0) memcpy(buf + a.len, b.data, (size_t)b.len);
+    return (qoz_string){ buf, n };
+}
+
 int64_t qoz_string_byte_at(qoz_string s, int64_t i) {
     if (i < 0 || i >= s.len) return -1;
     return (int64_t)(unsigned char)s.data[i];

@@ -1,0 +1,355 @@
+// compiler/emit: Stage B codegen (scaffold).
+//
+// First cut produces a C-source string for a TINY subset: integer-returning
+// functions whose body is a literal or a simple arithmetic expression on
+// integer literals. The driver writes the result to disk and clang produces
+// a binary.
+//
+// The subset grows with each commit, mirroring the path Stage A took.
+
+import std/fmt
+import std/strings
+import std/vec
+import compiler/ast
+
+type Emitter = {
+    out: Vec<string>,
+}
+
+let make_emitter(): Emitter = Emitter { out: vec.make() }
+
+let push(e: *Emitter, s: string) = {
+    vec.push(&e.out, s)
+}
+
+let pushf(e: *Emitter, s: string) = push(e, s)
+
+let render(e: *Emitter): string = {
+    var total: i64 = 0
+    for s in e.out {
+        total = total + len(s)
+    }
+    if total == 0 {
+        return ""
+    }
+    // Concatenate by repeated slicing into a buffer.
+    // (Stage B will grow a proper string builder over time.)
+    var acc = ""
+    for s in e.out {
+        acc = strings.cat(acc, s)
+    }
+    acc
+}
+
+let c_type_for(t: TypeExpr): string = {
+    match t {
+    | TEUnit(_)                  -> "void"
+    | TEPtr(_, inner)            -> strings.cat(c_type_for(inner), "*")
+    | TETuple(_, _)              -> "void"
+    | TENamed(_, path, _)        -> c_type_for_named(path)
+    }
+}
+
+let c_type_for_named(path: Vec<string>): string = {
+    if len(path) != 1 {
+        return "int64_t"
+    }
+    let n = path[0]
+    if strings.eq_raw(n, "i8")     { return "int8_t" }
+    if strings.eq_raw(n, "i16")    { return "int16_t" }
+    if strings.eq_raw(n, "i32")    { return "int32_t" }
+    if strings.eq_raw(n, "i64")    { return "int64_t" }
+    if strings.eq_raw(n, "u8")     { return "uint8_t" }
+    if strings.eq_raw(n, "u16")    { return "uint16_t" }
+    if strings.eq_raw(n, "u32")    { return "uint32_t" }
+    if strings.eq_raw(n, "u64")    { return "uint64_t" }
+    if strings.eq_raw(n, "f32")    { return "float" }
+    if strings.eq_raw(n, "f64")    { return "double" }
+    if strings.eq_raw(n, "bool")   { return "bool" }
+    if strings.eq_raw(n, "char")   { return "char" }
+    if strings.eq_raw(n, "string") { return "qoz_string" }
+    if strings.eq_raw(n, "cstring"){ return "const char *" }
+    if strings.eq_raw(n, "void")   { return "void" }
+    if strings.eq_raw(n, "unit")   { return "void" }
+    strings.cat("qoz_", n)
+}
+
+let emit_expr(e: *Emitter, ex: Expr) = {
+    match ex {
+    | EInt(_, text)     -> push(e, text)
+    | EFloat(_, text)   -> push(e, text)
+    | EBool(_, v)       -> push(e, if v { "true" } else { "false" })
+    | ENil(_)           -> push(e, "NULL")
+    | EIdent(_, name)   -> push(e, name)
+    | EString(_, text)  -> {
+        push(e, "QOZ_STR_LIT(")
+        push(e, text)
+        push(e, ")")
+    }
+    | EBinary(_, op, lhs, rhs) -> {
+        push(e, "(")
+        emit_expr(e, lhs)
+        push(e, " ")
+        push(e, binary_c_op(op))
+        push(e, " ")
+        emit_expr(e, rhs)
+        push(e, ")")
+    }
+    | EUnary(_, op, rhs) -> {
+        push(e, unary_c_op(op))
+        emit_expr(e, rhs)
+    }
+    | EReturn(_, value) -> {
+        push(e, "return ")
+        emit_expr(e, value)
+    }
+    | EBlock(_, stmts, tail) -> {
+        push(e, "({ ")
+        for s in stmts {
+            emit_stmt(e, s)
+        }
+        emit_expr(e, tail)
+        push(e, "; })")
+    }
+    | EChar(_, text)               -> push(e, text)
+    | EPath(_, _)                  -> push(e, "0")
+    | EAssign(_, _, lhs, rhs)      -> { emit_expr(e, lhs); push(e, " = "); emit_expr(e, rhs) }
+    | ECall(_, callee, args)       -> emit_call(e, callee, args)
+    | EField(_, base, name)        -> { emit_expr(e, base); push(e, "."); push(e, name) }
+    | EIndex(_, base, idx)         -> { emit_expr(e, base); push(e, "["); emit_expr(e, idx); push(e, "]") }
+    | ECast(_, value, _)           -> emit_expr(e, value)
+    | ETry(_, value)               -> emit_expr(e, value)
+    | ETuple(_, _)                 -> push(e, "0")
+    | ERecord(_, _, _)             -> push(e, "0")
+    | EClosure(_, _, _, _)         -> push(e, "0")
+    | EIf(_, c, t, f)              -> { push(e, "("); emit_expr(e, c); push(e, " ? "); emit_expr(e, t); push(e, " : "); emit_expr(e, f); push(e, ")") }
+    | EMatch(_, _, _)              -> push(e, "0")
+    | EWhile(_, _, _)              -> push(e, "0")
+    | EFor(_, _, _, _)             -> push(e, "0")
+    | EDefer(_, _)                 -> push(e, "0")
+    | ESizeOf(_, te)               -> { push(e, "(int64_t)sizeof("); push(e, c_type_for(te)); push(e, ")") }
+    | EArrayLit(_, _)              -> push(e, "0")
+    }
+}
+
+let emit_stmt(e: *Emitter, s: Stmt) = {
+    match s {
+    | SLet(_, name, ty, value) -> {
+        push(e, c_type_for(ty))
+        push(e, " ")
+        push(e, name)
+        push(e, " = ")
+        emit_expr(e, value)
+        push(e, "; ")
+    }
+    | SVar(_, name, ty, value) -> {
+        push(e, c_type_for(ty))
+        push(e, " ")
+        push(e, name)
+        push(e, " = ")
+        emit_expr(e, value)
+        push(e, "; ")
+    }
+    | SExpr(_, expr) -> {
+        emit_expr(e, expr)
+        push(e, "; ")
+    }
+    }
+}
+
+let emit_call(e: *Emitter, callee: Expr, args: Vec<Expr>) = {
+    emit_expr(e, callee)
+    push(e, "(")
+    var i: i64 = 0
+    for a in args {
+        if i > 0 {
+            push(e, ", ")
+        }
+        emit_expr(e, a)
+        i = i + 1
+    }
+    push(e, ")")
+}
+
+let binary_c_op(op: BinaryOp): string = {
+    match op {
+    | BOpAdd            -> "+"
+    | BOpSub            -> "-"
+    | BOpMul            -> "*"
+    | BOpDiv            -> "/"
+    | BOpMod            -> "%"
+    | BOpEq             -> "=="
+    | BOpNe             -> "!="
+    | BOpLt             -> "<"
+    | BOpGt             -> ">"
+    | BOpLe             -> "<="
+    | BOpGe             -> ">="
+    | BOpAnd            -> "&&"
+    | BOpOr             -> "||"
+    | BOpRange          -> "<"
+    | BOpRangeInclusive -> "<="
+    }
+}
+
+let unary_c_op(op: UnaryOp): string = {
+    match op {
+    | UOpNeg   -> "-"
+    | UOpNot   -> "!"
+    | UOpDeref -> "*"
+    | UOpAddr  -> "&"
+    }
+}
+
+let is_block(ex: Expr): bool = {
+    match ex {
+    | EBlock(_, _, _) -> true
+    | EInt(_, _) -> false
+    | EFloat(_, _) -> false
+    | EString(_, _) -> false
+    | EChar(_, _) -> false
+    | EBool(_, _) -> false
+    | ENil(_) -> false
+    | EIdent(_, _) -> false
+    | EPath(_, _) -> false
+    | EUnary(_, _, _) -> false
+    | EBinary(_, _, _, _) -> false
+    | EAssign(_, _, _, _) -> false
+    | ECall(_, _, _) -> false
+    | EField(_, _, _) -> false
+    | EIndex(_, _, _) -> false
+    | ECast(_, _, _) -> false
+    | ETry(_, _) -> false
+    | ETuple(_, _) -> false
+    | ERecord(_, _, _) -> false
+    | EClosure(_, _, _, _) -> false
+    | EIf(_, _, _, _) -> false
+    | EMatch(_, _, _) -> false
+    | EWhile(_, _, _) -> false
+    | EFor(_, _, _, _) -> false
+    | EReturn(_, _) -> false
+    | EDefer(_, _) -> false
+    | ESizeOf(_, _) -> false
+    | EArrayLit(_, _) -> false
+    }
+}
+
+let is_nil_expr(ex: Expr): bool = {
+    match ex {
+    | ENil(_) -> true
+    | EInt(_, _) -> false
+    | EFloat(_, _) -> false
+    | EString(_, _) -> false
+    | EChar(_, _) -> false
+    | EBool(_, _) -> false
+    | EIdent(_, _) -> false
+    | EPath(_, _) -> false
+    | EUnary(_, _, _) -> false
+    | EBinary(_, _, _, _) -> false
+    | EAssign(_, _, _, _) -> false
+    | ECall(_, _, _) -> false
+    | EField(_, _, _) -> false
+    | EIndex(_, _, _) -> false
+    | ECast(_, _, _) -> false
+    | ETry(_, _) -> false
+    | ETuple(_, _) -> false
+    | ERecord(_, _, _) -> false
+    | EClosure(_, _, _, _) -> false
+    | EBlock(_, _, _) -> false
+    | EIf(_, _, _, _) -> false
+    | EMatch(_, _, _) -> false
+    | EWhile(_, _, _) -> false
+    | EFor(_, _, _, _) -> false
+    | EReturn(_, _) -> false
+    | EDefer(_, _) -> false
+    | ESizeOf(_, _) -> false
+    | EArrayLit(_, _) -> false
+    }
+}
+
+let emit_fn_body_block(e: *Emitter, body: Expr) = {
+    match body {
+    | EBlock(_, stmts, tail) -> {
+        for s in stmts {
+            emit_stmt(e, s)
+        }
+        if is_nil_expr(tail) {
+            push(e, "return;\n")
+        } else {
+            push(e, "return ")
+            emit_expr(e, tail)
+            push(e, ";\n")
+        }
+    }
+    | EInt(_, _) -> { }
+    | EFloat(_, _) -> { }
+    | EString(_, _) -> { }
+    | EChar(_, _) -> { }
+    | EBool(_, _) -> { }
+    | ENil(_) -> { }
+    | EIdent(_, _) -> { }
+    | EPath(_, _) -> { }
+    | EUnary(_, _, _) -> { }
+    | EBinary(_, _, _, _) -> { }
+    | EAssign(_, _, _, _) -> { }
+    | ECall(_, _, _) -> { }
+    | EField(_, _, _) -> { }
+    | EIndex(_, _, _) -> { }
+    | ECast(_, _, _) -> { }
+    | ETry(_, _) -> { }
+    | ETuple(_, _) -> { }
+    | ERecord(_, _, _) -> { }
+    | EClosure(_, _, _, _) -> { }
+    | EIf(_, _, _, _) -> { }
+    | EMatch(_, _, _) -> { }
+    | EWhile(_, _, _) -> { }
+    | EFor(_, _, _, _) -> { }
+    | EReturn(_, _) -> { }
+    | EDefer(_, _) -> { }
+    | ESizeOf(_, _) -> { }
+    | EArrayLit(_, _) -> { }
+    }
+}
+
+let emit_fn(e: *Emitter, name: string, params: Vec<FnParam>, ret: TypeExpr, body: Expr) = {
+    push(e, c_type_for(ret))
+    push(e, " ")
+    push(e, name)
+    push(e, "(")
+    var i: i64 = 0
+    for p in params {
+        if i > 0 {
+            push(e, ", ")
+        }
+        push(e, c_type_for(p.ty))
+        push(e, " ")
+        push(e, p.name)
+        i = i + 1
+    }
+    push(e, ") {\n    ")
+    if is_block(body) {
+        emit_fn_body_block(e, body)
+    } else {
+        push(e, "return ")
+        emit_expr(e, body)
+        push(e, ";\n")
+    }
+    push(e, "}\n\n")
+}
+
+let emit_program(f: File): string = {
+    var e = make_emitter()
+    push(&e, "#include \"qoz_runtime.h\"\n\n")
+    for d in f.decls {
+        match d {
+        | DFn(_, name, _, params, ret, body, _) -> emit_fn(&e, name, params, ret, body)
+        | DImport(_, _, _)                      -> { }
+        | DStruct(_, _, _, _)                   -> { }
+        | DEnum(_, _, _, _)                     -> { }
+        | DTypeAlias(_, _, _, _)                -> { }
+        | DConst(_, _, _, _)                    -> { }
+        | DExternal(_, _, _, _, _)              -> { }
+        | DLink(_, _, _)                        -> { }
+        }
+    }
+    render(&e)
+}

@@ -8,10 +8,12 @@ import std/fmt
 import std/fs
 import std/os
 import std/vec
+import std/strings
 import compiler/tokenize
 import compiler/ast
 import compiler/parse
 import compiler/check
+import compiler/emit
 
 let decl_kind_name(d: Decl): string = {
     match d {
@@ -64,4 +66,10 @@ let main() = {
     check.check_fn_bodies(&tc, file)
     check.summary(&tc)
     check.report(&tc)
+    let c_source = emit.emit_program(file)
+    let out_path = strings.cat(path, ".c")
+    let ok = fs.write_file(out_path, c_source)
+    if ok {
+        fmt.println(fmt.format("wrote {}", out_path))
+    }
 }
