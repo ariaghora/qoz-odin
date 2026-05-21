@@ -1,0 +1,26 @@
+Point := struct { x: f64, y: f64 }
+Circle := struct { radius: f64 }
+
+Shape := union {
+    Point,
+    Circle,
+    f64
+}
+
+print_union := func(s: Shape) {
+    switch s {
+    case Point p:
+        println("Point:", p.x, p.y)
+    case Circle c:
+        println("Circle radius:", c.radius)
+    case f64 val:
+        println("Number:", val)
+    }
+}
+
+main := func() {
+    print_union(Point{x: 1.0, y: 2.0})
+    print_union(Circle{radius: 5.0})
+    print_union(3.14)
+}
+

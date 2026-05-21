@@ -1,0 +1,11 @@
+parse_int := func(s: string): (i32, bool) {
+    return 42, true
+}
+
+main := func() {
+    value, ok := parse_int("42")
+    if ok {
+        println("Parsed value:", value)
+    }
+
+}

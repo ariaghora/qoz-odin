@@ -1,0 +1,15 @@
+main := func(): void {
+    // Test: untyped integer literal coercing to i64
+    x: i64 = 42
+    
+    // Test: untyped integer literal coercing to i8
+    y: i8 = 10
+    
+    // Test: both untyped should default to i64
+    z := 100 + 200
+    
+    print(x)
+    print(y)
+    print(z)
+    print(1)
+}

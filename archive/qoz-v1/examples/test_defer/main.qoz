@@ -1,0 +1,36 @@
+test_early_return := func(): i32 {
+    println("test_early_return start")
+    defer println("Defer in early return")
+    
+    return 42
+}
+
+test_block_defer := func() {
+    println("test_block_defer start")
+    
+    defer {
+        println("Block defer line 1")
+        println("Block defer line 2")
+    }
+    
+    println("test_block_defer end")
+}
+
+main := func() {
+    println("=== Test 1: Basic defer ===")
+    defer println("Defer 1")
+    defer println("Defer 2")
+    println("After defers")
+    
+    println()
+    println("=== Test 2: Early return ===")
+    result := test_early_return()
+    println("Result:", result)
+    
+    println()
+    println("=== Test 3: Block defer ===")
+    test_block_defer()
+    
+    println()
+    println("=== Main ending ===")
+}

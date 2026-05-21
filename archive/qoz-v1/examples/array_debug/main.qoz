@@ -1,0 +1,8 @@
+get_nums := func(): arr<i32, 2> {
+    return {10, 20}
+}
+
+main := func() {
+    nums := get_nums()
+    println("Array debug:", nums)
+}

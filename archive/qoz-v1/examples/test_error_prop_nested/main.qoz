@@ -1,0 +1,137 @@
+// Union error types. Variants must be defined types 
+Success        := struct {}
+ParseError     := struct {}
+DivByZeroError := struct {}
+Error          := union { bool, Success, ParseError, DivByZeroError }
+
+// Returns (value, ok). ok=false indicates parse failure.
+parse_int := func(s: string): (i32, bool) {
+    if len(s) == 2 {
+        return 42, true
+    } else if len(s) == 1 {
+        // Return 0 to test division-by-zero path
+        return 0, true
+    }
+    return 0, false
+}
+
+// Returns (result, ok). ok=false if divisor is zero.
+divide := func(a: i32, b: i32): (i32, bool) {
+    if b == 0: return 0, false
+    return a / b, true
+}
+
+// Chains parse_int and divide. Errors propagate via try.
+compute := func(num_str: string, denom_str: string): (i32, bool) {
+    try numerator := parse_int(num_str)
+    try denominator := parse_int(denom_str)
+    try result := divide(numerator, denominator)
+    return result, true
+}
+
+parse_int_union := func(s: string): (i32, Error) {
+    if len(s) == 2: return 42, Success{}
+    return 0, ParseError{}
+}
+
+divide_union := func(a: i32, b: i32): (i32, Error) {
+    if b == 0: return 0, DivByZeroError{}
+    return a / b, Success{}
+}
+
+compute_union := func(num_str: string, denom_str: string): (i32, Error) {
+    try numerator := parse_int_union(num_str)
+    try denominator := parse_int_union(denom_str)
+    try result := divide_union(numerator, denominator)
+    return result, Success{}
+}
+
+// Returns (x, y, ok). Tests tuple destructuring with try.
+parse_two_ints := func(s: string): (i32, i32, bool) {
+    if len(s) == 2: return 42, 24, true
+    return 0, 0, false
+}
+
+process_two_ints := func(s: string): (i32, i32, bool) {
+    try x, y := parse_two_ints(s)
+    return x * 2, y * 2, true
+}
+
+main := func() {
+    println("=== Testing bool error type ===")
+    result1, ok1 := compute("ab", "cd")
+    if !ok1 {
+        println("Error: computation failed")
+    } else {
+        println("Success: 42 / 42 =", result1)
+    }
+    
+    result2, ok2 := compute("invalid", "cd")
+    if !ok2 {
+        println("Error: failed to parse numerator")
+    } else {
+        println("Unexpected success:", result2)
+    }
+    
+    result3, ok3 := compute("ab", "invalid")
+    if !ok3 {
+        println("Error: failed to parse denominator")
+    } else {
+        println("Unexpected success:", result3)
+    }
+    
+    result4, ok4 := compute("ab", "x")
+    if !ok4 {
+        println("Error: division by zero")
+    } else {
+        println("Unexpected success:", result4)
+    }
+    
+    println("\n=== Testing union error type ===")
+    result_u1, err1 := compute_union("ab", "cd")
+    switch err1 {
+    case Success s:
+        println("Success: 42 / 42 =", result_u1)
+    case ParseError p:
+        println("Error: parse failed")
+    case DivByZeroError d:
+        println("Error: division by zero")
+    case bool b:
+        if !b {
+            println("Error: bool error", b)
+        } else {
+            println("Success: bool true")
+        }
+    }
+    
+    result_u2, err2 := compute_union("invalid", "cd")
+    switch err2 {
+    case Success s:
+        println("Unexpected success:", result_u2)
+    case ParseError p:
+        println("Error: parse failed (as expected)")
+    case DivByZeroError d:
+        println("Error: division by zero")
+    case bool b:
+        if !b {
+            println("Error: bool error (false)")
+        } else {
+            println("Unexpected success: bool true")
+        }
+    }
+    
+    println("\n=== Testing multiple return values (3+ values) ===")
+    result_m1, result_m2, ok_m1 := process_two_ints("ab")
+    if !ok_m1 {
+        println("Error: failed to process two ints")
+    } else {
+        println("Success: processed two ints =", result_m1, result_m2)
+    }
+    
+    result_m3, result_m4, ok_m2 := process_two_ints("invalid")
+    if !ok_m2 {
+        println("Error: failed to process two ints (as expected)")
+    } else {
+        println("Unexpected success:", result_m3, result_m4)
+    }
+}

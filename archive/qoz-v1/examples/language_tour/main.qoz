@@ -1,0 +1,177 @@
+import "std:strings" 
+// It is possible to alias imported modules for easier access:
+// import str "std:strings"
+// Then, you can use, e.g., str.string_concat instead of strings.string_concat
+
+// Import statement is not necessarily in the top of the file.
+// It can be placed anywhere in the file as long as it is on the top level scope.
+// However, just keep it at the top unless there is a good reason not to.
+import "std:mem" 
+
+Person := struct {
+    name: string,
+    age: i32,
+}
+
+get_bob_info := func(): Person {
+    return {name: "Bob", age: 25}
+}
+
+main := func() {
+    banner("Hello world! Welcome to QOZ Language Tour.")
+
+    // You can omit type annotation as "untyped integer" by default, which is compatible
+    // with i32, i64, and other typed integers.
+    x := 10
+    // To you can specify explicit type annotation explicitly like this:
+    y : i32 = 20
+    // alternatively, you can typecast it
+    // y := 20 as i32
+    x_plus_y := x + y
+    println("x + y =", x_plus_y)
+
+    banner("Struct Example")
+
+    // You can create struct instances like this
+    person_alice := Person{name: "Alice", age: 30}
+    // alternative:
+    // person_alice : Person = {name: "Alice", age: 30}
+    person_bob := get_bob_info()
+    println("Person Information:")
+    println("Name:", person_alice.name, ", Age:", person_alice.age)
+    println("Name:", person_bob.name, ", Age:", person_bob.age)
+    
+
+    banner("Memory Management In Qoz")
+    // Allocators are central to QOZ's memory management
+    // Qoz provides different types of allocators. For example, check out examples/arena_alloc/main.qoz for
+    // arena allocator usage.
+    alloc := mem.default_allocator() // Default allocator is heap allocator with libc's malloc free underneath
+    first_name := "Charlie "
+    last_name := "Brown"
+
+    full_name := strings.string_concat(first_name, last_name, alloc) // this allocates memory!
+    // Qoz supports defer statement to schedule cleanup tasks at the end of the scope.
+    // Note that this is dfferent from Go's defer which executes at the end of the
+    // enclosing function, NOT scope.
+    defer {
+        del(full_name, alloc) 
+    }
+    // or one liner:
+    // defer del(full_name, alloc)
+    println(full_name)
+
+    // @tmp provides a function-scoped temporary arena allocator
+    // The arena is automatically created at function start and destroyed at function end
+    temp_greeting := strings.string_concat("Hello from ", "temporary arena", @tmp)
+    println(temp_greeting)
+    // No need to manually free, since temporary arena is automatically cleaned up at function exit
+
+    banner("Static Array Example")
+    // You can create a static array like this. The size must be a compile-time constant.
+    fruits := arr<string, 3>{"Apple", "Banana", "Cherry"}
+    println("First fruit:", fruits[0])
+
+    // You can create an array of structs or other more complex types as well.
+    points := arr<Vec2D, 3>{
+        {x: 1.0, y: 2.0},
+        {x: 3.0, y: 4.0},
+        {x: 5.0, y: 6.0},
+    }
+    // It is also possible to be more explicit:
+    // points := arr<Vec2D, 3>{
+    //     Vec2D{x: 1.0, y: 2.0},
+    //     Vec2D{x: 3.0, y: 4.0},
+    //     Vec2D{x: 5.0, y: 6.0},
+    // }
+    println("First point:", points[0].x, points[0].y)
+
+
+    banner("Loop In Qoz")
+
+    // The first style is a for-in loop, which iterates over each element in the array.
+    for fruit in fruits {
+        println(fruit)
+    }
+
+    // C-style for loop is also supported. Here, you can use len() function to get the length of the array.
+    // The len() function works with static arrays, vectors, strings, and maps.
+    // TODO(Aria): implement vector and map
+    for i := 0; i < len(points); i += 1 {
+        println(points[i].x, points[i].y)
+    }
+
+    banner("Function as First-Class Citizens")
+
+    // You can pass functions as parameters.
+    // TODO(Aria): support anonymous functions as arguments. However, the anonymous function or nested function
+    //             will not be implemented as a closure, and thus, will not capture the outer scope variables.
+    sum := operation(10, 5, add)
+    difference := operation(10, 5, subtract)
+    println("Sum:", sum)
+    println("Difference:", difference)
+
+    // Consequently, it is also possible to use function type as struct members.
+    fp := FunctionWrapper{func_ptr: f}
+    result := fp.func_ptr(7, 3)
+    println("Result from function pointer:", result)
+
+    banner("Control Flow Example")
+
+    my_lucky_number := 42
+    if my_lucky_number == 42 {
+        println("You found the lucky number!\n")
+    } else {
+        println("Try again!\n")
+    }
+
+    println("What is the GCD of 48 and 18?")
+    gcd_result := gcd_recursive(48, 18)
+    println("GCD is:", gcd_result)
+}
+
+//| 
+//| Struct and function definitions can be placed after the function that uses it,
+//| e.g., after main() in this example.
+//+------------------------------------------------------------------------------
+
+Vec2D := struct {
+    x: f64,
+    y: f64,
+}
+
+add       := func(x: i32, y: i32): i32 { return x + y }
+subtract  := func(x: i32, y: i32): i32 { return x - y }
+
+BinaryOp  := alias func(i32, i32): i32
+operation := func(a: i32, b: i32, f: BinaryOp): i32 {
+    return f(a, b)
+}
+
+
+gcd_recursive := func(a: i32, b: i32): i32 {
+    if b == 0 {
+        return a
+    } else {
+        return gcd_recursive(b, a % b)
+    }
+}
+
+// Do some fun with function inside a struct
+f := func(x: i32, y: i32): i32 { return x + y }
+FunctionWrapper := struct {
+    func_ptr: func(i32, i32): i32,
+}
+
+banner := func(msg: string) {
+    println()
+    for i := 0; i < len(msg) + 4; i += 1 {
+        print("*")
+    }
+    println()
+    println("*", msg, "*")
+    for i := 0; i < len(msg) + 4; i += 1 {
+        print("*")
+    }
+    println("\n")
+}

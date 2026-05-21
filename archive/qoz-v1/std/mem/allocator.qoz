@@ -1,0 +1,27 @@
+import "std:libc"
+
+AllocFunc := alias func(*void, i64): *void
+FreeFunc  := alias func(*void, *void): void
+
+Allocator := struct {
+    data:  *void,
+    alloc:  AllocFunc,
+    free:   FreeFunc,
+}
+
+
+default_alloc_proc := func(data: *void, size: i64): *void {
+    return libc.malloc(size)
+}
+
+default_free_proc := func(data: *void, ptr: *void): void {
+    libc.free(ptr)
+}
+
+default_allocator := func(): Allocator {
+    return Allocator{
+        data: nil,
+        alloc: default_alloc_proc,
+        free: default_free_proc,
+    }
+}

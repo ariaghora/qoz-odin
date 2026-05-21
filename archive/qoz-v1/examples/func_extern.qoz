@@ -1,0 +1,12 @@
+malloc := func(size: i32): *void external
+free   := func(ptr: *void)       external
+
+foo := func(): *void {
+    x : *void = malloc(8)
+    return x
+}
+
+main := func() {
+    x : *void = foo()
+    free(x)
+}

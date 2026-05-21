@@ -1,0 +1,16 @@
+Point := struct { x: f64, y: f64 }
+Size := struct { width: f64, height: f64 }
+Rect := struct { position: Point, size: Size }
+Container := struct { items: arr<Rect, 2> }
+
+main := func() {
+    // Test deeper nesting
+    container := Container{
+        items: {
+            {position: {x: 1.0, y: 2.0}, size: {width: 10.0, height: 20.0}},
+            {position: {x: 3.0, y: 4.0}, size: {width: 30.0, height: 40.0}},
+        }
+    }
+    
+    println("Deep nesting test:", container)
+}

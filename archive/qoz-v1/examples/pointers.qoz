@@ -1,0 +1,6 @@
+malloc := func(size: i64): *void external
+
+main := func() {
+    data := (malloc(100 as i64)) as *i8
+    ptr_void := data as *void
+}

@@ -1,0 +1,15 @@
+Inner := struct { value: i32 }
+Outer := struct { inner: Inner }
+
+test_array := func(): arr<Outer, 2> {
+    return {
+        {inner: {value: 42}},
+        {inner: {value: 24}},
+    }
+}
+
+main := func() {
+    // Test nested struct in array
+    items := test_array()
+    println("Nested struct in array:", items)
+}
