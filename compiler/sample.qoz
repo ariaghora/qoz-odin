@@ -1,15 +1,8 @@
 import std/fmt
 
-let main() = {
-    var total: i64 = 0
-    for i in 0..<5 {
-        total = total + i
-    }
-    fmt.println("range sum:", total)
+type Point = { x: i64, y: i64 }
 
-    var inclusive: i64 = 0
-    for i in 1..=4 {
-        inclusive = inclusive + i
-    }
-    fmt.println("inclusive sum:", inclusive)
+let main() = {
+    let p = Point { x: 3, y: 4 }
+    fmt.println("x:", p.x, "y:", p.y)
 }

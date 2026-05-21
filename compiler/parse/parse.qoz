@@ -289,13 +289,62 @@ let parse_unary(p: *Parser): Expr = {
     parse_postfix(p)
 }
 
+let peek_at(p: *Parser, offset: i64): Token = {
+    if p.pos + offset >= len(p.tokens) {
+        return Token { kind: TokEOF, text: "", line: 0, col: 0 }
+    }
+    p.tokens[p.pos + offset]
+}
+
+let looks_like_record_literal(p: *Parser): bool = {
+    if !is_punct(peek_at(p, 0), "{") { return false }
+    let a = peek_at(p, 1)
+    let b = peek_at(p, 2)
+    if is_punct(a, "..") { return true }
+    if is_ident(a) && is_punct(b, ":") { return true }
+    if is_punct(a, "}") { return true }
+    false
+}
+
+let parse_record_literal(p: *Parser, span: Span, type_path: Vec<string>): Expr = {
+    expect_punct(p, "{")
+    var fields: Vec<RecordFieldLit> = vec.make()
+    while !is_punct(peek(p), "}") && !at_eof(p) {
+        let name = expect_ident(p)
+        expect_punct(p, ":")
+        let value = parse_expr(p)
+        vec.push(&fields, RecordFieldLit { name: name, value: value })
+        if is_punct(peek(p), ",") { advance(p) }
+    }
+    expect_punct(p, "}")
+    let te: TypeExpr = TENamed(span, type_path, vec.make())
+    ERecord(span, te, fields)
+}
+
 let parse_postfix(p: *Parser): Expr = {
     var e = parse_atom(p)
     var more = true
     while more {
         let tok = peek(p)
         let span = span_of(p, tok)
-        if is_punct(tok, "(") {
+        // Record literal: <ident> { field: ..., ... }
+        if is_punct(tok, "{") && looks_like_record_literal(p) {
+            var handled = false
+            match e {
+            | EIdent(_, name) -> {
+                var path: Vec<string> = vec.make()
+                vec.push(&path, name)
+                e = parse_record_literal(p, span, path)
+                handled = true
+            }
+            | EPath(_, segs) -> {
+                e = parse_record_literal(p, span, segs)
+                handled = true
+            }
+            | _ -> { }
+            }
+            if !handled { more = false }
+        } else if is_punct(tok, "(") {
             advance(p)
             var args: Vec<Expr> = vec.make()
             if !is_punct(peek(p), ")") {

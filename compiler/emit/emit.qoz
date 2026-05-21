@@ -165,7 +165,7 @@ let emit_expr(e: *Emitter, ex: Expr) = {
     | ECast(_, value, _)           -> emit_expr(e, value)
     | ETry(_, value)               -> emit_expr(e, value)
     | ETuple(_, _)                 -> push(e, "0")
-    | ERecord(_, _, _)             -> push(e, "0")
+    | ERecord(_, te, fields)       -> emit_record_lit(e, te, fields)
     | EClosure(_, _, _, _)         -> push(e, "0")
     | EIf(_, c, t, f)              -> { push(e, "("); emit_expr(e, c); push(e, " ? "); emit_expr(e, t); push(e, " : "); emit_expr(e, f); push(e, ")") }
     | EMatch(span, scrut, arms)    -> emit_match_as_expr(e, span, scrut, arms)
@@ -177,10 +177,46 @@ let emit_expr(e: *Emitter, ex: Expr) = {
     }
 }
 
+let infer_value_ctype(e: *Emitter, ty: TypeExpr, value: Expr): string = {
+    match ty {
+    | TEUnit(_) -> infer_expr_ctype(e, value)
+    | _         -> c_type_for(e, ty)
+    }
+}
+
+let infer_expr_ctype(e: *Emitter, ex: Expr): string = {
+    match ex {
+    | EInt(_, _)       -> "int64_t"
+    | EFloat(_, _)     -> "double"
+    | EString(_, _)    -> "qoz_string"
+    | EBool(_, _)      -> "bool"
+    | EChar(_, _)      -> "char"
+    | EIdent(_, name)  -> {
+        match map.get(&e.variant_of, name) {
+        | Some(en) -> strings.cat(strings.cat("qoz_", en), "*")
+        | None     -> "int64_t"
+        }
+    }
+    | ECall(_, callee, _) -> {
+        match callee {
+        | EIdent(_, name) -> {
+            match map.get(&e.variant_of, name) {
+            | Some(en) -> strings.cat(strings.cat("qoz_", en), "*")
+            | None     -> "int64_t"
+            }
+        }
+        | _ -> "int64_t"
+        }
+    }
+    | ERecord(_, te, _) -> c_type_for(e, te)
+    | _ -> "int64_t"
+    }
+}
+
 let emit_stmt(e: *Emitter, s: Stmt) = {
     match s {
     | SLet(_, name, ty, value) -> {
-        push(e, c_type_for_local(e, ty))
+        push(e, infer_value_ctype(e, ty, value))
         push(e, " ")
         push(e, name)
         push(e, " = ")
@@ -188,7 +224,7 @@ let emit_stmt(e: *Emitter, s: Stmt) = {
         push(e, "; ")
     }
     | SVar(_, name, ty, value) -> {
-        push(e, c_type_for_local(e, ty))
+        push(e, infer_value_ctype(e, ty, value))
         push(e, " ")
         push(e, name)
         push(e, " = ")
@@ -271,6 +307,15 @@ let emit_call(e: *Emitter, callee: Expr, args: Vec<Expr>) = {
     if path_is(callee, "fmt", "println") {
         emit_println(e, args)
         return
+    }
+    match callee {
+    | EIdent(_, name) -> {
+        if strings.eq_raw(name, "size_of") && len(args) == 1 {
+            push(e, "(int64_t)sizeof(int64_t)")  // placeholder; needs type analysis to be accurate
+            return
+        }
+    }
+    | _ -> { }
     }
     // Variant constructor call: replace ident with qoz_make_<Enum>_<Variant>
     match callee {
@@ -678,6 +723,22 @@ let range_cmp_op(op: BinaryOp): string =
     | BOpRangeInclusive -> "<="
     | _                 -> "<"
     }
+
+let emit_record_lit(e: *Emitter, te: TypeExpr, fields: Vec<RecordFieldLit>) = {
+    push(e, "((")
+    push(e, c_type_for(e, te))
+    push(e, "){ ")
+    var i: i64 = 0
+    for f in fields {
+        if i > 0 { push(e, ", ") }
+        push(e, ".")
+        push(e, f.name)
+        push(e, " = ")
+        emit_expr(e, f.value)
+        i = i + 1
+    }
+    push(e, " })")
+}
 
 let emit_for_loop(e: *Emitter, binding: string, iter: Expr, body: Expr) = {
     match iter {
