@@ -1,0 +1,20 @@
+// expect: 7
+//
+// Generic Result<T, E> with two arms, exercises ADT monomorphisation with
+// two type parameters and pattern bindings that come from different
+// variant positions.
+
+type Result<T, E> =
+    | Ok(T)
+    | Err(E)
+
+let unwrap_default<T, E>(r: Result<T, E>, fallback: T): T = match r {
+| Ok(x)  -> x
+| Err(_) -> fallback
+}
+
+let main(): i64 = {
+    let ok: Result<i64, i64> = Ok(7)
+    let er: Result<i64, i64> = Err(99)
+    unwrap_default(ok, 0) + unwrap_default(er, 0)
+}

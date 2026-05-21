@@ -200,7 +200,14 @@ let synth(tc: *TyContext, env: *Env, e: Expr): Ty = {
     | EIf(_, c, t, f)        -> synth_if(tc, env, c, t, f)
     | EMatch(_, scrut, arms) -> synth_match(tc, env, scrut, arms)
     | EWhile(_, c, b)        -> { let _ = synth(tc, env, c); let _ = synth(tc, env, b); ty.ty_unit_() }
-    | EFor(_, _, _, it, b)   -> { let _ = synth(tc, env, it); let _ = synth(tc, env, b); ty.ty_unit_() }
+    | EFor(_, b1, b2, it, b) -> {
+        let it_ty = synth(tc, env, it)
+        let saved_len = len(env.bindings)
+        bind_for_loop(env, b1, b2, it_ty)
+        let _ = synth(tc, env, b)
+        env_truncate(env, saved_len)
+        ty.ty_unit_()
+    }
     | EReturn(_, v)          -> { let _ = synth(tc, env, v); ty.ty_unit_() }
     | EDefer(_, b)           -> { let _ = synth(tc, env, b); ty.ty_unit_() }
     | ESizeOf(_, _)          -> ty.ty_int_(64, true)
@@ -578,6 +585,42 @@ let synth_match(tc: *TyContext, env: *Env, scrut: Expr, arms: Vec<MatchArm>): Ty
     result
 }
 
+// Bind for-loop variables in the env. For a Vec or array iter, the single
+// binding takes the element type. For Map iter (with binding2 set), the
+// first is the key, the second is the value. For a range iter, the binding
+// is i64.
+let bind_for_loop(env: *Env, b1: string, b2: string, it_ty: Ty) = {
+    if strings.eq_raw(b2, "") {
+        match it_ty {
+        | TyRecord(name, args) -> {
+            if strings.eq_raw(name, "Vec") && len(args) >= 1 {
+                env_define(env, b1, args[0])
+                return
+            }
+        }
+        | TyPtr(inner) -> {
+            env_define(env, b1, inner)
+            return
+        }
+        | _ -> { }
+        }
+        env_define(env, b1, ty.ty_int_(64, true))
+    } else {
+        match it_ty {
+        | TyRecord(_, args) -> {
+            if len(args) == 2 {
+                env_define(env, b1, args[0])
+                env_define(env, b2, args[1])
+                return
+            }
+        }
+        | _ -> { }
+        }
+        env_define(env, b1, ty.ty_int_(64, true))
+        env_define(env, b2, ty.ty_int_(64, true))
+    }
+}
+
 let env_truncate(env: *Env, n: i64) = {
     env.bindings.len = n
 }
@@ -713,7 +756,15 @@ let infer_calls_expr(tc: *TyContext, env: *Env, e: Expr, expected: Ty): Expr = {
         EMatch(sp, new_scrut, na)
     }
     | EWhile(sp, c, b) -> EWhile(sp, infer_calls_expr(tc, env, c, ty.ty_error_()), infer_calls_expr(tc, env, b, ty.ty_error_()))
-    | EFor(sp, b1, b2, it, body) -> EFor(sp, b1, b2, infer_calls_expr(tc, env, it, ty.ty_error_()), infer_calls_expr(tc, env, body, ty.ty_error_()))
+    | EFor(sp, b1, b2, it, body) -> {
+        let new_it = infer_calls_expr(tc, env, it, ty.ty_error_())
+        let it_ty = synth(tc, env, it)
+        let saved_len = len(env.bindings)
+        bind_for_loop(env, b1, b2, it_ty)
+        let new_body = infer_calls_expr(tc, env, body, ty.ty_error_())
+        env_truncate(env, saved_len)
+        EFor(sp, b1, b2, new_it, new_body)
+    }
     | EReturn(sp, v)          -> EReturn(sp, infer_calls_expr(tc, env, v, expected))
     | EDefer(sp, v)           -> EDefer(sp, infer_calls_expr(tc, env, v, ty.ty_error_()))
     | ESizeOf(_, _)           -> e

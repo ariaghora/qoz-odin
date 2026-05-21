@@ -1,0 +1,13 @@
+// expect: 120
+//
+// Iterative factorial using a while loop and a mutable accumulator.
+
+let main(): i64 = {
+    var n: i64 = 5
+    var acc: i64 = 1
+    while n > 1 {
+        acc = acc * n
+        n = n - 1
+    }
+    acc
+}

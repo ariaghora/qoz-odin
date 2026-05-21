@@ -1,0 +1,11 @@
+// expect: 45
+//
+// For loop over a numeric range. Stage B emits a C for over an int counter.
+
+let main(): i64 = {
+    var sum: i64 = 0
+    for i in 0..<10 {
+        sum = sum + i
+    }
+    sum
+}
