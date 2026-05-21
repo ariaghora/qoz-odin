@@ -169,6 +169,18 @@ let env_lookup(env: *Env, name: string): Ty = {
     ty.ty_error_()
 }
 
+let env_has(env: *Env, name: string): bool = {
+    var i: i64 = len(env.bindings) - 1
+    while i >= 0 {
+        let b = env.bindings[i]
+        if strings.eq_raw(b.name, name) {
+            return true
+        }
+        i = i - 1
+    }
+    false
+}
+
 // --- Expression synthesis ---
 
 let synth(tc: *TyContext, env: *Env, e: Expr): Ty = {
@@ -342,9 +354,30 @@ let synth_call_full(tc: *TyContext, env: *Env, sp: Span, callee: Expr, type_args
     | None -> {
         match map.get(&tc.externs, fn_name) {
         | Some(d) -> synth_call_with_decl(tc, sp, d, type_args, arg_tys)
-        | None    -> ty.ty_error_()
+        | None    -> synth_variant_ctor(tc, fn_name)
         }
     }
+    }
+}
+
+let synth_variant_ctor(tc: *TyContext, name: string): Ty = {
+    match map.get(&tc.variant_of, name) {
+    | Some(enum_name) -> {
+        match map.get(&tc.enums, enum_name) {
+        | Some(d) -> {
+            match d {
+            | DEnum(_, _, tparams, _) -> {
+                var args: Vec<Ty> = vec.make()
+                for p in tparams { vec.push(&args, ty.ty_var_(p)) }
+                ty.ty_adt_(enum_name, args)
+            }
+            | _ -> ty.ty_error_()
+            }
+        }
+        | None -> ty.ty_error_()
+        }
+    }
+    | None -> ty.ty_error_()
     }
 }
 
@@ -500,9 +533,8 @@ let is_ty_error(t: Ty): bool =
     }
 
 let synth_ident(tc: *TyContext, env: *Env, span: Span, name: string): Ty = {
-    let local = env_lookup(env, name)
-    if !is_ty_error(local) {
-        return local
+    if env_has(env, name) {
+        return env_lookup(env, name)
     }
     if map.contains(&tc.fns, name) {
         return ty.ty_error_()
@@ -511,9 +543,7 @@ let synth_ident(tc: *TyContext, env: *Env, span: Span, name: string): Ty = {
         return ty.ty_error_()
     }
     match map.get(&tc.variant_of, name) {
-    | Some(enum_name) -> {
-        return ty.ty_adt_(enum_name, vec.make())
-    }
+    | Some(enum_name) -> return synth_variant_ctor(tc, name)
     | None -> { }
     }
     record_error(tc, span, fmt.format("undefined name `{}`", name))
@@ -861,7 +891,30 @@ let collect_arg_hints(tc: *TyContext, callee: Expr, n: i64, out: *Vec<Ty>) = {
         | None    -> { }
         }
     }
-    // Variant ctor argument hints are handled at emit time instead.
+    // Variant ctor hints are added only when the enum has no tparams.
+    // A generic-enum hint would carry TyVar; threading those through
+    // the inference pipeline has destabilised the conservative GC.
+    match callee {
+    | EIdent(_, vname) -> {
+        match map.get(&tc.variant_of, vname) {
+        | Some(enum_name) -> {
+            match map.get(&tc.enums, enum_name) {
+            | Some(d) -> {
+                match d {
+                | DEnum(_, _, tparams, _) -> {
+                    if len(tparams) == 0 { fill_variant_pos_hints(tc, d, vname, out) }
+                }
+                | _ -> { }
+                }
+            }
+            | None    -> { }
+            }
+        }
+        | None -> { }
+        }
+    }
+    | _ -> { }
+    }
 }
 
 

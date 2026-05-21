@@ -676,7 +676,12 @@ let parse_block(p: *Parser): Expr = {
     var stmts: Vec<Stmt> = vec.make()
     var tail: Expr = ENil(span)
     var have_tail = false
-    while !is_punct(peek(p), "}") && !at_eof(p) {
+    var done = false
+    while !done && !is_punct(peek(p), "}") && !at_eof(p) {
+        while is_punct(peek(p), ";") { advance(p) }
+        if is_punct(peek(p), "}") {
+            done = true
+        } else {
         let t = peek(p)
         let stmt_span = span_of(p, t)
         if is_kw(t, "let") {
@@ -709,6 +714,7 @@ let parse_block(p: *Parser): Expr = {
             } else {
                 vec.push(&stmts, SExpr(stmt_span, e))
             }
+        }
         }
     }
     expect_punct(p, "}")
