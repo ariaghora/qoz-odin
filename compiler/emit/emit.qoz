@@ -316,10 +316,19 @@ let is_main(name: string): bool = strings.eq_raw(name, "main")
 let emit_program(f: File): string = {
     var e = make_emitter()
     push(&e, "#include \"qoz_runtime.h\"\n\n")
-    // Record forward declarations.
+    // Forward declarations: records and enums.
     for d in f.decls {
         match d {
         | DStruct(_, name, params, _) -> {
+            if len(params) == 0 {
+                push(&e, "typedef struct qoz_")
+                push(&e, name)
+                push(&e, " qoz_")
+                push(&e, name)
+                push(&e, ";\n")
+            }
+        }
+        | DEnum(_, name, params, _) -> {
             if len(params) == 0 {
                 push(&e, "typedef struct qoz_")
                 push(&e, name)
@@ -338,6 +347,30 @@ let emit_program(f: File): string = {
         | DStruct(_, name, params, fields) -> {
             if len(params) == 0 {
                 emit_struct(&e, name, fields)
+            }
+        }
+        | _ -> { }
+        }
+    }
+    // Enum definitions.
+    for d in f.decls {
+        match d {
+        | DEnum(_, name, params, variants) -> {
+            if len(params) == 0 {
+                emit_enum(&e, name, variants)
+            }
+        }
+        | _ -> { }
+        }
+    }
+    // Variant constructors.
+    for d in f.decls {
+        match d {
+        | DEnum(_, name, params, variants) -> {
+            if len(params) == 0 {
+                for v in variants {
+                    emit_variant_ctor(&e, name, v)
+                }
             }
         }
         | _ -> { }
@@ -372,6 +405,109 @@ let emit_program(f: File): string = {
         }
     }
     render(&e)
+}
+
+let emit_enum(e: *Emitter, name: string, variants: Vec<VariantDecl>) = {
+    push(e, "typedef enum {\n")
+    var i: i64 = 0
+    for v in variants {
+        push(e, "    qoz_")
+        push(e, name)
+        push(e, "_")
+        push(e, v.name)
+        push(e, ",\n")
+        i = i + 1
+    }
+    push(e, "} qoz_")
+    push(e, name)
+    push(e, "_tag;\n\n")
+    for v in variants {
+        if variant_has_positional(v) {
+            push(e, "typedef struct {\n")
+            var k: i64 = 0
+            for pt in v.pos {
+                push(e, "    ")
+                push(e, c_type_for(pt))
+                push(e, " f")
+                push(e, int_to_string(k))
+                push(e, ";\n")
+                k = k + 1
+            }
+            push(e, "} qoz_")
+            push(e, name)
+            push(e, "_")
+            push(e, v.name)
+            push(e, "_payload;\n\n")
+        }
+    }
+    push(e, "struct qoz_")
+    push(e, name)
+    push(e, " {\n")
+    push(e, "    qoz_")
+    push(e, name)
+    push(e, "_tag tag;\n")
+    push(e, "    union {\n")
+    for v in variants {
+        if variant_has_positional(v) {
+            push(e, "        qoz_")
+            push(e, name)
+            push(e, "_")
+            push(e, v.name)
+            push(e, "_payload ")
+            push(e, v.name)
+            push(e, ";\n")
+        }
+    }
+    push(e, "    } payload;\n")
+    push(e, "};\n\n")
+}
+
+let variant_has_positional(v: VariantDecl): bool = len(v.pos) > 0
+
+let int_to_string(n: i64): string = fmt.format("{}", n)
+
+let emit_variant_ctor(e: *Emitter, enum_name: string, v: VariantDecl) = {
+    push(e, "static qoz_")
+    push(e, enum_name)
+    push(e, " *qoz_make_")
+    push(e, enum_name)
+    push(e, "_")
+    push(e, v.name)
+    push(e, "(")
+    var k: i64 = 0
+    for pt in v.pos {
+        if k > 0 { push(e, ", ") }
+        push(e, c_type_for(pt))
+        push(e, " f")
+        push(e, int_to_string(k))
+        k = k + 1
+    }
+    push(e, ") {\n")
+    push(e, "    qoz_")
+    push(e, enum_name)
+    push(e, " *p = qoz_alloc(sizeof(qoz_")
+    push(e, enum_name)
+    push(e, "));\n")
+    push(e, "    p->tag = qoz_")
+    push(e, enum_name)
+    push(e, "_")
+    push(e, v.name)
+    push(e, ";\n")
+    if variant_has_positional(v) {
+        var j: i64 = 0
+        for _ in v.pos {
+            push(e, "    p->payload.")
+            push(e, v.name)
+            push(e, ".f")
+            push(e, int_to_string(j))
+            push(e, " = f")
+            push(e, int_to_string(j))
+            push(e, ";\n")
+            j = j + 1
+        }
+    }
+    push(e, "    return p;\n")
+    push(e, "}\n\n")
 }
 
 let emit_struct(e: *Emitter, name: string, fields: Vec<StructField>) = {

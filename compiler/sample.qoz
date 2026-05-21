@@ -1,10 +1,10 @@
 import std/fmt
 
-type Point = { x: i64, y: i64 }
-
-let add_x(a: i64, b: i64): i64 = a + b
+type Shape =
+    | Circle(i64)
+    | Square(i64)
+    | Origin
 
 let main() = {
-    let total = add_x(3, 4)
-    fmt.println("total", total)
+    fmt.println("ok")
 }
