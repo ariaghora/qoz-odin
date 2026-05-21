@@ -195,7 +195,7 @@ let synth(tc: *TyContext, env: *Env, e: Expr): Ty = {
     | EIf(_, c, t, f)        -> synth_if(tc, env, c, t, f)
     | EMatch(_, scrut, arms) -> synth_match(tc, env, scrut, arms)
     | EWhile(_, c, b)        -> { let _ = synth(tc, env, c); let _ = synth(tc, env, b); ty.ty_unit_() }
-    | EFor(_, _, it, b)      -> { let _ = synth(tc, env, it); let _ = synth(tc, env, b); ty.ty_unit_() }
+    | EFor(_, _, _, it, b)   -> { let _ = synth(tc, env, it); let _ = synth(tc, env, b); ty.ty_unit_() }
     | EReturn(_, v)          -> { let _ = synth(tc, env, v); ty.ty_unit_() }
     | EDefer(_, b)           -> { let _ = synth(tc, env, b); ty.ty_unit_() }
     | ESizeOf(_, _)          -> ty.ty_int_(64, true)

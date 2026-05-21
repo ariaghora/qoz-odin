@@ -286,6 +286,16 @@ let parse_unary(p: *Parser): Expr = {
         let rhs = parse_unary(p)
         return EUnary(span, UOpNot, rhs)
     }
+    if is_punct(tok, "&") {
+        advance(p)
+        let rhs = parse_unary(p)
+        return EUnary(span, UOpAddr, rhs)
+    }
+    if is_punct(tok, "*") {
+        advance(p)
+        let rhs = parse_unary(p)
+        return EUnary(span, UOpDeref, rhs)
+    }
     parse_postfix(p)
 }
 
@@ -472,6 +482,11 @@ let parse_for(p: *Parser): Expr = {
     let span = span_of(p, kw_tok)
     advance(p)
     let binding = expect_ident(p)
+    var binding2 = ""
+    if is_punct(peek(p), ",") {
+        advance(p)
+        binding2 = expect_ident(p)
+    }
     if !is_kw(peek(p), "in") {
         err_unexpected(p, "`in`", peek(p))
     } else {
@@ -479,7 +494,7 @@ let parse_for(p: *Parser): Expr = {
     }
     let iter = parse_expr(p)
     let body = parse_block(p)
-    EFor(span, binding, iter, body)
+    EFor(span, binding, binding2, iter, body)
 }
 
 let parse_match(p: *Parser): Expr = {

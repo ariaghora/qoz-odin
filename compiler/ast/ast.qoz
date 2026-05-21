@@ -100,7 +100,7 @@ type Expr =
     | EIf(Span, Expr, Expr, Expr)
     | EMatch(Span, Expr, Vec<MatchArm>)
     | EWhile(Span, Expr, Expr)
-    | EFor(Span, string, Expr, Expr)
+    | EFor(Span, string, string, Expr, Expr)
     | EReturn(Span, Expr)
     | EDefer(Span, Expr)
     | ESizeOf(Span, TypeExpr)

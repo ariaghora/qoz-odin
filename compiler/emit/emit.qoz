@@ -170,7 +170,7 @@ let emit_expr(e: *Emitter, ex: Expr) = {
     | EIf(_, c, t, f)              -> { push(e, "("); emit_expr(e, c); push(e, " ? "); emit_expr(e, t); push(e, " : "); emit_expr(e, f); push(e, ")") }
     | EMatch(span, scrut, arms)    -> emit_match_as_expr(e, span, scrut, arms)
     | EWhile(_, _, _)              -> push(e, "0")
-    | EFor(_, _, _, _)             -> push(e, "0")
+    | EFor(_, _, _, _, _)          -> push(e, "0")
     | EDefer(_, _)                 -> push(e, "0")
     | ESizeOf(_, te)               -> { push(e, "(int64_t)sizeof("); push(e, c_type_for(e, te)); push(e, ")") }
     | EArrayLit(_, _)              -> push(e, "0")
@@ -255,8 +255,8 @@ let emit_stmt_expr(e: *Emitter, expr: Expr) = {
         push(e, ") ")
         emit_branch_as_statement(e, body)
     }
-    | EFor(_, binding, iter, body) -> {
-        emit_for_loop(e, binding, iter, body)
+    | EFor(_, binding, binding2, iter, body) -> {
+        emit_for_loop_one(e, binding, binding2, iter, body)
     }
     | EReturn(_, value) -> {
         if is_nil_expr(value) {
@@ -740,7 +740,8 @@ let emit_record_lit(e: *Emitter, te: TypeExpr, fields: Vec<RecordFieldLit>) = {
     push(e, " })")
 }
 
-let emit_for_loop(e: *Emitter, binding: string, iter: Expr, body: Expr) = {
+let emit_for_loop_one(e: *Emitter, binding: string, binding2: string, iter: Expr, body: Expr) = {
+    // Range: lo..<hi or lo..=hi -> classic C for loop with int counter.
     match iter {
     | EBinary(_, op, lo, hi) -> {
         if is_range_op(op) {
@@ -763,7 +764,58 @@ let emit_for_loop(e: *Emitter, binding: string, iter: Expr, body: Expr) = {
     }
     | _ -> { }
     }
-    push(e, "/* unsupported for iter */;")
+    // Vec / Map iter: emit a slot walk. Without full type inference, default
+    // to Vec semantics (data[i] / len). If iterating a Map the user must use
+    // `for k, v in m`; we treat binding2 != "" as the Map shape.
+    if strings.eq_raw(binding2, "") {
+        emit_vec_for(e, binding, iter, body)
+    } else {
+        emit_map_for(e, binding, binding2, iter, body)
+    }
+}
+
+let emit_vec_for(e: *Emitter, binding: string, iter: Expr, body: Expr) = {
+    push(e, "{ __auto_type __col = ")
+    emit_expr(e, iter)
+    push(e, "; for (int64_t __i = 0; __i < __col.len; __i++) { __auto_type ")
+    push(e, binding)
+    push(e, " = __col.data[__i]; (void)")
+    push(e, binding)
+    push(e, "; ")
+    emit_branch_body_inline(e, body)
+    push(e, "} }")
+}
+
+let emit_map_for(e: *Emitter, binding: string, binding2: string, iter: Expr, body: Expr) = {
+    push(e, "{ __auto_type __col = ")
+    emit_expr(e, iter)
+    push(e, "; for (int64_t __i = 0; __i < __col.cap; __i++) { if (!__col.slots[__i].occupied || __col.slots[__i].deleted) continue; __auto_type ")
+    push(e, binding)
+    push(e, " = __col.slots[__i].key; __auto_type ")
+    push(e, binding2)
+    push(e, " = __col.slots[__i].value; (void)")
+    push(e, binding)
+    push(e, "; (void)")
+    push(e, binding2)
+    push(e, "; ")
+    emit_branch_body_inline(e, body)
+    push(e, "} }")
+}
+
+let emit_branch_body_inline(e: *Emitter, body: Expr) = {
+    match body {
+    | EBlock(_, stmts, tail) -> {
+        for s in stmts {
+            emit_stmt(e, s)
+        }
+        if !is_nil_expr(tail) {
+            emit_stmt_expr(e, tail)
+        }
+    }
+    | _ -> {
+        emit_stmt_expr(e, body)
+    }
+    }
 }
 
 let scrutinee_enum(e: *Emitter, scrut: Expr): string = {

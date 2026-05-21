@@ -1,8 +1,15 @@
 import std/fmt
-
-type Point = { x: i64, y: i64 }
+import std/vec
 
 let main() = {
-    let p = Point { x: 3, y: 4 }
-    fmt.println("x:", p.x, "y:", p.y)
+    var nums: Vec<i64> = vec.make()
+    vec.push(&nums, 10)
+    vec.push(&nums, 20)
+    vec.push(&nums, 30)
+
+    var sum: i64 = 0
+    for n in nums {
+        sum = sum + n
+    }
+    fmt.println("sum:", sum)
 }
