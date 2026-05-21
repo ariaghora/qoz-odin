@@ -223,6 +223,8 @@ let walk_decl_for_types(e: *Emitter, d: Decl) = {
                 walk_typeexpr(e, fp.ty)
             }
             walk_typeexpr(e, ret)
+            e.locals = map.make()
+            for fp in fn_params { e.locals[fp.name] = fp.ty }
             walk_expr_for_types(e, body)
         }
     }
@@ -280,7 +282,11 @@ let walk_expr_for_types(e: *Emitter, ex: Expr) = {
     | ESizeOf(_, te) -> walk_typeexpr(e, te)
     | EBinary(_, _, l, r) -> { walk_expr_for_types(e, l); walk_expr_for_types(e, r) }
     | EUnary(_, _, rhs) -> walk_expr_for_types(e, rhs)
-    | EAssign(_, _, l, r) -> { walk_expr_for_types(e, l); walk_expr_for_types(e, r) }
+    | EAssign(_, _, l, r) -> {
+        walk_expr_for_types(e, l)
+        walk_expr_for_types(e, r)
+        walk_assign_for_map_helpers(e, l)
+    }
     | ECall(_, callee, type_args, args) -> {
         walk_expr_for_types(e, callee)
         for ta in type_args { walk_typeexpr(e, ta) }
@@ -603,8 +609,12 @@ let emit_expr(e: *Emitter, ex: Expr) = {
         emit_expr(e, rhs)
     }
     | EReturn(_, value) -> {
-        push(e, "return ")
-        emit_expr(e, value)
+        if is_nil_expr(value) {
+            push(e, "return")
+        } else {
+            push(e, "return ")
+            emit_expr(e, value)
+        }
     }
     | EBlock(_, stmts, tail) -> {
         push(e, "({ ")
@@ -735,6 +745,12 @@ let bare_enum_for_pat(e: *Emitter, pat: Pattern): string = {
     | PatVariant(_, path, _) -> {
         if len(path) == 0 { return "" }
         match map.get(&e.variant_of, path[len(path) - 1]) {
+        | Some(en) -> en
+        | None     -> ""
+        }
+    }
+    | PatBind(_, name) -> {
+        match map.get(&e.variant_of, name) {
         | Some(en) -> en
         | None     -> ""
         }
@@ -1147,6 +1163,12 @@ let call_return_te(e: *Emitter, callee: Expr, type_args: Vec<TypeExpr>, sp: Span
 let emit_stmt(e: *Emitter, s: Stmt) = {
     match s {
     | SLet(_, name, ty, value) -> {
+        if strings.eq_raw(name, "_") {
+            push(e, "(void)(")
+            emit_value_with_hint(e, value, ty)
+            push(e, "); ")
+            return
+        }
         push(e, infer_value_ctype(e, ty, value))
         push(e, " ")
         push(e, name)
@@ -1156,6 +1178,12 @@ let emit_stmt(e: *Emitter, s: Stmt) = {
         e.locals[name] = binding_te(e, ty, value)
     }
     | SVar(_, name, ty, value) -> {
+        if strings.eq_raw(name, "_") {
+            push(e, "(void)(")
+            emit_value_with_hint(e, value, ty)
+            push(e, "); ")
+            return
+        }
         push(e, infer_value_ctype(e, ty, value))
         push(e, " ")
         push(e, name)
@@ -1355,6 +1383,110 @@ let field_access_op(e: *Emitter, base: Expr): string = {
     }
 }
 
+// EAssign of m[k] = v with m of type Map<K,V> needs the map_set
+// instantiation discovered ahead of body emission. The walk happens at
+// discovery time without locals; derive the LHS type from the lvalue
+// shape by inspecting structurally.
+let walk_assign_for_map_helpers(e: *Emitter, lhs: Expr) = {
+    match lhs {
+    | EIndex(_, base, _) -> {
+        let bte = base_type_for_walk(e, base)
+        match bte {
+        | TENamed(_, path, args) -> {
+            if len(path) >= 1 && strings.eq_raw(path[len(path) - 1], "Map") && len(args) == 2 {
+                register_map_helper(e, "map_set", args)
+            }
+        }
+        | _ -> { }
+        }
+    }
+    | _ -> { }
+    }
+}
+
+// Best-effort TypeExpr for a base expression at discovery time, before
+// locals are populated. Looks at field types on a known struct via the
+// field name chain.
+let base_type_for_walk(e: *Emitter, ex: Expr): TypeExpr = {
+    match ex {
+    | EIdent(sp, name) -> {
+        match map.get(&e.locals, name) {
+        | Some(te) -> te
+        | None     -> TEUnit(sp)
+        }
+    }
+    | EField(sp, b, name) -> {
+        let bte = base_type_for_walk(e, b)
+        field_typeexpr_for_no_die(e, bte, name, sp)
+    }
+    | EUnary(sp, op, rhs) -> {
+        match op {
+        | UOpDeref -> {
+            let inner = base_type_for_walk(e, rhs)
+            match inner {
+            | TEPtr(_, t) -> t
+            | _           -> TEUnit(sp)
+            }
+        }
+        | UOpAddr -> TEPtr(sp, base_type_for_walk(e, rhs))
+        | _       -> TEUnit(sp)
+        }
+    }
+    | _ -> TEUnit(span_of_expr(ex))
+    }
+}
+
+// Variant of field_typeexpr_for that returns TEUnit instead of dying.
+// Used in the discovery walk where the result is a hint, not a guarantee.
+let field_typeexpr_for_no_die(e: *Emitter, base_te: TypeExpr, field: string, sp: Span): TypeExpr = {
+    let unwrapped = match base_te {
+        | TEPtr(_, inner) -> inner
+        | _               -> base_te
+    }
+    match unwrapped {
+    | TENamed(_, path, args) -> {
+        if len(path) < 1 { return TEUnit(sp) }
+        let lookup = type_lookup_key(e, path)
+        let decl_opt = match map.get(&e.generic_decls, lookup) {
+            | Some(d) -> Some(d)
+            | None    -> map.get(&e.struct_decls, lookup)
+        }
+        match decl_opt {
+        | Some(decl) -> {
+            match decl {
+            | DStruct(_, _, params, fields) -> {
+                for f in fields {
+                    if strings.eq_raw(f.name, field) {
+                        if len(args) == len(params) {
+                            return substitute_type(e, f.ty, params, args)
+                        }
+                        return f.ty
+                    }
+                }
+                TEUnit(sp)
+            }
+            | _ -> TEUnit(sp)
+            }
+        }
+        | None -> TEUnit(sp)
+        }
+    }
+    | _ -> TEUnit(sp)
+    }
+}
+
+let register_map_helper(e: *Emitter, name: string, args: Vec<TypeExpr>) = {
+    if !map.contains(&e.generic_fn_decls, name) { return }
+    let mangled = mangle_inst(e, name, args)
+    if map.contains(&e.fn_seen, mangled) { return }
+    map.set(&e.fn_seen, mangled, true)
+    vec.push(&e.fn_insts, Instantiation { name: name, args: args, mangled: mangled })
+    match map.get(&e.generic_fn_decls, name) {
+    | Some(d) -> walk_fn_body_with_subst(e, d, args)
+    | None    -> { }
+    }
+}
+
 // m[k] = v on a Map dispatches to qoz_map_set__<K>__<V>.
 let emit_assign(e: *Emitter, lhs: Expr, rhs: Expr) = {
     match lhs {
@@ -1363,6 +1495,7 @@ let emit_assign(e: *Emitter, lhs: Expr, rhs: Expr) = {
         match te {
         | TENamed(_, path, args) -> {
             if len(path) >= 1 && strings.eq_raw(path[len(path) - 1], "Map") && len(args) == 2 {
+                register_map_helper(e, "map_set", args)
                 push(e, "qoz_map_set__")
                 push(e, mangle_type(e, args[0]))
                 push(e, "__")
@@ -1814,6 +1947,17 @@ let emit_fn_body_block(e: *Emitter, body: Expr, ret_hint: TypeExpr) = {
             emit_expr(e, tail)
             push(e, ";\n    return;\n")
             return
+        }
+        // The tail itself may already be a return expression (common when
+        // the source has an explicit `return X` as the last expression).
+        // Avoid emitting `return return X;`.
+        match tail {
+        | EReturn(_, _) -> {
+            emit_expr(e, tail)
+            push(e, ";\n")
+            return
+        }
+        | _ -> { }
         }
         push(e, "return ")
         emit_value_with_hint(e, tail, ret_hint)
@@ -2569,25 +2713,18 @@ let scrutinee_enum(e: *Emitter, scrut: Expr): string = {
     }
 }
 
-let emit_match_as_expr(e: *Emitter, span: Span, scrut: Expr, arms: Vec<MatchArm>) = {
-    var bare_enum: string = ""
-    if len(arms) > 0 {
-        let first = arms[0]
-        match first.pat {
-        | PatVariant(_, path, _) -> {
-            if len(path) > 0 {
-                let vname = path[len(path) - 1]
-                match map.get(&e.variant_of, vname) {
-                | Some(en) -> bare_enum = en
-                | None     -> { }
-                }
-            }
-        }
-        | _ -> { }
-        }
+let find_enum_from_arms(e: *Emitter, arms: Vec<MatchArm>): string = {
+    for arm in arms {
+        let en = bare_enum_for_pat(e, arm.pat)
+        if !strings.eq_raw(en, "") { return en }
     }
+    ""
+}
+
+let emit_match_as_expr(e: *Emitter, span: Span, scrut: Expr, arms: Vec<MatchArm>) = {
+    let bare_enum: string = find_enum_from_arms(e, arms)
     if strings.eq_raw(bare_enum, "") {
-        push(e, "/* match: enum unknown */0")
+        emit_die(span, "match scrutinee's enum could not be determined from any arm pattern")
         return
     }
     let enum_name: string = enum_lookup_name(e, scrut, bare_enum)
