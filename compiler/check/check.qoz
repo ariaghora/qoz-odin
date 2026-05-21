@@ -1,0 +1,85 @@
+// compiler/check: Stage B type checker (scaffold).
+//
+// Phase one: register top-level declarations (enums, structs, fns, externs,
+// aliases) into a TyContext. The fuller bidirectional inference will be
+// layered on top in subsequent commits, following the shape of Stage A's
+// infer.odin but using `match` and `?` to keep the code tight.
+
+import std/fmt
+import std/vec
+import std/map
+import std/strings
+import compiler/ast
+import compiler/ty
+
+type TypeError = {
+    span:    Span,
+    message: string,
+}
+
+type TyContext = {
+    enums:    Map<string, Decl>,
+    structs:  Map<string, Decl>,
+    aliases:  Map<string, Decl>,
+    fns:      Map<string, Decl>,
+    externs:  Map<string, Decl>,
+    packages: Map<string, bool>,
+    errors:   Vec<TypeError>,
+}
+
+let make_ctx(): TyContext = TyContext {
+    enums:    map.make(),
+    structs:  map.make(),
+    aliases:  map.make(),
+    fns:      map.make(),
+    externs:  map.make(),
+    packages: map.make(),
+    errors:   vec.make(),
+}
+
+let record_error(tc: *TyContext, span: Span, msg: string) = {
+    vec.push(&tc.errors, TypeError { span: span, message: msg })
+}
+
+let register_decl(tc: *TyContext, d: Decl) = {
+    match d {
+    | DImport(_, path, alias)         -> {
+        var name = alias
+        if strings.eq_raw(name, "") {
+            if len(path) > 0 {
+                name = path[len(path) - 1]
+            }
+        }
+        tc.packages[name] = true
+    }
+    | DEnum(_, name, _, _)            -> { tc.enums[name] = d }
+    | DStruct(_, name, _, _)          -> { tc.structs[name] = d }
+    | DTypeAlias(_, name, _, _)       -> { tc.aliases[name] = d }
+    | DFn(_, name, _, _, _, _, _)     -> { tc.fns[name] = d }
+    | DExternal(_, name, _, _, _)     -> { tc.externs[name] = d }
+    | DConst(_, _, _, _)              -> { }
+    | DLink(_, _, _)                  -> { }
+    }
+}
+
+let register_file(tc: *TyContext, f: File) = {
+    for d in f.decls {
+        register_decl(tc, d)
+    }
+}
+
+let report(tc: *TyContext) = {
+    for e in tc.errors {
+        fmt.println(fmt.format("{}:{}:{}: {}", e.span.file, e.span.line, e.span.col, e.message))
+    }
+}
+
+let summary(tc: *TyContext) = {
+    fmt.println(fmt.format("enums:    {}", len(tc.enums)))
+    fmt.println(fmt.format("structs:  {}", len(tc.structs)))
+    fmt.println(fmt.format("aliases:  {}", len(tc.aliases)))
+    fmt.println(fmt.format("fns:      {}", len(tc.fns)))
+    fmt.println(fmt.format("externs:  {}", len(tc.externs)))
+    fmt.println(fmt.format("packages: {}", len(tc.packages)))
+    fmt.println(fmt.format("errors:   {}", len(tc.errors)))
+}

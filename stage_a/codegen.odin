@@ -2686,9 +2686,14 @@ cg_match_arm_statement :: proc(cg: ^Codegen, scrut: Expr, enum_name: string, arm
     saved_locals := make(map[string]string, context.temp_allocator)
     for k, val in cg.locals do saved_locals[k] = val
 
-    cg_emit_indent(cg)
-    cg_expr(cg, arm.body)
-    cg_emit(cg, ";\n")
+    if blk, is_blk := arm.body.(^Expr_Block); is_blk {
+        cg_block_body(cg, blk)
+        cg_emit(cg, "\n")
+    } else {
+        cg_emit_indent(cg)
+        cg_expr(cg, arm.body)
+        cg_emit(cg, ";\n")
+    }
     cg_emit_indent(cg); cg_emit(cg, "break;\n")
 
     clear(&cg.locals)

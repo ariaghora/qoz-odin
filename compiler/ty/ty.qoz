@@ -4,7 +4,7 @@ import std/vec
 
 type IntInfo = {
     width:   i64,
-    signed:  bool,
+    is_signed: bool,
     untyped: bool,
 }
 
@@ -29,9 +29,9 @@ type Ty =
     | TyFn(Vec<Ty>, Ty)
     | TyVar(i64, string)
 
-let ty_int_(width: i64, signed: bool): Ty = TyInt(IntInfo { width: width, signed: signed, untyped: false })
+let ty_int_(width: i64, is_signed: bool): Ty = TyInt(IntInfo { width: width, is_signed: is_signed, untyped: false })
 
-let ty_int_untyped(): Ty = TyInt(IntInfo { width: 0, signed: true, untyped: true })
+let ty_int_untyped(): Ty = TyInt(IntInfo { width: 0, is_signed: true, untyped: true })
 
 let ty_float_(width: i64): Ty = TyFloat(FloatInfo { width: width, untyped: false })
 

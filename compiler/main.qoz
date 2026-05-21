@@ -11,6 +11,7 @@ import std/vec
 import compiler/tokenize
 import compiler/ast
 import compiler/parse
+import compiler/check
 
 let decl_kind_name(d: Decl): string = {
     match d {
@@ -57,4 +58,8 @@ let main() = {
     for d in file.decls {
         fmt.println(fmt.format("  {}  {}", decl_kind_name(d), decl_name(d)))
     }
+    var tc = check.make_ctx()
+    check.register_file(&tc, file)
+    check.summary(&tc)
+    check.report(&tc)
 }
