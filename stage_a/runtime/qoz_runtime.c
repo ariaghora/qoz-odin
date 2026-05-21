@@ -24,6 +24,16 @@ qoz_string qoz_os_arg(int64_t i) {
 
 void qoz_os_exit(int64_t code) { exit((int)code); }
 
+qoz_string qoz_os_getenv(qoz_string name) {
+    char buf[1024];
+    if (name.len < 0 || (size_t)name.len >= sizeof(buf)) return (qoz_string){ NULL, 0 };
+    memcpy(buf, name.data, (size_t)name.len);
+    buf[name.len] = 0;
+    const char *v = getenv(buf);
+    if (!v) return (qoz_string){ NULL, 0 };
+    return (qoz_string){ v, (int64_t)strlen(v) };
+}
+
 static int qoz_copy_path_nul(qoz_string path, char *buf, size_t buflen) {
     if (path.len < 0 || (size_t)path.len >= buflen) return 0;
     memcpy(buf, path.data, (size_t)path.len);
@@ -44,6 +54,15 @@ qoz_string qoz_fs_read_file(qoz_string path) {
     size_t got = fread(data, 1, (size_t)n, f);
     fclose(f);
     return (qoz_string){ data, (int64_t)got };
+}
+
+bool qoz_fs_file_exists(qoz_string path) {
+    char buf[4096];
+    if (!qoz_copy_path_nul(path, buf, sizeof(buf))) return false;
+    FILE *f = fopen(buf, "rb");
+    if (!f) return false;
+    fclose(f);
+    return true;
 }
 
 bool qoz_fs_write_file(qoz_string path, qoz_string content) {

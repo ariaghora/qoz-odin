@@ -4,9 +4,10 @@ type Pair<A, B> = { fst: A, snd: B }
 let pair_fst<A, B>(p: Pair<A, B>): A = p.fst
 let pair_snd<A, B>(p: Pair<A, B>): B = p.snd
 let identity<T>(x: T): T = x
+let pick_first<T>(xs: *Vec<T>): T = xs.data[0]
 
 let main(): i64 = {
     let p: Pair<i64, i32> = Pair { fst: 7, snd: 3 }
     let q: Pair<i32, i64> = Pair { fst: 1, snd: 9 }
-    pair_fst<i64, i32>(p) + pair_snd<i32, i64>(q) + identity<i64>(2)
+    pair_fst(p) + pair_snd(q) + identity(2)
 }

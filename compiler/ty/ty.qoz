@@ -1,6 +1,8 @@
 // compiler/ty: Stage B type representation.
 
 import std/vec
+import std/strings
+import compiler/ast
 
 type IntInfo = {
     width:   i64,
@@ -50,3 +52,123 @@ let ty_ptr_(inner: Ty): Ty = TyPtr(inner)
 let ty_adt_(name: string, args: Vec<Ty>): Ty = TyAdt(name, args)
 let ty_record_(name: string, args: Vec<Ty>): Ty = TyRecord(name, args)
 let ty_fn_(params: Vec<Ty>, ret: Ty): Ty = TyFn(params, ret)
+
+let ty_var_(name: string): Ty = TyVar(0, name)
+
+let ty_eq(a: Ty, b: Ty): bool = {
+    match a {
+    | TyInt(ai) -> {
+        match b {
+        | TyInt(bi) -> ai.width == bi.width && ai.is_signed == bi.is_signed && ai.untyped == bi.untyped
+        | _         -> false
+        }
+    }
+    | TyFloat(af) -> {
+        match b {
+        | TyFloat(bf) -> af.width == bf.width && af.untyped == bf.untyped
+        | _           -> false
+        }
+    }
+    | TyBool    -> { match b { | TyBool -> true | _ -> false } }
+    | TyChar    -> { match b { | TyChar -> true | _ -> false } }
+    | TyString  -> { match b { | TyString -> true | _ -> false } }
+    | TyCstring -> { match b { | TyCstring -> true | _ -> false } }
+    | TyUnit    -> { match b { | TyUnit -> true | _ -> false } }
+    | TyNil     -> { match b { | TyNil -> true | _ -> false } }
+    | TyError   -> { match b { | TyError -> true | _ -> false } }
+    | TyPtr(ai) -> {
+        match b {
+        | TyPtr(bi) -> ty_eq(ai, bi)
+        | _         -> false
+        }
+    }
+    | TyAdt(an, aa) -> {
+        match b {
+        | TyAdt(bn, ba) -> strings.eq_raw(an, bn) && ty_args_eq(aa, ba)
+        | _             -> false
+        }
+    }
+    | TyRecord(an, aa) -> {
+        match b {
+        | TyRecord(bn, ba) -> strings.eq_raw(an, bn) && ty_args_eq(aa, ba)
+        | _                -> false
+        }
+    }
+    | TyFn(ap, ar) -> {
+        match b {
+        | TyFn(bp, br) -> ty_args_eq(ap, bp) && ty_eq(ar, br)
+        | _            -> false
+        }
+    }
+    | TyVar(_, an) -> {
+        match b {
+        | TyVar(_, bn) -> strings.eq_raw(an, bn)
+        | _            -> false
+        }
+    }
+    }
+}
+
+let ty_to_type_expr_at(t: Ty, sp: Span): TypeExpr = {
+    match t {
+    | TyInt(info) -> TENamed(sp, ints_to_path(info.width, info.is_signed), vec.make())
+    | TyFloat(info) -> {
+        var path: Vec<string> = vec.make()
+        if info.width == 32 { vec.push(&path, "f32") } else { vec.push(&path, "f64") }
+        TENamed(sp, path, vec.make())
+    }
+    | TyBool    -> single_path_te(sp, "bool")
+    | TyChar    -> single_path_te(sp, "char")
+    | TyString  -> single_path_te(sp, "string")
+    | TyCstring -> single_path_te(sp, "cstring")
+    | TyUnit    -> TEUnit(sp)
+    | TyNil     -> single_path_te(sp, "nil")
+    | TyError   -> single_path_te(sp, "?")
+    | TyPtr(inner) -> TEPtr(sp, ty_to_type_expr_at(inner, sp))
+    | TyAdt(name, args) -> named_with_args(sp, name, args)
+    | TyRecord(name, args) -> named_with_args(sp, name, args)
+    | TyFn(_, _) -> single_path_te(sp, "?fn")
+    | TyVar(_, name) -> single_path_te(sp, name)
+    }
+}
+
+let ints_to_path(width: i64, is_signed: bool): Vec<string> = {
+    var path: Vec<string> = vec.make()
+    if is_signed {
+        if width == 8  { vec.push(&path, "i8")  }
+        if width == 16 { vec.push(&path, "i16") }
+        if width == 32 { vec.push(&path, "i32") }
+        if width == 64 { vec.push(&path, "i64") }
+    } else {
+        if width == 8  { vec.push(&path, "u8")  }
+        if width == 16 { vec.push(&path, "u16") }
+        if width == 32 { vec.push(&path, "u32") }
+        if width == 64 { vec.push(&path, "u64") }
+    }
+    if len(path) == 0 { vec.push(&path, "i64") }
+    path
+}
+
+let single_path_te(sp: Span, name: string): TypeExpr = {
+    var path: Vec<string> = vec.make()
+    vec.push(&path, name)
+    TENamed(sp, path, vec.make())
+}
+
+let named_with_args(sp: Span, name: string, args: Vec<Ty>): TypeExpr = {
+    var path: Vec<string> = vec.make()
+    vec.push(&path, name)
+    var te_args: Vec<TypeExpr> = vec.make()
+    for a in args { vec.push(&te_args, ty_to_type_expr_at(a, sp)) }
+    TENamed(sp, path, te_args)
+}
+
+let ty_args_eq(a: Vec<Ty>, b: Vec<Ty>): bool = {
+    if len(a) != len(b) { return false }
+    var i: i64 = 0
+    while i < len(a) {
+        if !ty_eq(a[i], b[i]) { return false }
+        i = i + 1
+    }
+    true
+}

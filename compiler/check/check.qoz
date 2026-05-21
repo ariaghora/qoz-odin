@@ -109,9 +109,9 @@ let resolve_named(tc: *TyContext, span: Span, path: Vec<string>, args: Vec<TypeE
         record_error(tc, span, "qualified type paths are not yet resolved in Stage B")
         return ty.ty_error_()
     }
-    let name = path[0]
+    let name: string = path[0]
     if map.contains(&tc.type_params, name) {
-        return ty.ty_record_(name, vec.make())
+        return ty.ty_var_(name)
     }
     if strings.eq_raw(name, "i8")     { return ty.ty_int_(8,  true) }
     if strings.eq_raw(name, "i16")    { return ty.ty_int_(16, true) }
@@ -185,12 +185,12 @@ let synth(tc: *TyContext, env: *Env, e: Expr): Ty = {
     | ENil(_)                -> ty.ty_nil_()
     | EIdent(span, name)     -> synth_ident(tc, env, span, name)
     | EPath(_, _)            -> ty.ty_error_()
-    | EUnary(_, _, rhs)      -> synth(tc, env, rhs)
+    | EUnary(_, op, rhs)     -> synth_unary(tc, env, op, rhs)
     | EBinary(_, op, l, r)   -> synth_binary(tc, env, op, l, r)
     | EAssign(_, _, _, v)    -> { let _ = synth(tc, env, v); ty.ty_unit_() }
-    | ECall(_, _, _, args)   -> synth_call(tc, env, args)
-    | EField(_, base, _)     -> { let _ = synth(tc, env, base); ty.ty_error_() }
-    | EIndex(_, base, idx)   -> { let _ = synth(tc, env, base); let _ = synth(tc, env, idx); ty.ty_error_() }
+    | ECall(sp, callee, ta, args) -> synth_call_full(tc, env, sp, callee, ta, args)
+    | EField(sp, base, name) -> synth_field(tc, env, sp, base, name)
+    | EIndex(_, base, idx)   -> synth_index(tc, env, base, idx)
     | ECast(_, _, te)        -> resolve_type(tc, te)
     | ETry(_, v)             -> synth(tc, env, v)
     | ETuple(_, _)           -> ty.ty_error_()
@@ -206,6 +206,251 @@ let synth(tc: *TyContext, env: *Env, e: Expr): Ty = {
     | ESizeOf(_, _)          -> ty.ty_int_(64, true)
     | EArrayLit(_, elems)    -> { for el in elems { let _ = synth(tc, env, el) } ty.ty_error_() }
     }
+}
+
+let synth_unary(tc: *TyContext, env: *Env, op: UnaryOp, rhs: Expr): Ty = {
+    let t = synth(tc, env, rhs)
+    match op {
+    | UOpNeg   -> t
+    | UOpNot   -> ty.ty_bool_()
+    | UOpDeref -> {
+        match t {
+        | TyPtr(inner) -> inner
+        | _            -> ty.ty_error_()
+        }
+    }
+    | UOpAddr  -> ty.ty_ptr_(t)
+    }
+}
+
+let synth_field(tc: *TyContext, env: *Env, sp: Span, base: Expr, name: string): Ty = {
+    let bt = synth(tc, env, base)
+    field_type_of(tc, bt, name)
+}
+
+let field_type_of(tc: *TyContext, bt: Ty, name: string): Ty = {
+    match bt {
+    | TyPtr(inner) -> field_type_of(tc, inner, name)
+    | TyRecord(struct_name, tyargs) -> lookup_field(tc, struct_name, tyargs, name)
+    | _ -> ty.ty_error_()
+    }
+}
+
+let lookup_field(tc: *TyContext, struct_name: string, tyargs: Vec<Ty>, field: string): Ty = {
+    match map.get(&tc.structs, struct_name) {
+    | Some(d) -> {
+        match d {
+        | DStruct(_, _, params, fields) -> {
+            for f in fields {
+                if strings.eq_raw(f.name, field) {
+                    if len(params) == len(tyargs) {
+                        return resolve_type_with_subst(tc, f.ty, params, tyargs)
+                    }
+                    return resolve_type(tc, f.ty)
+                }
+            }
+            ty.ty_error_()
+        }
+        | _ -> ty.ty_error_()
+        }
+    }
+    | None -> ty.ty_error_()
+    }
+}
+
+let resolve_type_with_subst(tc: *TyContext, te: TypeExpr, params: Vec<string>, args: Vec<Ty>): Ty = {
+    set_type_params(tc, params)
+    let raw = resolve_type(tc, te)
+    clear_type_params(tc)
+    apply_subst(raw, params, args)
+}
+
+let apply_subst(t: Ty, params: Vec<string>, args: Vec<Ty>): Ty = {
+    match t {
+    | TyVar(_, name) -> {
+        var i: i64 = 0
+        for p in params {
+            if strings.eq_raw(p, name) { return args[i] }
+            i = i + 1
+        }
+        t
+    }
+    | TyPtr(inner) -> ty.ty_ptr_(apply_subst(inner, params, args))
+    | TyAdt(n, a)  -> {
+        var na: Vec<Ty> = vec.make()
+        for x in a { vec.push(&na, apply_subst(x, params, args)) }
+        ty.ty_adt_(n, na)
+    }
+    | TyRecord(n, a) -> {
+        var na: Vec<Ty> = vec.make()
+        for x in a { vec.push(&na, apply_subst(x, params, args)) }
+        ty.ty_record_(n, na)
+    }
+    | TyFn(p, r) -> {
+        var np: Vec<Ty> = vec.make()
+        for x in p { vec.push(&np, apply_subst(x, params, args)) }
+        ty.ty_fn_(np, apply_subst(r, params, args))
+    }
+    | _ -> t
+    }
+}
+
+let synth_index(tc: *TyContext, env: *Env, base: Expr, idx: Expr): Ty = {
+    let bt = synth(tc, env, base)
+    let _ = synth(tc, env, idx)
+    match bt {
+    | TyPtr(inner) -> inner
+    | TyRecord(name, args) -> {
+        if strings.eq_raw(name, "Vec") && len(args) >= 1 {
+            return args[0]
+        }
+        ty.ty_error_()
+    }
+    | _ -> ty.ty_error_()
+    }
+}
+
+let resolve_callee_fn(tc: *TyContext, callee: Expr): string = {
+    match callee {
+    | EIdent(_, name) -> name
+    | EField(_, base, method) -> {
+        match base {
+        | EIdent(_, pkg) -> {
+            if map.contains(&tc.packages, pkg) {
+                return strings.cat(strings.cat(pkg, "_"), method)
+            }
+            ""
+        }
+        | _ -> ""
+        }
+    }
+    | _ -> ""
+    }
+}
+
+let synth_call_full(tc: *TyContext, env: *Env, sp: Span, callee: Expr, type_args: Vec<TypeExpr>, args: Vec<Expr>): Ty = {
+    let fn_name: string = resolve_callee_fn(tc, callee)
+    var arg_tys: Vec<Ty> = vec.make()
+    for a in args { vec.push(&arg_tys, synth(tc, env, a)) }
+    if strings.eq_raw(fn_name, "") { return ty.ty_error_() }
+    match map.get(&tc.fns, fn_name) {
+    | Some(d) -> synth_call_with_decl(tc, sp, d, type_args, arg_tys)
+    | None -> {
+        match map.get(&tc.externs, fn_name) {
+        | Some(d) -> synth_call_with_decl(tc, sp, d, type_args, arg_tys)
+        | None    -> ty.ty_error_()
+        }
+    }
+    }
+}
+
+let synth_call_with_decl(tc: *TyContext, sp: Span, d: Decl, type_args: Vec<TypeExpr>, arg_tys: Vec<Ty>): Ty = {
+    match d {
+    | DFn(_, _, tparams, params, ret, _, _) -> {
+        if len(tparams) == 0 {
+            set_type_params(tc, tparams)
+            let r = resolve_type(tc, ret)
+            clear_type_params(tc)
+            return r
+        }
+        var tyarg_tys: Vec<Ty> = vec.make()
+        if len(type_args) == len(tparams) {
+            for ta in type_args { vec.push(&tyarg_tys, resolve_type(tc, ta)) }
+        } else {
+            set_type_params(tc, tparams)
+            var param_tys: Vec<Ty> = vec.make()
+            for pp in params { vec.push(&param_tys, resolve_type(tc, pp.ty)) }
+            clear_type_params(tc)
+            var subst_env: Map<string, Ty> = map.make()
+            var ok = true
+            var i: i64 = 0
+            while i < len(arg_tys) && i < len(param_tys) {
+                if !unify(param_tys[i], arg_tys[i], &subst_env) { ok = false }
+                i = i + 1
+            }
+            if !ok {
+                record_error(tc, sp, "could not infer generic type arguments at call site")
+            }
+            for tp in tparams {
+                match map.get(&subst_env, tp) {
+                | Some(t) -> vec.push(&tyarg_tys, t)
+                | None    -> {
+                    record_error(tc, sp, fmt.format("type parameter `{}` is not constrained by any argument; add an explicit annotation", tp))
+                    vec.push(&tyarg_tys, ty.ty_error_())
+                }
+                }
+            }
+        }
+        set_type_params(tc, tparams)
+        let raw_ret = resolve_type(tc, ret)
+        clear_type_params(tc)
+        apply_subst(raw_ret, tparams, tyarg_tys)
+    }
+    | DExternal(_, _, _, _, ret) -> resolve_type(tc, ret)
+    | _ -> ty.ty_error_()
+    }
+}
+
+let unify(pattern: Ty, concrete: Ty, env: *Map<string, Ty>): bool = {
+    match pattern {
+    | TyVar(_, name) -> {
+        match map.get(env, name) {
+        | Some(prior) -> ty.ty_eq(prior, concrete)
+        | None -> {
+            map.set(env, name, concrete)
+            true
+        }
+        }
+    }
+    | TyPtr(pi) -> {
+        match concrete {
+        | TyPtr(ci) -> unify(pi, ci, env)
+        | TyNil     -> true
+        | _         -> false
+        }
+    }
+    | TyAdt(pn, pa) -> {
+        match concrete {
+        | TyAdt(cn, ca) -> strings.eq_raw(pn, cn) && unify_args(pa, ca, env)
+        | _             -> false
+        }
+    }
+    | TyRecord(pn, pa) -> {
+        match concrete {
+        | TyRecord(cn, ca) -> strings.eq_raw(pn, cn) && unify_args(pa, ca, env)
+        | _                -> false
+        }
+    }
+    | TyInt(pi) -> {
+        match concrete {
+        | TyInt(ci) -> ci.untyped || (pi.width == ci.width && pi.is_signed == ci.is_signed)
+        | _         -> false
+        }
+    }
+    | TyFloat(pf) -> {
+        match concrete {
+        | TyFloat(cf) -> cf.untyped || pf.width == cf.width
+        | _           -> false
+        }
+    }
+    | TyFn(pp, pr) -> {
+        match concrete {
+        | TyFn(cp, cr) -> unify_args(pp, cp, env) && unify(pr, cr, env)
+        | _            -> false
+        }
+    }
+    | _ -> ty.ty_eq(pattern, concrete)
+    }
+}
+
+let unify_args(a: Vec<Ty>, b: Vec<Ty>, env: *Map<string, Ty>): bool = {
+    if len(a) != len(b) { return false }
+    var i: i64 = 0
+    while i < len(a) {
+        if !unify(a[i], b[i], env) { return false }
+        i = i + 1
+    }
+    true
 }
 
 let is_ty_error(t: Ty): bool =
@@ -257,12 +502,6 @@ let synth_binary(tc: *TyContext, env: *Env, op: BinaryOp, l: Expr, r: Expr): Ty 
     }
 }
 
-let synth_call(tc: *TyContext, env: *Env, args: Vec<Expr>): Ty = {
-    for a in args {
-        let _ = synth(tc, env, a)
-    }
-    ty.ty_error_()
-}
 
 let synth_block(tc: *TyContext, env: *Env, stmts: Vec<Stmt>, tail: Expr): Ty = {
     for s in stmts {
@@ -294,6 +533,161 @@ let synth_match(tc: *TyContext, env: *Env, scrut: Expr, arms: Vec<MatchArm>): Ty
         }
     }
     result
+}
+
+// Walks the AST, runs inference at each ECall site, and returns a new File
+// where every ECall whose callee is a generic function has its type-args
+// populated. Calls to non-generic functions and externs are left untouched.
+let infer_calls(tc: *TyContext, f: File): File = {
+    var new_decls: Vec<Decl> = vec.make()
+    for d in f.decls {
+        vec.push(&new_decls, infer_calls_decl(tc, d))
+    }
+    File { path: f.path, decls: new_decls }
+}
+
+let infer_calls_decl(tc: *TyContext, d: Decl): Decl = {
+    match d {
+    | DFn(sp, name, tparams, params, ret, body, attr) -> {
+        set_type_params(tc, tparams)
+        var env = env_make()
+        for pp in params {
+            env_define(&env, pp.name, resolve_type(tc, pp.ty))
+        }
+        let new_body = infer_calls_expr(tc, &env, body)
+        clear_type_params(tc)
+        DFn(sp, name, tparams, params, ret, new_body, attr)
+    }
+    | DConst(sp, name, t, val) -> {
+        var env = env_make()
+        let new_val = infer_calls_expr(tc, &env, val)
+        DConst(sp, name, t, new_val)
+    }
+    | _ -> d
+    }
+}
+
+let infer_calls_expr(tc: *TyContext, env: *Env, e: Expr): Expr = {
+    match e {
+    | EInt(_, _)              -> e
+    | EFloat(_, _)            -> e
+    | EString(_, _)           -> e
+    | EChar(_, _)             -> e
+    | EBool(_, _)             -> e
+    | ENil(_)                 -> e
+    | EIdent(_, _)            -> e
+    | EPath(_, _)             -> e
+    | EUnary(sp, op, rhs)     -> EUnary(sp, op, infer_calls_expr(tc, env, rhs))
+    | EBinary(sp, op, l, r)   -> EBinary(sp, op, infer_calls_expr(tc, env, l), infer_calls_expr(tc, env, r))
+    | EAssign(sp, op, l, r)   -> EAssign(sp, op, infer_calls_expr(tc, env, l), infer_calls_expr(tc, env, r))
+    | ECall(sp, callee, ta, args) -> rewrite_call(tc, env, sp, callee, ta, args)
+    | EField(sp, base, name)  -> EField(sp, infer_calls_expr(tc, env, base), name)
+    | EIndex(sp, base, idx)   -> EIndex(sp, infer_calls_expr(tc, env, base), infer_calls_expr(tc, env, idx))
+    | ECast(sp, value, t)     -> ECast(sp, infer_calls_expr(tc, env, value), t)
+    | ETry(sp, v)             -> ETry(sp, infer_calls_expr(tc, env, v))
+    | ETuple(sp, elems)       -> {
+        var ne: Vec<Expr> = vec.make()
+        for el in elems { vec.push(&ne, infer_calls_expr(tc, env, el)) }
+        ETuple(sp, ne)
+    }
+    | ERecord(sp, te, fields) -> {
+        var nf: Vec<RecordFieldLit> = vec.make()
+        for f in fields { vec.push(&nf, RecordFieldLit { name: f.name, value: infer_calls_expr(tc, env, f.value) }) }
+        ERecord(sp, te, nf)
+    }
+    | EClosure(sp, cps, ret, body) -> EClosure(sp, cps, ret, infer_calls_expr(tc, env, body))
+    | EBlock(sp, stmts, tail) -> {
+        var ns: Vec<Stmt> = vec.make()
+        for s in stmts { vec.push(&ns, infer_calls_stmt(tc, env, s)) }
+        EBlock(sp, ns, infer_calls_expr(tc, env, tail))
+    }
+    | EIf(sp, c, t, f) -> EIf(sp, infer_calls_expr(tc, env, c), infer_calls_expr(tc, env, t), infer_calls_expr(tc, env, f))
+    | EMatch(sp, scrut, arms) -> {
+        var na: Vec<MatchArm> = vec.make()
+        for a in arms { vec.push(&na, MatchArm { pat: a.pat, body: infer_calls_expr(tc, env, a.body) }) }
+        EMatch(sp, infer_calls_expr(tc, env, scrut), na)
+    }
+    | EWhile(sp, c, b) -> EWhile(sp, infer_calls_expr(tc, env, c), infer_calls_expr(tc, env, b))
+    | EFor(sp, b1, b2, it, body) -> EFor(sp, b1, b2, infer_calls_expr(tc, env, it), infer_calls_expr(tc, env, body))
+    | EReturn(sp, v)          -> EReturn(sp, infer_calls_expr(tc, env, v))
+    | EDefer(sp, v)           -> EDefer(sp, infer_calls_expr(tc, env, v))
+    | ESizeOf(_, _)           -> e
+    | EArrayLit(sp, elems)    -> {
+        var ne: Vec<Expr> = vec.make()
+        for el in elems { vec.push(&ne, infer_calls_expr(tc, env, el)) }
+        EArrayLit(sp, ne)
+    }
+    }
+}
+
+let infer_calls_stmt(tc: *TyContext, env: *Env, s: Stmt): Stmt = {
+    match s {
+    | SLet(sp, name, te, val) -> {
+        let new_val = infer_calls_expr(tc, env, val)
+        env_define(env, name, resolve_type(tc, te))
+        SLet(sp, name, te, new_val)
+    }
+    | SVar(sp, name, te, val) -> {
+        let new_val = infer_calls_expr(tc, env, val)
+        env_define(env, name, resolve_type(tc, te))
+        SVar(sp, name, te, new_val)
+    }
+    | SExpr(sp, x) -> SExpr(sp, infer_calls_expr(tc, env, x))
+    }
+}
+
+let rewrite_call(tc: *TyContext, env: *Env, sp: Span, callee: Expr, type_args: Vec<TypeExpr>, args: Vec<Expr>): Expr = {
+    let new_callee = infer_calls_expr(tc, env, callee)
+    var new_args: Vec<Expr> = vec.make()
+    for a in args { vec.push(&new_args, infer_calls_expr(tc, env, a)) }
+    if len(type_args) > 0 {
+        return ECall(sp, new_callee, type_args, new_args)
+    }
+    let fn_name: string = resolve_callee_fn(tc, callee)
+    if strings.eq_raw(fn_name, "") {
+        return ECall(sp, new_callee, type_args, new_args)
+    }
+    match map.get(&tc.fns, fn_name) {
+    | Some(d) -> {
+        match d {
+        | DFn(_, _, tparams, params, _, _, _) -> {
+            if len(tparams) == 0 {
+                return ECall(sp, new_callee, type_args, new_args)
+            }
+            var arg_tys: Vec<Ty> = vec.make()
+            for a in args { vec.push(&arg_tys, synth(tc, env, a)) }
+            set_type_params(tc, tparams)
+            var param_tys: Vec<Ty> = vec.make()
+            for pp in params { vec.push(&param_tys, resolve_type(tc, pp.ty)) }
+            clear_type_params(tc)
+            var subst_env: Map<string, Ty> = map.make()
+            var i: i64 = 0
+            var ok = true
+            while i < len(arg_tys) && i < len(param_tys) {
+                if !unify(param_tys[i], arg_tys[i], &subst_env) { ok = false }
+                i = i + 1
+            }
+            if !ok {
+                record_error(tc, sp, fmt.format("could not unify argument types with generic parameters of `{}`", fn_name))
+                return ECall(sp, new_callee, type_args, new_args)
+            }
+            var inferred: Vec<TypeExpr> = vec.make()
+            for tp in tparams {
+                match map.get(&subst_env, tp) {
+                | Some(t) -> vec.push(&inferred, ty.ty_to_type_expr_at(t, sp))
+                | None    -> {
+                    record_error(tc, sp, fmt.format("type parameter `{}` of `{}` is not constrained; add an explicit annotation", tp, fn_name))
+                    vec.push(&inferred, ty.ty_to_type_expr_at(ty.ty_error_(), sp))
+                }
+                }
+            }
+            ECall(sp, new_callee, inferred, new_args)
+        }
+        | _ -> ECall(sp, new_callee, type_args, new_args)
+        }
+    }
+    | None -> ECall(sp, new_callee, type_args, new_args)
+    }
 }
 
 let check_fn_bodies(tc: *TyContext, f: File) = {

@@ -8,3 +8,6 @@ external let read_file(path: string): string
 
 @link_name("qoz_fs_write_file")
 external let write_file(path: string, content: string): bool
+
+@link_name("qoz_fs_file_exists")
+external let file_exists(path: string): bool

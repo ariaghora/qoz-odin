@@ -24,7 +24,8 @@ type Emitter = {
     variant_of:        Map<string, string>,  // bare variant name -> enum name (unique only)
     is_enum:           Map<string, bool>,    // names that refer to declared ADTs
     generic_decls:     Map<string, Decl>,    // bare name -> declaration with type_params
-    generic_fn_decls:  Map<string, Decl>,    // bare name -> generic fn declaration
+    generic_fn_decls:  Map<string, Decl>,    // (possibly package-prefixed) name -> generic fn declaration
+    packages:          Map<string, bool>,    // known package names (from import resolution)
     record_insts:      Vec<Instantiation>,
     record_seen:       Map<string, bool>,    // mangled -> seen
     enum_insts:        Vec<Instantiation>,
@@ -39,6 +40,7 @@ let make_emitter(): Emitter = Emitter {
     is_enum:          map.make(),
     generic_decls:    map.make(),
     generic_fn_decls: map.make(),
+    packages:         map.make(),
     record_insts:     vec.make(),
     record_seen:      map.make(),
     enum_insts:       vec.make(),
@@ -72,19 +74,31 @@ let register_generics(e: *Emitter, file: File) = {
 
 let register_fn_instantiation(e: *Emitter, callee: Expr, type_args: Vec<TypeExpr>) = {
     if len(type_args) == 0 { return }
+    let name = generic_callee_name(e, callee)
+    if strings.eq_raw(name, "") { return }
+    if !map.contains(&e.generic_fn_decls, name) { return }
+    let mangled = mangle_inst(e, name, type_args)
+    if map.contains(&e.fn_seen, mangled) { return }
+    e.fn_seen[mangled] = true
+    vec.push(&e.fn_insts, Instantiation { name: name, args: type_args, mangled: mangled })
+    for ta in type_args { walk_typeexpr(e, ta) }
+}
+
+let generic_callee_name(e: *Emitter, callee: Expr): string = {
     match callee {
-    | EIdent(_, name) -> {
-        if !map.contains(&e.generic_fn_decls, name) { return }
-        let mangled = mangle_inst(e, name, type_args)
-        if map.contains(&e.fn_seen, mangled) { return }
-        e.fn_seen[mangled] = true
-        vec.push(&e.fn_insts, Instantiation { name: name, args: type_args, mangled: mangled })
-        // The substituted body and signature will refer to concrete types,
-        // any of which may be a generic record/enum we have not yet recorded.
-        // Walk them here so the worklist picks them up.
-        for ta in type_args { walk_typeexpr(e, ta) }
+    | EIdent(_, name) -> name
+    | EField(_, base, method) -> {
+        match base {
+        | EIdent(_, pkg) -> {
+            if map.contains(&e.packages, pkg) {
+                return strings.cat(strings.cat(pkg, "_"), method)
+            }
+            ""
+        }
+        | _ -> ""
+        }
     }
-    | _ -> { }
+    | _ -> ""
     }
 }
 
@@ -356,6 +370,81 @@ let substitute_type(e: *Emitter, t: TypeExpr, params: Vec<string>, args: Vec<Typ
     }
 }
 
+let substitute_expr(e: *Emitter, x: Expr, params: Vec<string>, args: Vec<TypeExpr>): Expr = {
+    match x {
+    | EInt(_, _)              -> x
+    | EFloat(_, _)            -> x
+    | EString(_, _)           -> x
+    | EChar(_, _)             -> x
+    | EBool(_, _)             -> x
+    | ENil(_)                 -> x
+    | EIdent(_, _)            -> x
+    | EPath(_, _)             -> x
+    | EUnary(sp, op, rhs)     -> EUnary(sp, op, substitute_expr(e, rhs, params, args))
+    | EBinary(sp, op, l, r)   -> EBinary(sp, op, substitute_expr(e, l, params, args), substitute_expr(e, r, params, args))
+    | EAssign(sp, op, l, r)   -> EAssign(sp, op, substitute_expr(e, l, params, args), substitute_expr(e, r, params, args))
+    | ECall(sp, callee, ta, ax) -> {
+        var new_ta: Vec<TypeExpr> = vec.make()
+        for t in ta { vec.push(&new_ta, substitute_type(e, t, params, args)) }
+        var new_args: Vec<Expr> = vec.make()
+        for a in ax { vec.push(&new_args, substitute_expr(e, a, params, args)) }
+        ECall(sp, substitute_expr(e, callee, params, args), new_ta, new_args)
+    }
+    | EField(sp, base, name)  -> EField(sp, substitute_expr(e, base, params, args), name)
+    | EIndex(sp, base, idx)   -> EIndex(sp, substitute_expr(e, base, params, args), substitute_expr(e, idx, params, args))
+    | ECast(sp, value, t)     -> ECast(sp, substitute_expr(e, value, params, args), substitute_type(e, t, params, args))
+    | ETry(sp, value)         -> ETry(sp, substitute_expr(e, value, params, args))
+    | ETuple(sp, elems)       -> {
+        var new_e: Vec<Expr> = vec.make()
+        for el in elems { vec.push(&new_e, substitute_expr(e, el, params, args)) }
+        ETuple(sp, new_e)
+    }
+    | ERecord(sp, te, fields) -> {
+        var new_fields: Vec<RecordFieldLit> = vec.make()
+        for f in fields {
+            vec.push(&new_fields, RecordFieldLit { name: f.name, value: substitute_expr(e, f.value, params, args) })
+        }
+        ERecord(sp, substitute_type(e, te, params, args), new_fields)
+    }
+    | EClosure(sp, cps, ret, body) -> {
+        var new_cps: Vec<ClosureParam> = vec.make()
+        for cp in cps {
+            vec.push(&new_cps, ClosureParam { name: cp.name, ty: substitute_type(e, cp.ty, params, args) })
+        }
+        EClosure(sp, new_cps, substitute_type(e, ret, params, args), substitute_expr(e, body, params, args))
+    }
+    | EBlock(sp, stmts, tail) -> {
+        var new_stmts: Vec<Stmt> = vec.make()
+        for s in stmts { vec.push(&new_stmts, substitute_stmt(e, s, params, args)) }
+        EBlock(sp, new_stmts, substitute_expr(e, tail, params, args))
+    }
+    | EIf(sp, c, t, f)        -> EIf(sp, substitute_expr(e, c, params, args), substitute_expr(e, t, params, args), substitute_expr(e, f, params, args))
+    | EMatch(sp, scrut, arms) -> {
+        var new_arms: Vec<MatchArm> = vec.make()
+        for a in arms { vec.push(&new_arms, MatchArm { pat: a.pat, body: substitute_expr(e, a.body, params, args) }) }
+        EMatch(sp, substitute_expr(e, scrut, params, args), new_arms)
+    }
+    | EWhile(sp, c, b)        -> EWhile(sp, substitute_expr(e, c, params, args), substitute_expr(e, b, params, args))
+    | EFor(sp, b1, b2, it, body) -> EFor(sp, b1, b2, substitute_expr(e, it, params, args), substitute_expr(e, body, params, args))
+    | EReturn(sp, v)          -> EReturn(sp, substitute_expr(e, v, params, args))
+    | EDefer(sp, v)           -> EDefer(sp, substitute_expr(e, v, params, args))
+    | ESizeOf(sp, t)          -> ESizeOf(sp, substitute_type(e, t, params, args))
+    | EArrayLit(sp, elems)    -> {
+        var new_e: Vec<Expr> = vec.make()
+        for el in elems { vec.push(&new_e, substitute_expr(e, el, params, args)) }
+        EArrayLit(sp, new_e)
+    }
+    }
+}
+
+let substitute_stmt(e: *Emitter, s: Stmt, params: Vec<string>, args: Vec<TypeExpr>): Stmt = {
+    match s {
+    | SLet(sp, name, te, val)  -> SLet(sp, name, substitute_type(e, te, params, args), substitute_expr(e, val, params, args))
+    | SVar(sp, name, te, val)  -> SVar(sp, name, substitute_type(e, te, params, args), substitute_expr(e, val, params, args))
+    | SExpr(sp, x)             -> SExpr(sp, substitute_expr(e, x, params, args))
+    }
+}
+
 let register_variants(e: *Emitter, file: File) = {
     for d in file.decls {
         match d {
@@ -363,6 +452,15 @@ let register_variants(e: *Emitter, file: File) = {
             e.is_enum[name] = true
             for v in variants {
                 e.variant_of[v.name] = name
+            }
+        }
+        | DImport(_, ipath, alias) -> {
+            var pkg = alias
+            if strings.eq_raw(pkg, "") && len(ipath) > 0 {
+                pkg = ipath[len(ipath) - 1]
+            }
+            if !strings.eq_raw(pkg, "") {
+                e.packages[pkg] = true
             }
         }
         | _ -> { }
@@ -630,9 +728,55 @@ let ident_is(ex: Expr, name: string): bool =
     | _            -> false
     }
 
+let qualified_call_name(e: *Emitter, callee: Expr): string = {
+    match callee {
+    | EField(_, base, method) -> {
+        match base {
+        | EIdent(_, pkg) -> {
+            if map.contains(&e.packages, pkg) {
+                return strings.cat(strings.cat(pkg, "_"), method)
+            }
+            ""
+        }
+        | _ -> ""
+        }
+    }
+    | _ -> ""
+    }
+}
+
 let emit_call(e: *Emitter, callee: Expr, type_args: Vec<TypeExpr>, args: Vec<Expr>) = {
     if path_is(callee, "fmt", "println") {
         emit_println(e, args)
+        return
+    }
+    // Resolve package-qualified call (`pkg.fn`) to its qualified C name. The
+    // multi-file loader prepended `pkg_` to every imported decl, so the
+    // qualified name is `pkg_method`.
+    let qualified = qualified_call_name(e, callee)
+    if !strings.eq_raw(qualified, "") {
+        if len(type_args) > 0 && map.contains(&e.generic_fn_decls, qualified) {
+            push(e, "qoz_")
+            push(e, mangle_inst(e, qualified, type_args))
+            push(e, "(")
+            var i: i64 = 0
+            for a in args {
+                if i > 0 { push(e, ", ") }
+                emit_expr(e, a)
+                i = i + 1
+            }
+            push(e, ")")
+            return
+        }
+        push(e, qualified)
+        push(e, "(")
+        var i: i64 = 0
+        for a in args {
+            if i > 0 { push(e, ", ") }
+            emit_expr(e, a)
+            i = i + 1
+        }
+        push(e, ")")
         return
     }
     match callee {
@@ -990,7 +1134,7 @@ let emit_program(f: File): string = {
         match d {
         | DFn(_, name, tparams, params, ret, body, _) -> {
             if is_main(name) {
-                emit_main(&e, body)
+                emit_main(&e, ret, body)
             } else if len(tparams) == 0 {
                 emit_fn(&e, name, params, ret, body)
             }
@@ -1012,7 +1156,8 @@ let emit_program(f: File): string = {
                     })
                 }
                 let subst_ret = substitute_type(&e, ret, tparams, inst.args)
-                emit_fn(&e, strings.cat("qoz_", inst.mangled), subst_params, subst_ret, body)
+                let subst_body = substitute_expr(&e, body, tparams, inst.args)
+                emit_fn(&e, strings.cat("qoz_", inst.mangled), subst_params, subst_ret, subst_body)
             }
             | _ -> { }
             }
@@ -1215,11 +1360,25 @@ let emit_record_lit_with_hint(e: *Emitter, te: TypeExpr, fields: Vec<RecordField
     push(e, " })")
 }
 
+// For a TENamed referring to a struct/enum, return the registry key under
+// which the decl is stored in generic_decls. For `Vec` this is just `Vec`;
+// for `vec.Vec` it is `vec_Vec` when the loader prefixed the decl, or
+// `Vec` as a fallback when struct decls are not yet package-renamed.
+let type_lookup_key(e: *Emitter, path: Vec<string>): string = {
+    if len(path) == 1 { return path[0] }
+    if len(path) == 2 {
+        let qualified = strings.cat(strings.cat(path[0], "_"), path[1])
+        if map.contains(&e.generic_decls, qualified) { return qualified }
+        return path[1]
+    }
+    path[len(path) - 1]
+}
+
 let field_type_hint(e: *Emitter, te: TypeExpr, field_name: string): TypeExpr = {
     match te {
     | TENamed(sp, path, args) -> {
-        if len(path) != 1 { return te }
-        let name = path[0]
+        if len(path) < 1 { return te }
+        let name: string = type_lookup_key(e, path)
         if !map.contains(&e.generic_decls, name) { return te }
         match map.get(&e.generic_decls, name) {
         | Some(decl) -> {
@@ -1477,7 +1636,8 @@ let emit_match_arm(e: *Emitter, enum_name: string, scrut_tmp: string, res_tmp: s
     }
 }
 
-let emit_main(e: *Emitter, body: Expr) = {
+let emit_main(e: *Emitter, ret: TypeExpr, body: Expr) = {
+    let kind = main_return_kind(ret)
     push(e, "int main(int argc, char **argv) {\n")
     push(e, "    qoz_set_argv(argc, argv);\n")
     push(e, "    int qoz_stack_anchor;\n")
@@ -1487,22 +1647,60 @@ let emit_main(e: *Emitter, body: Expr) = {
         for s in stmts {
             emit_stmt(e, s)
         }
-        if !is_nil_expr(tail) {
-            push(e, "int64_t qoz_main_result = ")
-            emit_expr(e, tail)
-            push(e, ";\n    qoz_shutdown();\n    return (int)qoz_main_result;\n}\n")
+        if is_nil_expr(tail) {
+            push(e, "\n    qoz_shutdown();\n    return 0;\n}\n")
             return
         }
-        push(e, "\n")
+        emit_main_tail(e, kind, tail)
+    }
+    | _ -> emit_main_tail(e, kind, body)
+    }
+}
+
+type MainRetKind =
+    | MainRetUnit
+    | MainRetInt(string)
+
+let main_return_kind(ret: TypeExpr): MainRetKind = {
+    match ret {
+    | TEUnit(_)                  -> MainRetUnit
+    | TENamed(sp, path, _) -> {
+        if len(path) != 1 {
+            fmt.println(fmt.format("{}:{}:{}: main return type must be a primitive integer or unit", sp.file, sp.line, sp.col))
+            return MainRetInt("int64_t")
+        }
+        let n = path[0]
+        if strings.eq_raw(n, "i8")   { return MainRetInt("int8_t") }
+        if strings.eq_raw(n, "i16")  { return MainRetInt("int16_t") }
+        if strings.eq_raw(n, "i32")  { return MainRetInt("int32_t") }
+        if strings.eq_raw(n, "i64")  { return MainRetInt("int64_t") }
+        if strings.eq_raw(n, "u8")   { return MainRetInt("uint8_t") }
+        if strings.eq_raw(n, "u16")  { return MainRetInt("uint16_t") }
+        if strings.eq_raw(n, "u32")  { return MainRetInt("uint32_t") }
+        if strings.eq_raw(n, "u64")  { return MainRetInt("uint64_t") }
+        if strings.eq_raw(n, "unit") { return MainRetUnit }
+        if strings.eq_raw(n, "void") { return MainRetUnit }
+        fmt.println(fmt.format("{}:{}:{}: main may return only integer types or unit, got `{}`", sp.file, sp.line, sp.col, n))
+        MainRetInt("int64_t")
     }
     | _ -> {
-        push(e, "int64_t qoz_main_result = ")
-        emit_expr(e, body)
+        fmt.println("main return type must be a primitive integer or unit")
+        MainRetInt("int64_t")
+    }
+    }
+}
+
+let emit_main_tail(e: *Emitter, kind: MainRetKind, tail: Expr) = {
+    match kind {
+    | MainRetUnit -> {
+        emit_expr(e, tail)
+        push(e, ";\n    qoz_shutdown();\n    return 0;\n}\n")
+    }
+    | MainRetInt(ctype) -> {
+        push(e, ctype)
+        push(e, " qoz_main_result = ")
+        emit_expr(e, tail)
         push(e, ";\n    qoz_shutdown();\n    return (int)qoz_main_result;\n}\n")
-        return
     }
     }
-    push(e, "    qoz_shutdown();\n")
-    push(e, "    return 0;\n")
-    push(e, "}\n")
 }

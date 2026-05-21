@@ -36,10 +36,12 @@ void       qoz_set_argv(int argc, char **argv);
 int64_t    qoz_os_argc(void);
 qoz_string qoz_os_arg(int64_t i);
 void       qoz_os_exit(int64_t code);
+qoz_string qoz_os_getenv(qoz_string name);
 
 /* File system */
 qoz_string qoz_fs_read_file(qoz_string path);
 bool       qoz_fs_write_file(qoz_string path, qoz_string content);
+bool       qoz_fs_file_exists(qoz_string path);
 
 /* Print primitives. The generated code emits a sequence of these per
  * `fmt.println(args...)` call: one print per argument, separators in between,

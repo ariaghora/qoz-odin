@@ -41,6 +41,93 @@ let decl_name(d: Decl): string = {
     }
 }
 
+type Pending = {
+    path: string,
+    pkg:  string,
+}
+
+let resolve_import_path(segs: Vec<string>, qoz_root: string): string = {
+    if len(segs) < 1 { return "" }
+    let last = segs[len(segs) - 1]
+    var joined = ""
+    var i: i64 = 0
+    while i < len(segs) {
+        if i > 0 { joined = strings.cat(joined, "/") }
+        joined = strings.cat(joined, segs[i])
+        i = i + 1
+    }
+    let rel = strings.cat(strings.cat(joined, "/"), strings.cat(last, ".qoz"))
+    if fs.file_exists(rel) { return rel }
+    if len(qoz_root) > 0 {
+        let abs = strings.cat(strings.cat(qoz_root, "/"), rel)
+        if fs.file_exists(abs) { return abs }
+    }
+    ""
+}
+
+let rename_with_pkg(d: Decl, pkg: string): Decl = {
+    if strings.eq_raw(pkg, "") { return d }
+    match d {
+    | DFn(sp, n, tp, fp, rt, body, attr)    -> DFn(sp, strings.cat(strings.cat(pkg, "_"), n), tp, fp, rt, body, attr)
+    | DExternal(sp, n, sym, fp, rt)         -> DExternal(sp, strings.cat(strings.cat(pkg, "_"), n), sym, fp, rt)
+    | _                                     -> d
+    }
+}
+
+type Loaded = {
+    file:    File,
+    sources: Vec<string>,
+}
+
+let load_all(entry: string, qoz_root: string): Loaded = {
+    var queue: Vec<Pending> = vec.make()
+    var visited: Map<string, bool> = map.make()
+    var aggregated_decls: Vec<Decl> = vec.make()
+    var sources: Vec<string> = vec.make()
+    vec.push(&queue, Pending { path: entry, pkg: "" })
+    var qi: i64 = 0
+    while qi < len(queue) {
+        let cur = queue[qi]
+        qi = qi + 1
+        if !map.contains(&visited, cur.path) {
+            visited[cur.path] = true
+            process_one(cur, &queue, &visited, &aggregated_decls, &sources, qoz_root)
+        }
+    }
+    Loaded { file: File { path: entry, decls: aggregated_decls }, sources: sources }
+}
+
+let process_one(cur: Pending, queue: *Vec<Pending>, visited: *Map<string, bool>, aggregated_decls: *Vec<Decl>, sources: *Vec<string>, qoz_root: string) = {
+    let src = fs.read_file(cur.path)
+    if len(src) < 0 {
+        fmt.println(fmt.format("could not read {}", cur.path))
+        os.exit(1)
+    }
+    vec.push(sources, src)
+    let tokens = tokenize.run(src)
+    let file = parse.run(tokens, cur.path)
+    for d in file.decls {
+        match d {
+        | DImport(_, ipath, alias) -> {
+            let resolved = resolve_import_path(ipath, qoz_root)
+            if strings.eq_raw(resolved, "") {
+                fmt.println(fmt.format("could not resolve import {}", ipath[len(ipath) - 1]))
+                os.exit(1)
+            }
+            var pkg = alias
+            if strings.eq_raw(pkg, "") {
+                pkg = ipath[len(ipath) - 1]
+            }
+            if !map.contains(visited, resolved) {
+                vec.push(queue, Pending { path: resolved, pkg: pkg })
+            }
+        }
+        | _ -> { }
+        }
+        vec.push(aggregated_decls, rename_with_pkg(d, cur.pkg))
+    }
+}
+
 let main() = {
     let args = os.args()
     if len(args) < 2 {
@@ -48,25 +135,21 @@ let main() = {
         os.exit(1)
     }
     let path = args[1]
-    let src = fs.read_file(path)
-    if len(src) < 0 {
-        fmt.println(fmt.format("could not read {}", path))
-        os.exit(1)
-    }
-    let tokens = tokenize.run(src)
-    fmt.println(fmt.format("{} tokens", len(tokens)))
-    let file = parse.run(tokens, path)
-    fmt.println(fmt.format("{} decls", len(file.decls)))
-    for d in file.decls {
-        fmt.println(fmt.format("  {}  {}", decl_kind_name(d), decl_name(d)))
-    }
+    let qoz_root = os.getenv("QOZ_ROOT")
+    let loaded = load_all(path, qoz_root)
+    let file = loaded.file
+    fmt.println(fmt.format("{} decls (after import resolution)", len(file.decls)))
     var tc = check.make_ctx()
     check.register_file(&tc, file)
     check.validate_signatures(&tc, file)
-    check.check_fn_bodies(&tc, file)
-    check.summary(&tc)
+    let inferred = check.infer_calls(&tc, file)
+    check.check_fn_bodies(&tc, inferred)
     check.report(&tc)
-    let c_source = emit.emit_program(file)
+    if len(tc.errors) > 0 {
+        os.exit(1)
+    }
+    let c_source = emit.emit_program(inferred)
+    let _keep_alive = loaded.sources
     let out_path = strings.cat(path, ".c")
     let ok = fs.write_file(out_path, c_source)
     if ok {

@@ -11,6 +11,9 @@ external let arg_raw(i: i64): string
 @link_name("qoz_os_exit")
 external let exit(code: i64)
 
+@link_name("qoz_os_getenv")
+external let getenv(name: string): string
+
 let args(): Vec<string> = {
     var v: Vec<string> = vec.make()
     let n = argc_raw()
