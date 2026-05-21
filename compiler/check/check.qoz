@@ -198,20 +198,8 @@ let synth(tc: *TyContext, env: *Env, e: Expr): Ty = {
 
 let is_ty_error(t: Ty): bool =
     match t {
-    | TyError             -> true
-    | TyInt(_)            -> false
-    | TyFloat(_)          -> false
-    | TyBool              -> false
-    | TyChar              -> false
-    | TyString            -> false
-    | TyCstring           -> false
-    | TyUnit              -> false
-    | TyNil               -> false
-    | TyPtr(_)            -> false
-    | TyAdt(_, _)         -> false
-    | TyRecord(_, _)      -> false
-    | TyFn(_, _)          -> false
-    | TyVar(_, _)         -> false
+    | TyError -> true
+    | _       -> false
     }
 
 let synth_ident(tc: *TyContext, env: *Env, span: Span, name: string): Ty = {

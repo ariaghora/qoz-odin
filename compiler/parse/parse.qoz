@@ -46,51 +46,31 @@ let advance(p: *Parser) = {
 let is_kw(t: Token, kw: string): bool =
     match t.kind {
     | TokKeyword -> strings.eq_raw(t.text, kw)
-    | TokIdent   -> false
-    | TokInt     -> false
-    | TokString  -> false
-    | TokPunct   -> false
-    | TokEOF     -> false
+    | _          -> false
     }
 
 let is_punct(t: Token, sym: string): bool =
     match t.kind {
-    | TokPunct   -> strings.eq_raw(t.text, sym)
-    | TokIdent   -> false
-    | TokInt     -> false
-    | TokString  -> false
-    | TokKeyword -> false
-    | TokEOF     -> false
+    | TokPunct -> strings.eq_raw(t.text, sym)
+    | _        -> false
     }
 
 let is_ident(t: Token): bool =
     match t.kind {
-    | TokIdent   -> true
-    | TokInt     -> false
-    | TokString  -> false
-    | TokPunct   -> false
-    | TokKeyword -> false
-    | TokEOF     -> false
+    | TokIdent -> true
+    | _        -> false
     }
 
 let is_int_lit(t: Token): bool =
     match t.kind {
-    | TokInt     -> true
-    | TokIdent   -> false
-    | TokString  -> false
-    | TokPunct   -> false
-    | TokKeyword -> false
-    | TokEOF     -> false
+    | TokInt -> true
+    | _      -> false
     }
 
 let is_str_lit(t: Token): bool =
     match t.kind {
-    | TokString  -> true
-    | TokIdent   -> false
-    | TokInt     -> false
-    | TokPunct   -> false
-    | TokKeyword -> false
-    | TokEOF     -> false
+    | TokString -> true
+    | _         -> false
     }
 
 let span_of(p: *Parser, t: Token): Span = ast.make_span(p.file, t.line, t.col)

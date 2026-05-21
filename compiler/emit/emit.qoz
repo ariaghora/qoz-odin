@@ -200,71 +200,17 @@ let unary_c_op(op: UnaryOp): string = {
     }
 }
 
-let is_block(ex: Expr): bool = {
+let is_block(ex: Expr): bool =
     match ex {
     | EBlock(_, _, _) -> true
-    | EInt(_, _) -> false
-    | EFloat(_, _) -> false
-    | EString(_, _) -> false
-    | EChar(_, _) -> false
-    | EBool(_, _) -> false
-    | ENil(_) -> false
-    | EIdent(_, _) -> false
-    | EPath(_, _) -> false
-    | EUnary(_, _, _) -> false
-    | EBinary(_, _, _, _) -> false
-    | EAssign(_, _, _, _) -> false
-    | ECall(_, _, _) -> false
-    | EField(_, _, _) -> false
-    | EIndex(_, _, _) -> false
-    | ECast(_, _, _) -> false
-    | ETry(_, _) -> false
-    | ETuple(_, _) -> false
-    | ERecord(_, _, _) -> false
-    | EClosure(_, _, _, _) -> false
-    | EIf(_, _, _, _) -> false
-    | EMatch(_, _, _) -> false
-    | EWhile(_, _, _) -> false
-    | EFor(_, _, _, _) -> false
-    | EReturn(_, _) -> false
-    | EDefer(_, _) -> false
-    | ESizeOf(_, _) -> false
-    | EArrayLit(_, _) -> false
+    | _               -> false
     }
-}
 
-let is_nil_expr(ex: Expr): bool = {
+let is_nil_expr(ex: Expr): bool =
     match ex {
     | ENil(_) -> true
-    | EInt(_, _) -> false
-    | EFloat(_, _) -> false
-    | EString(_, _) -> false
-    | EChar(_, _) -> false
-    | EBool(_, _) -> false
-    | EIdent(_, _) -> false
-    | EPath(_, _) -> false
-    | EUnary(_, _, _) -> false
-    | EBinary(_, _, _, _) -> false
-    | EAssign(_, _, _, _) -> false
-    | ECall(_, _, _) -> false
-    | EField(_, _, _) -> false
-    | EIndex(_, _, _) -> false
-    | ECast(_, _, _) -> false
-    | ETry(_, _) -> false
-    | ETuple(_, _) -> false
-    | ERecord(_, _, _) -> false
-    | EClosure(_, _, _, _) -> false
-    | EBlock(_, _, _) -> false
-    | EIf(_, _, _, _) -> false
-    | EMatch(_, _, _) -> false
-    | EWhile(_, _, _) -> false
-    | EFor(_, _, _, _) -> false
-    | EReturn(_, _) -> false
-    | EDefer(_, _) -> false
-    | ESizeOf(_, _) -> false
-    | EArrayLit(_, _) -> false
+    | _       -> false
     }
-}
 
 let emit_fn_body_block(e: *Emitter, body: Expr) = {
     match body {
@@ -280,33 +226,7 @@ let emit_fn_body_block(e: *Emitter, body: Expr) = {
             push(e, ";\n")
         }
     }
-    | EInt(_, _) -> { }
-    | EFloat(_, _) -> { }
-    | EString(_, _) -> { }
-    | EChar(_, _) -> { }
-    | EBool(_, _) -> { }
-    | ENil(_) -> { }
-    | EIdent(_, _) -> { }
-    | EPath(_, _) -> { }
-    | EUnary(_, _, _) -> { }
-    | EBinary(_, _, _, _) -> { }
-    | EAssign(_, _, _, _) -> { }
-    | ECall(_, _, _) -> { }
-    | EField(_, _, _) -> { }
-    | EIndex(_, _, _) -> { }
-    | ECast(_, _, _) -> { }
-    | ETry(_, _) -> { }
-    | ETuple(_, _) -> { }
-    | ERecord(_, _, _) -> { }
-    | EClosure(_, _, _, _) -> { }
-    | EIf(_, _, _, _) -> { }
-    | EMatch(_, _, _) -> { }
-    | EWhile(_, _, _) -> { }
-    | EFor(_, _, _, _) -> { }
-    | EReturn(_, _) -> { }
-    | EDefer(_, _) -> { }
-    | ESizeOf(_, _) -> { }
-    | EArrayLit(_, _) -> { }
+    | _ -> { }
     }
 }
 
