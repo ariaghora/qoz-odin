@@ -1,0 +1,18 @@
+// expect: 6
+//
+// Full std/vec integration: import vec, declare Vec<i64>, push three
+// values via the package-qualified generic function, read back through
+// index. Exercises EPath generic dispatch, transitive instantiation
+// discovery (push<i64> calling grow<i64> and grow<i64> calling
+// mem.realloc), auto-deref on parameter access, void return for unit
+// fns, return-type-driven inference for vec.make().
+
+import std/vec
+
+let main(): i64 = {
+    var v: Vec<i64> = vec.make()
+    vec.push(&v, 1)
+    vec.push(&v, 2)
+    vec.push(&v, 3)
+    v.data[0] + v.data[1] + v.data[2]
+}

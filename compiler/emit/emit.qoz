@@ -33,6 +33,7 @@ type Emitter = {
     fn_insts:          Vec<Instantiation>,
     fn_seen:           Map<string, bool>,
     locals:            Map<string, TypeExpr>, // variable name -> TypeExpr for current fn body
+    externs:           Map<string, string>,    // (possibly package-prefixed) name -> link symbol
 }
 
 let make_emitter(): Emitter = Emitter {
@@ -49,6 +50,7 @@ let make_emitter(): Emitter = Emitter {
     fn_insts:         vec.make(),
     fn_seen:          map.make(),
     locals:           map.make(),
+    externs:          map.make(),
 }
 
 let register_generics(e: *Emitter, file: File) = {
@@ -477,6 +479,9 @@ let register_variants(e: *Emitter, file: File) = {
                 e.variant_of[v.name] = name
             }
         }
+        | DExternal(_, name, symbol, _, _) -> {
+            e.externs[name] = symbol
+        }
         | DImport(_, ipath, alias) -> {
             var pkg = alias
             if strings.eq_raw(pkg, "") && len(ipath) > 0 {
@@ -580,13 +585,12 @@ let emit_expr(e: *Emitter, ex: Expr) = {
         push(e, ")")
     }
     | EBinary(_, op, lhs, rhs) -> {
-        push(e, "(")
-        emit_expr(e, lhs)
+        let p = binary_prec(op)
+        emit_with_prec(e, lhs, p)
         push(e, " ")
         push(e, binary_c_op(op))
         push(e, " ")
-        emit_expr(e, rhs)
-        push(e, ")")
+        emit_with_prec(e, rhs, p + 1)
     }
     | EUnary(_, op, rhs) -> {
         push(e, unary_c_op(op))
@@ -640,23 +644,228 @@ let infer_expr_ctype(e: *Emitter, ex: Expr): string = {
     | EBool(_, _)      -> "bool"
     | EChar(_, _)      -> "char"
     | EIdent(_, name)  -> {
-        match map.get(&e.variant_of, name) {
-        | Some(en) -> strings.cat(strings.cat("qoz_", en), "*")
-        | None     -> "int64_t"
-        }
-    }
-    | ECall(_, callee, _, _) -> {
-        match callee {
-        | EIdent(_, name) -> {
+        match map.get(&e.locals, name) {
+        | Some(te) -> c_type_for(e, te)
+        | None -> {
             match map.get(&e.variant_of, name) {
             | Some(en) -> strings.cat(strings.cat("qoz_", en), "*")
             | None     -> "int64_t"
             }
         }
+        }
+    }
+    | ECast(_, _, te)  -> c_type_for(e, te)
+    | ECall(_, callee, type_args, _) -> infer_call_ctype(e, callee, type_args)
+    | ERecord(_, te, _) -> c_type_for(e, te)
+    | EField(_, base, name) -> infer_field_ctype(e, base, name)
+    | EIndex(_, base, _) -> infer_index_ctype(e, base)
+    | EUnary(_, op, rhs) -> {
+        match op {
+        | UOpDeref -> {
+            let inner = infer_expr_ctype(e, rhs)
+            if strings.has_suffix(inner, "*") {
+                return strings.slice(inner, 0, len(inner) - 1)
+            }
+            "int64_t"
+        }
+        | UOpAddr -> strings.cat(infer_expr_ctype(e, rhs), "*")
+        | UOpNot  -> "bool"
+        | UOpNeg  -> infer_expr_ctype(e, rhs)
+        }
+    }
+    | ENil(_) -> "void*"
+    | EBinary(_, op, l, _) -> {
+        match op {
+        | BOpEq -> "bool"
+        | BOpNe -> "bool"
+        | BOpLt -> "bool"
+        | BOpGt -> "bool"
+        | BOpLe -> "bool"
+        | BOpGe -> "bool"
+        | BOpAnd -> "bool"
+        | BOpOr -> "bool"
+        | _ -> infer_expr_ctype(e, l)
+        }
+    }
+    | _ -> "int64_t"
+    }
+}
+
+let infer_call_ctype(e: *Emitter, callee: Expr, type_args: Vec<TypeExpr>): string = {
+    match callee {
+    | EIdent(_, name) -> {
+        match map.get(&e.variant_of, name) {
+        | Some(en) -> {
+            if len(type_args) > 0 {
+                return strings.cat(strings.cat("qoz_", mangle_inst(e, en, type_args)), "*")
+            }
+            strings.cat(strings.cat("qoz_", en), "*")
+        }
+        | None -> "int64_t"
+        }
+    }
+    | EField(_, base, method) -> {
+        match base {
+        | EIdent(_, pkg) -> {
+            if map.contains(&e.packages, pkg) {
+                let qualified = strings.cat(strings.cat(pkg, "_"), method)
+                return infer_fn_return_ctype(e, qualified, type_args)
+            }
+            "int64_t"
+        }
         | _ -> "int64_t"
         }
     }
-    | ERecord(_, te, _) -> c_type_for(e, te)
+    | _ -> "int64_t"
+    }
+}
+
+let infer_fn_return_ctype(e: *Emitter, fn_name: string, type_args: Vec<TypeExpr>): string = {
+    match map.get(&e.generic_fn_decls, fn_name) {
+    | Some(d) -> {
+        match d {
+        | DFn(_, _, tparams, _, ret, _, _) -> {
+            if len(type_args) == len(tparams) && len(tparams) > 0 {
+                return c_type_for(e, substitute_type(e, ret, tparams, type_args))
+            }
+            c_type_for(e, ret)
+        }
+        | _ -> "int64_t"
+        }
+    }
+    | None -> "int64_t"
+    }
+}
+
+let infer_field_ctype(e: *Emitter, base: Expr, name: string): string = {
+    let bte = infer_base_typeexpr(e, base)
+    field_ctype_for(e, bte, name)
+}
+
+let infer_base_typeexpr(e: *Emitter, base: Expr): TypeExpr = {
+    match base {
+    | EIdent(sp, ident) -> {
+        match map.get(&e.locals, ident) {
+        | Some(te) -> te
+        | None     -> TEUnit(sp)
+        }
+    }
+    | EField(sp, b, n) -> {
+        let bte = infer_base_typeexpr(e, b)
+        field_typeexpr_for(e, bte, n, sp)
+    }
+    | EUnary(sp, op, rhs) -> {
+        match op {
+        | UOpDeref -> {
+            let inner = infer_base_typeexpr(e, rhs)
+            match inner {
+            | TEPtr(_, t) -> t
+            | _           -> TEUnit(sp)
+            }
+        }
+        | UOpAddr -> TEPtr(sp, infer_base_typeexpr(e, rhs))
+        | _       -> TEUnit(sp)
+        }
+    }
+    | _ -> TEUnit(span_of_expr(base))
+    }
+}
+
+let span_of_expr(e: Expr): Span = {
+    match e {
+    | EInt(sp, _) -> sp
+    | EFloat(sp, _) -> sp
+    | EString(sp, _) -> sp
+    | EChar(sp, _) -> sp
+    | EBool(sp, _) -> sp
+    | ENil(sp) -> sp
+    | EIdent(sp, _) -> sp
+    | EPath(sp, _) -> sp
+    | EUnary(sp, _, _) -> sp
+    | EBinary(sp, _, _, _) -> sp
+    | EAssign(sp, _, _, _) -> sp
+    | ECall(sp, _, _, _) -> sp
+    | EField(sp, _, _) -> sp
+    | EIndex(sp, _, _) -> sp
+    | ECast(sp, _, _) -> sp
+    | ETry(sp, _) -> sp
+    | ETuple(sp, _) -> sp
+    | ERecord(sp, _, _) -> sp
+    | EClosure(sp, _, _, _) -> sp
+    | EBlock(sp, _, _) -> sp
+    | EIf(sp, _, _, _) -> sp
+    | EMatch(sp, _, _) -> sp
+    | EWhile(sp, _, _) -> sp
+    | EFor(sp, _, _, _, _) -> sp
+    | EReturn(sp, _) -> sp
+    | EDefer(sp, _) -> sp
+    | ESizeOf(sp, _) -> sp
+    | EArrayLit(sp, _) -> sp
+    }
+}
+
+let field_typeexpr_for(e: *Emitter, base_te: TypeExpr, field: string, sp: Span): TypeExpr = {
+    let unwrapped = match base_te {
+        | TEPtr(_, inner) -> inner
+        | _               -> base_te
+    }
+    match unwrapped {
+    | TENamed(_, path, args) -> {
+        if len(path) < 1 { return TEUnit(sp) }
+        let lookup = type_lookup_key(e, path)
+        match map.get(&e.generic_decls, lookup) {
+        | Some(decl) -> {
+            match decl {
+            | DStruct(_, _, params, fields) -> {
+                for f in fields {
+                    if strings.eq_raw(f.name, field) {
+                        if len(args) == len(params) {
+                            return substitute_type(e, f.ty, params, args)
+                        }
+                        return f.ty
+                    }
+                }
+                TEUnit(sp)
+            }
+            | _ -> TEUnit(sp)
+            }
+        }
+        | None -> TEUnit(sp)
+        }
+    }
+    | _ -> TEUnit(sp)
+    }
+}
+
+let field_ctype_for(e: *Emitter, base_te: TypeExpr, field: string): string = {
+    let sp = span_of_te(base_te)
+    let te = field_typeexpr_for(e, base_te, field, sp)
+    match te {
+    | TEUnit(_) -> "int64_t"
+    | _         -> c_type_for(e, te)
+    }
+}
+
+let span_of_te(te: TypeExpr): Span = {
+    match te {
+    | TEUnit(sp)        -> sp
+    | TEPtr(sp, _)      -> sp
+    | TETuple(sp, _)    -> sp
+    | TENamed(sp, _, _) -> sp
+    }
+}
+
+let infer_index_ctype(e: *Emitter, base: Expr): string = {
+    let bte = infer_base_typeexpr(e, base)
+    match bte {
+    | TEPtr(_, inner) -> c_type_for(e, inner)
+    | TENamed(_, path, args) -> {
+        if len(path) >= 1 && len(args) >= 1 {
+            let last = path[len(path) - 1]
+            if strings.eq_raw(last, "Vec") { return c_type_for(e, args[0]) }
+        }
+        "int64_t"
+    }
     | _ -> "int64_t"
     }
 }
@@ -845,7 +1054,13 @@ let emit_call(e: *Emitter, callee: Expr, type_args: Vec<TypeExpr>, args: Vec<Exp
             push(e, ")")
             return
         }
-        push(e, qualified)
+        // External function: dispatch to its link symbol so the runtime
+        // C name is called rather than the Qoz-level prefixed name.
+        let dispatch_name = match map.get(&e.externs, qualified) {
+            | Some(sym) -> sym
+            | None      -> qualified
+        }
+        push(e, dispatch_name)
         push(e, "(")
         var i: i64 = 0
         for a in args {
@@ -950,6 +1165,47 @@ let emit_print_one(e: *Emitter, a: Expr) = {
     }
 }
 
+// C operator precedence numbers (higher = binds tighter). Used by
+// emit_with_prec to add parentheses only when a child binary needs to
+// override C's default precedence/associativity.
+let binary_prec(op: BinaryOp): i64 = {
+    match op {
+    | BOpMul            -> 12
+    | BOpDiv            -> 12
+    | BOpMod            -> 12
+    | BOpAdd            -> 11
+    | BOpSub            -> 11
+    | BOpLt             -> 8
+    | BOpGt             -> 8
+    | BOpLe             -> 8
+    | BOpGe             -> 8
+    | BOpRange          -> 8
+    | BOpRangeInclusive -> 8
+    | BOpEq             -> 7
+    | BOpNe             -> 7
+    | BOpAnd            -> 4
+    | BOpOr             -> 3
+    }
+}
+
+// Emit `ex` and wrap in parens if its top-level operator has lower
+// precedence than the required minimum.
+let emit_with_prec(e: *Emitter, ex: Expr, min_prec: i64) = {
+    match ex {
+    | EBinary(_, op, _, _) -> {
+        let p = binary_prec(op)
+        if p < min_prec {
+            push(e, "(")
+            emit_expr(e, ex)
+            push(e, ")")
+        } else {
+            emit_expr(e, ex)
+        }
+    }
+    | _ -> emit_expr(e, ex)
+    }
+}
+
 let binary_c_op(op: BinaryOp): string = {
     match op {
     | BOpAdd            -> "+"
@@ -999,13 +1255,30 @@ let emit_fn_body_block(e: *Emitter, body: Expr, ret_hint: TypeExpr) = {
         }
         if is_nil_expr(tail) {
             push(e, "return;\n")
-        } else {
-            push(e, "return ")
-            emit_value_with_hint(e, tail, ret_hint)
-            push(e, ";\n")
+            return
         }
+        if is_unit_typeexpr(ret_hint) {
+            emit_expr(e, tail)
+            push(e, ";\n    return;\n")
+            return
+        }
+        push(e, "return ")
+        emit_value_with_hint(e, tail, ret_hint)
+        push(e, ";\n")
     }
     | _ -> { }
+    }
+}
+
+let is_unit_typeexpr(te: TypeExpr): bool = {
+    match te {
+    | TEUnit(_) -> true
+    | TENamed(_, path, _) -> {
+        if len(path) != 1 { return false }
+        let n = path[0]
+        strings.eq_raw(n, "unit") || strings.eq_raw(n, "void")
+    }
+    | _ -> false
     }
 }
 
@@ -1030,9 +1303,14 @@ let emit_fn(e: *Emitter, name: string, params: Vec<FnParam>, ret: TypeExpr, body
     if is_block(body) {
         emit_fn_body_block(e, body, ret)
     } else {
-        push(e, "return ")
-        emit_value_with_hint(e, body, ret)
-        push(e, ";\n")
+        if is_unit_typeexpr(ret) {
+            emit_expr(e, body)
+            push(e, ";\n    return;\n")
+        } else {
+            push(e, "return ")
+            emit_value_with_hint(e, body, ret)
+            push(e, ";\n")
+        }
     }
     e.locals = map.make()
     push(e, "}\n\n")
