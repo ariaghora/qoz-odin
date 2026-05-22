@@ -1287,7 +1287,12 @@ let parse_link_directive(p: *Parser): Decl = {
     DLink(span, kind, lib_name)
 }
 
-let run(tokens: Vec<Token>, file: string): File = {
+type ParseOutput = {
+    file:   File,
+    errors: Vec<string>,
+}
+
+let run(tokens: Vec<Token>, file: string): ParseOutput = {
     var p = make_parser(tokens, file)
     var decls: Vec<Decl> = vec.make()
     var running = true
@@ -1304,9 +1309,5 @@ let run(tokens: Vec<Token>, file: string): File = {
             }
         }
     }
-    let f = File { path: file, decls: decls }
-    for e in p.errors {
-        fmt.println(e)
-    }
-    f
+    ParseOutput { file: File { path: file, decls: decls }, errors: p.errors }
 }

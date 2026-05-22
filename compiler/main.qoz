@@ -215,7 +215,14 @@ let process_one(cur: Pending, queue: *Vec<Pending>, visited: *Map<string, bool>,
     }
     vec.push(sources, src)
     let tokens = tokenize.run(src)
-    let file = parse.run(tokens, cur.path)
+    let parsed = parse.run(tokens, cur.path)
+    if len(parsed.errors) > 0 {
+        for msg in parsed.errors {
+            fmt.println(strings.cat(strings.cat(cur.path, ": "), msg))
+        }
+        os.exit(1)
+    }
+    let file = parsed.file
     // First pass collects fn/extern names defined in this file.
     var local_fns: Map<string, bool> = map.make()
     for d in file.decls {
