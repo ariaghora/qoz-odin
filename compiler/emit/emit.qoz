@@ -3530,23 +3530,30 @@ let emit_record_desc(e: *Emitter, name: string, fields: Vec<StructField>) = {
     }
 }
 
+// Collect the offset expressions for every managed-pointer slot inside
+// one ADT variant's positional payload. Returns an empty Vec for
+// variants with no payload, no positional fields, or no pointer slots.
+let collect_variant_ptr_offsets(e: *Emitter, enum_name: string, v: VariantDecl): Vec<string> = {
+    var out: Vec<string> = vec.make()
+    if !variant_has_positional(v) { return out }
+    let parent = strings.cat("qoz_", strings.cat(enum_name, strings.cat("_", strings.cat(v.name, "_payload"))))
+    var i: i64 = 0
+    for pt in v.pos {
+        let field = strings.cat("f", int_to_string(i))
+        collect_field_ptr_offsets(e, parent, field, pt, &out)
+        i = i + 1
+    }
+    out
+}
+
 // Emit an ADT descriptor with per-variant pointer-offset tables.
 let emit_adt_desc(e: *Emitter, name: string, variants: Vec<VariantDecl>) = {
     // Per-variant offset arrays for positional payloads. Named-field
-    // payloads use the same `f<n>` convention since the variant's payload
-    // struct mirrors the declared field order. Step 2 only handles
-    // positional payloads; named-field ADTs come later.
+    // payloads share the `f<n>` slot convention since the variant's
+    // payload struct mirrors the declared field order. Named-field
+    // ADTs still come later.
     for v in variants {
-        var voffs: Vec<i64> = vec.make()
-        if variant_has_positional(v) {
-            var i: i64 = 0
-            for pt in v.pos {
-                if is_managed_pointer_field(e, pt) {
-                    vec.push(&voffs, i)
-                }
-                i = i + 1
-            }
-        }
+        let voffs = collect_variant_ptr_offsets(e, name, v)
         if len(voffs) > 0 {
             push(e, "static const int32_t qoz_")
             push(e, name)
@@ -3554,15 +3561,9 @@ let emit_adt_desc(e: *Emitter, name: string, variants: Vec<VariantDecl>) = {
             push(e, v.name)
             push(e, "_offsets[] = { ")
             var j: i64 = 0
-            for idx in voffs {
+            for expr in voffs {
                 if j > 0 { push(e, ", ") }
-                push(e, "(int32_t)offsetof(qoz_")
-                push(e, name)
-                push(e, "_")
-                push(e, v.name)
-                push(e, "_payload, f")
-                push(e, int_to_string(idx))
-                push(e, ")")
+                push(e, expr)
                 j = j + 1
             }
             push(e, " };\n")
@@ -3572,14 +3573,8 @@ let emit_adt_desc(e: *Emitter, name: string, variants: Vec<VariantDecl>) = {
     push(e, name)
     push(e, "_variants[] = {\n")
     for v in variants {
-        var nptrs: i64 = 0
-        if variant_has_positional(v) {
-            var i: i64 = 0
-            for pt in v.pos {
-                if is_managed_pointer_field(e, pt) { nptrs = nptrs + 1 }
-                i = i + 1
-            }
-        }
+        let voffs = collect_variant_ptr_offsets(e, name, v)
+        let nptrs = len(voffs)
         push(e, "    { qoz_")
         push(e, name)
         push(e, "_")
