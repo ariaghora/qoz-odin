@@ -5,12 +5,8 @@
  * pointer, its TypeDesc, and a mark bit. Roots come from a shadow stack
  * the compiler emits at every function entry.
  *
- * Auto-collection is paused at startup; the compiler workload does not
- * need intermediate sweeps and pausing avoids a class of premature-
- * collection crashes seen when callers hold buffer pointers only in
- * registers across allocation calls. Programs that need true GC
- * behaviour call qoz_gc_resume() and qoz_gc_run() explicitly. Shutdown
- * frees everything regardless.
+ * Auto-collection triggers from qoz_gc_alloc once heap byte usage
+ * crosses a growth threshold. Shutdown frees everything regardless.
  */
 
 #include "gc.h"
@@ -18,6 +14,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <setjmp.h>
 
 /* state: 0 = empty (probe stops); 1 = live; 2 = tombstone (probe continues) */
 typedef struct {
@@ -36,7 +33,23 @@ typedef struct {
 } qoz_gc_table;
 
 static qoz_gc_table g_table  = { NULL, 0, 0, 0 };
-static int          g_paused = 1;
+static int          g_paused = 0;
+
+/* Heap-usage tracking. qoz_gc_run triggers automatically from
+ * qoz_gc_alloc once g_bytes_live crosses g_bytes_threshold. After each
+ * sweep, the threshold is reset to max(initial, 2 * live_after_sweep)
+ * so steady-state working sets pay one collection per doubling. */
+#define QOZ_GC_INITIAL_THRESHOLD (1 << 20)   /* 1 MiB */
+static int64_t g_bytes_live      = 0;
+static int64_t g_bytes_threshold = QOZ_GC_INITIAL_THRESHOLD;
+
+/* Conservative C-stack scan supplements the shadow stack. Return values
+ * from function calls live in registers between the callee return and
+ * the caller's qoz_gc_push_root, where the precise scan would miss
+ * them. At collection time, setjmp spills callee-saved registers into
+ * a jmp_buf on the stack, and the scan walks from the current stack
+ * pointer up to a bottom anchor captured at process start. */
+static void *g_stack_bottom = NULL;
 
 #define ROOT_STACK_INIT 4096
 static void   **g_roots     = NULL;
@@ -98,6 +111,9 @@ static void table_grow(void) {
 }
 
 void *qoz_gc_alloc(int64_t size, const qoz_type_desc *desc) {
+    if (!g_paused && g_bytes_live >= g_bytes_threshold) {
+        qoz_gc_run();
+    }
     void *p = calloc(1, (size_t)size);
     if (!p) return NULL;
     table_init_if_needed();
@@ -112,6 +128,7 @@ void *qoz_gc_alloc(int64_t size, const qoz_type_desc *desc) {
         s->state = 1;
         if (prev == 2) g_table.ntomb--;
         g_table.nlive++;
+        g_bytes_live += size;
     }
     return p;
 }
@@ -223,10 +240,33 @@ static void mark_callback(void *arg, void *child) {
     mark_stack_push((qoz_gc_mark_stack *)arg, child);
 }
 
+static void scan_conservative_range(qoz_gc_mark_stack *ms, void *lo, void *hi) {
+    if (!lo || !hi) return;
+    if (lo > hi) { void *t = lo; lo = hi; hi = t; }
+    /* Align lo upward to pointer size. */
+    uintptr_t alo = ((uintptr_t)lo + sizeof(void *) - 1) & ~(uintptr_t)(sizeof(void *) - 1);
+    void **p = (void **)alo;
+    void **e = (void **)hi;
+    for (; p < e; p++) {
+        void *cand = *p;
+        if (!cand) continue;
+        qoz_gc_slot *s = find_slot(cand, 0);
+        if (s && s->state == 1) mark_stack_push(ms, cand);
+    }
+}
+
 int64_t qoz_gc_mark_phase(void) {
     qoz_gc_clear_marks();
     qoz_gc_mark_stack ms = { NULL, 0, 0 };
     qoz_gc_walk_shadow_roots(mark_callback, &ms);
+    /* Supplement with a conservative scan of the C stack so register-
+     * resident return values and call temporaries are not missed. */
+    if (g_stack_bottom) {
+        jmp_buf jb;
+        (void)setjmp(jb);   /* spills callee-saved registers to jb */
+        void *stack_top = (void *)&jb;
+        scan_conservative_range(&ms, stack_top, g_stack_bottom);
+    }
 
     int64_t marked = 0;
     while (ms.top > 0) {
@@ -255,6 +295,7 @@ int64_t qoz_gc_sweep_phase(void) {
     for (int64_t i = 0; i < g_table.nslots; i++) {
         qoz_gc_slot *s = &g_table.slots[i];
         if (s->state == 1 && !s->mark) {
+            g_bytes_live -= s->size;
             free(s->ptr);
             s->ptr   = NULL;
             s->desc  = NULL;
@@ -270,12 +311,18 @@ int64_t qoz_gc_sweep_phase(void) {
 
 int64_t qoz_gc_run(void) {
     qoz_gc_mark_phase();
-    return qoz_gc_sweep_phase();
+    int64_t freed = qoz_gc_sweep_phase();
+    int64_t doubled = g_bytes_live * 2;
+    g_bytes_threshold = doubled > QOZ_GC_INITIAL_THRESHOLD
+                        ? doubled : QOZ_GC_INITIAL_THRESHOLD;
+    return freed;
 }
 
 void qoz_gc_pause(void)  { g_paused = 1; }
 void qoz_gc_resume(void) { g_paused = 0; }
 bool qoz_gc_is_paused(void) { return g_paused != 0; }
+
+void qoz_gc_set_stack_bottom(void *anchor) { g_stack_bottom = anchor; }
 
 int64_t qoz_gc_alloc_size(const void *ptr) {
     if (!ptr) return 0;
@@ -287,6 +334,7 @@ void qoz_gc_free(void *ptr) {
     if (!ptr) return;
     qoz_gc_slot *s = find_slot(ptr, 0);
     if (!s || s->state != 1) return;
+    g_bytes_live -= s->size;
     free(s->ptr);
     s->ptr   = NULL;
     s->desc  = NULL;
@@ -312,6 +360,7 @@ void qoz_gc_shutdown(void) {
     g_table.nslots = 0;
     g_table.nlive  = 0;
     g_table.ntomb  = 0;
+    g_bytes_live   = 0;
     free(g_roots);
     g_roots     = NULL;
     g_roots_top = 0;

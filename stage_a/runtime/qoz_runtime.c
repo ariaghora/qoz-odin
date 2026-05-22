@@ -174,11 +174,12 @@ int64_t qoz_string_parse_int(qoz_string s) {
 }
 
 void qoz_init(int *stack_anchor) {
-    (void)stack_anchor;
-    /* gc.c owns the heap. Auto-collection is paused; the compiler
-     * workload does not require intermediate sweeps and pausing avoids
-     * register-resident-root races until the shadow-stack covers
-     * everything that needs it. Process exit frees the rest. */
+    /* gc.c owns the heap and auto-collects from qoz_gc_alloc once the
+     * live-byte threshold is crossed. The shadow stack registers every
+     * pointer-typed parameter and local; a conservative C-stack scan
+     * supplements that so register-resident return values are reached
+     * during the mark phase. */
+    qoz_gc_set_stack_bottom(stack_anchor);
 }
 
 void qoz_shutdown(void) {

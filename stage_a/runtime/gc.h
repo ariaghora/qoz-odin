@@ -9,9 +9,8 @@
  * function entry pointer-typed locals are registered, at exit they are
  * popped via the __cleanup__ attribute.
  *
- * Auto-collection is paused at startup. Programs that need true GC
- * behaviour call qoz_gc_resume() and qoz_gc_run() explicitly. Shutdown
- * frees everything regardless.
+ * Auto-collection triggers from qoz_gc_alloc once heap byte usage
+ * crosses a growth threshold. Shutdown frees everything regardless.
  */
 #ifndef QOZ_GC_H
 #define QOZ_GC_H
@@ -89,6 +88,11 @@ int64_t qoz_gc_run(void);
 void qoz_gc_pause(void);
 void qoz_gc_resume(void);
 bool qoz_gc_is_paused(void);
+
+/* Record the bottom of the C stack (called once from qoz_init with the
+ * address of a local in main). The conservative supplement scans from
+ * the current top up to this anchor at every collection. */
+void qoz_gc_set_stack_bottom(void *anchor);
 
 /* Free all remaining allocations (process-shutdown hook). */
 void qoz_gc_shutdown(void);

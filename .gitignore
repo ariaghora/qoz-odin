@@ -9,3 +9,6 @@ output
 *.ppm
 CLAUDE.md
 .claude
+
+/main
+tests/**/*.qoz.c
