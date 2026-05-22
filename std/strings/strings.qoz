@@ -52,6 +52,29 @@ let lt_raw(a: string, b: string): bool = {
 @operator("<")
 let lt(a: *string, b: *string): bool = lt_raw(*a, *b)
 
+// Replace every occurrence of `needle` in `s` with `replacement`.
+// Empty needle returns `s` unchanged.
+let replace_all(s: string, needle: string, replacement: string): string = {
+    let nn = len(needle)
+    if nn == 0 { return s }
+    var out = ""
+    var i: i64 = 0
+    let total = len(s)
+    while i + nn <= total {
+        if has_prefix(slice(s, i, total), needle) {
+            out = cat(out, replacement)
+            i = i + nn
+        } else {
+            out = cat(out, slice(s, i, i + 1))
+            i = i + 1
+        }
+    }
+    if i < total {
+        out = cat(out, slice(s, i, total))
+    }
+    out
+}
+
 let split(s: string, sep: i64): Vec<string> = {
     var out: Vec<string> = vec.make()
     let total = len(s)

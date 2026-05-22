@@ -462,6 +462,16 @@ To bind a Qoz name that differs from the C symbol, annotate the declaration with
 
 Link directives at the top of a file surface as linker flags to clang. `#link("name")` adds `-lname` for a regular library; `#link_framework("Name")` adds `-framework Name` on macOS.
 
+### Compile-time embedding
+
+`#load_string("relative/path")` in expression position evaluates at parse time to a string literal whose contents are the bytes of the file at that path. The path is resolved relative to the working directory of the compiler invocation. A missing file is a hard parse error, never a silent fallback.
+
+```qoz
+let runtime_h: string = #load_string("stage_a/runtime/qoz_runtime.h")
+```
+
+The form follows the same `#`-prefix convention as `#link`. Compile-time directives are visually distinct from runtime function calls.
+
 ### Attributes
 
 `@name(arg)` syntax precedes a declaration and attaches metadata to it. Supported attributes:

@@ -15,6 +15,7 @@
 import std/strings
 import std/vec
 import std/fmt
+import std/fs
 import compiler/tokenize
 import compiler/ast
 
@@ -607,9 +608,79 @@ let parse_closure(p: *Parser): Expr = {
     EClosure(span, params, ret_ty, body)
 }
 
+// Build a C-style quoted string literal from raw bytes for embedding
+// in an EString.
+let c_escape_bytes(src: string): string = {
+    var out = "\""
+    var i: i64 = 0
+    let n = len(src)
+    while i < n {
+        let b = strings.byte_at(src, i)
+        if b == 92 { out = strings.cat(out, "\\\\") }
+        else if b == 34 { out = strings.cat(out, "\\\"") }
+        else if b == 10 { out = strings.cat(out, "\\n") }
+        else if b == 13 { out = strings.cat(out, "\\r") }
+        else if b == 9  { out = strings.cat(out, "\\t") }
+        else if b < 32 || b == 127 {
+            out = strings.cat(out, fmt.format("\\x{}", hex2(b)))
+        } else {
+            out = strings.cat(out, strings.slice(src, i, i + 1))
+        }
+        i = i + 1
+    }
+    out = strings.cat(out, "\"")
+    out
+}
+
+let hex_digit(n: i64): string = {
+    if n < 10 { return fmt.format("{}", n) }
+    strings.slice("abcdef", n - 10, n - 9)
+}
+
+let hex2(b: i64): string = {
+    let hi = (b / 16) % 16
+    let lo = b % 16
+    strings.cat(hex_digit(hi), hex_digit(lo))
+}
+
 let parse_atom(p: *Parser): Expr = {
     let t = peek(p)
     let span = span_of(p, t)
+    if is_punct(t, "#") {
+        // Compile-time directive in expression position.
+        // Only #load_string(path-literal) is supported.
+        advance(p)
+        let name_tok = peek(p)
+        if !is_ident(name_tok) {
+            record_error(p, fmt.format("expected directive name after `#`, got `{}`", name_tok.text))
+            return ENil(span)
+        }
+        advance(p)
+        expect_punct(p, "(")
+        let arg_tok = peek(p)
+        if !is_str_lit(arg_tok) {
+            record_error(p, fmt.format("#{} expects a string literal path", name_tok.text))
+            return ENil(span)
+        }
+        advance(p)
+        expect_punct(p, ")")
+        if !strings.eq_raw(name_tok.text, "load_string") {
+            record_error(p, fmt.format("unknown directive `#{}` in expression position; supported: #load_string", name_tok.text))
+            return ENil(span)
+        }
+        // arg_tok.text includes surrounding quotes; strip them.
+        var raw_path = arg_tok.text
+        let pn = len(raw_path)
+        if pn >= 2 && strings.byte_at(raw_path, 0) == 34 && strings.byte_at(raw_path, pn - 1) == 34 {
+            raw_path = strings.slice(raw_path, 1, pn - 1)
+        }
+        let bytes = fs.read_file(raw_path)
+        if len(bytes) < 0 {
+            record_error(p, fmt.format("#load_string: cannot read `{}`", raw_path))
+            return ENil(span)
+        }
+        return EString(span, c_escape_bytes(bytes))
+    }
     if is_int_lit(t) {
         advance(p)
         return EInt(span, t.text)

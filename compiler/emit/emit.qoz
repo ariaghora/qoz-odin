@@ -3166,12 +3166,29 @@ let value_field_dep(e: *Emitter, te: TypeExpr): Option<string> = {
 
 let is_main(name: string): bool = strings.eq_raw(name, "main")
 
+// Remove the cross-file #include directives so the inlined sources
+// compile as a single translation unit.
+let strip_runtime_includes(src: string): string = {
+    var out = src
+    out = strings.replace_all(out, "#include \"gc.h\"\n", "")
+    out = strings.replace_all(out, "#include \"qoz_runtime.h\"\n", "")
+    out
+}
+
 let emit_program(f: File): string = {
     var e = make_emitter()
     register_variants(&e, f)
     register_generics(&e, f)
     collect_type_instantiations(&e, f)
-    push(&e, "#include \"qoz_runtime.h\"\n\n")
+    push(&e, "/* embedded runtime: gc.h */\n")
+    push(&e, strip_runtime_includes(#load_string("stage_a/runtime/gc.h")))
+    push(&e, "\n/* embedded runtime: qoz_runtime.h */\n")
+    push(&e, strip_runtime_includes(#load_string("stage_a/runtime/qoz_runtime.h")))
+    push(&e, "\n/* embedded runtime: gc.c */\n")
+    push(&e, strip_runtime_includes(#load_string("stage_a/runtime/gc.c")))
+    push(&e, "\n/* embedded runtime: qoz_runtime.c */\n")
+    push(&e, strip_runtime_includes(#load_string("stage_a/runtime/qoz_runtime.c")))
+    push(&e, "\n/* user code */\n")
     push(&e, "<<<FN_TYPEDEFS>>>")
     push(&e, "<<<TUPLE_TYPEDEFS>>>")
     push(&e, "<<<SYNTH_FN_DECLS>>>")

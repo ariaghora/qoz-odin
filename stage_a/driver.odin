@@ -369,15 +369,34 @@ ensure_runtime_dir :: proc() -> string {
 
 compile_and_link :: proc(c_source: string, out_name: string) -> bool {
     tmp_c := fmt.tprintf("%s.qoz.c", out_name)
-    if werr := os.write_entire_file(tmp_c, transmute([]byte)c_source); werr != nil {
+    // Inline the runtime sources directly into the emitted .c so the
+    // produced file is a single, self-contained translation unit. The
+    // user .c starts with #include "qoz_runtime.h"; strip that line, then
+    // prepend the runtime in dependency order. Header guards on gc.h and
+    // qoz_runtime.h make the order's transitive #includes harmless.
+    body, _ := strings.replace_all(c_source, "#include \"qoz_runtime.h\"\n", "", context.temp_allocator)
+    strip_inc :: proc(src: []byte) -> string {
+        s := string(src)
+        out1, _ := strings.replace_all(s,    "#include \"gc.h\"",          "", context.temp_allocator)
+        out2, _ := strings.replace_all(out1, "#include \"qoz_runtime.h\"", "", context.temp_allocator)
+        return out2
+    }
+    sb := strings.builder_make(context.temp_allocator)
+    strings.write_string(&sb, "/* embedded runtime: gc.h */\n")
+    strings.write_string(&sb, strip_inc(runtime_gc_h))
+    strings.write_string(&sb, "\n/* embedded runtime: qoz_runtime.h */\n")
+    strings.write_string(&sb, strip_inc(runtime_qoz_runtime_h))
+    strings.write_string(&sb, "\n/* embedded runtime: gc.c */\n")
+    strings.write_string(&sb, strip_inc(runtime_gc_c))
+    strings.write_string(&sb, "\n/* embedded runtime: qoz_runtime.c */\n")
+    strings.write_string(&sb, strip_inc(runtime_qoz_runtime_c))
+    strings.write_string(&sb, "\n/* user code */\n")
+    strings.write_string(&sb, body)
+    full := strings.to_string(sb)
+    if werr := os.write_entire_file(tmp_c, transmute([]byte)full); werr != nil {
         fmt.eprintfln("could not write %s: %v", tmp_c, werr)
         return false
     }
-
-    rt := ensure_runtime_dir()
-    qoz_rt_c, _ := filepath.join({rt, "qoz_runtime.c"}, context.temp_allocator)
-    gc_c, _     := filepath.join({rt, "gc.c"},          context.temp_allocator)
-    include_flag := fmt.tprintf("-I%s", rt)
 
     cmd := []string{
         "clang",
@@ -402,10 +421,7 @@ compile_and_link :: proc(c_source: string, out_name: string) -> bool {
         "-Wno-unused-variable",
         "-Wno-unused-but-set-variable",
         "-Wno-parentheses-equality",
-        include_flag,
         tmp_c,
-        qoz_rt_c,
-        gc_c,
         "-o", out_name,
     }
 

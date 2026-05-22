@@ -1,6 +1,8 @@
 package main
 
 import "core:fmt"
+import "core:os"
+import "core:strings"
 
 Parse_Error :: struct {
     file:    string,
@@ -839,6 +841,7 @@ parse_postfix :: proc(p: ^Parser) -> (Expr, bool) {
             e = so
             continue
         }
+        // (#load_string handling is in parse_primary; nothing to do here.)
         if accept(p, .Left_Paren) {
             args := make([dynamic]Expr)
             for !at(p, .Right_Paren) && !at(p, .EOF) {
@@ -907,6 +910,57 @@ parse_primary :: proc(p: ^Parser) -> (Expr, bool) {
     span := current_span(p)
     tok := peek_tok(p)
     #partial switch tok.kind {
+    case .Hash:
+        // Compile-time directive in expression position. Currently
+        // supported: #load_string("path") yields the file's bytes as
+        // a string. #load_bytes is reserved for a future Vec<u8> form.
+        // Mirrors the #link / #link_framework decl-level directives.
+        p.pos += 1
+        ident_tok, idok := expect(p, .Ident, "directive name after `#`")
+        if !idok do return nil, false
+        if !eat(p, .Left_Paren, "`(` after directive name") do return nil, false
+        path_tok, sok := expect(p, .Lit_String, "string literal path argument")
+        if !sok do return nil, false
+        if !eat(p, .Right_Paren, "`)` after directive argument") do return nil, false
+        raw_path := path_tok.source
+        if len(raw_path) >= 2 && raw_path[0] == '"' && raw_path[len(raw_path)-1] == '"' {
+            raw_path = raw_path[1:len(raw_path)-1]
+        }
+        if ident_tok.source != "load_string" {
+            append(&p.errors, Parse_Error{
+                file = p.file, line = span.line, column = span.column,
+                message = fmt.tprintf("unknown directive `#%s`; supported in expression position: #load_string", ident_tok.source),
+            })
+            return nil, false
+        }
+        bytes, read_err := os.read_entire_file(raw_path, context.allocator)
+        if read_err != nil {
+            append(&p.errors, Parse_Error{
+                file = p.file, line = span.line, column = span.column,
+                message = fmt.tprintf("#load_string: cannot read `%s`: %v", raw_path, read_err),
+            })
+            return nil, false
+        }
+        sb := strings.builder_make(context.allocator)
+        strings.write_byte(&sb, '"')
+        for b in bytes {
+            switch b {
+            case '\\': strings.write_string(&sb, "\\\\")
+            case '"':  strings.write_string(&sb, "\\\"")
+            case '\n': strings.write_string(&sb, "\\n")
+            case '\r': strings.write_string(&sb, "\\r")
+            case '\t': strings.write_string(&sb, "\\t")
+            case:
+                if b < 0x20 || b == 0x7f {
+                    strings.write_string(&sb, fmt.tprintf("\\x%02x", b))
+                } else {
+                    strings.write_byte(&sb, b)
+                }
+            }
+        }
+        strings.write_byte(&sb, '"')
+        sl := new(Expr_String_Lit); sl.span = span; sl.text = strings.to_string(sb)
+        return sl, true
     case .Lit_Int:
         p.pos += 1
         out := new(Expr_Int_Lit); out.span = span; out.text = tok.source

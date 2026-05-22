@@ -65,10 +65,8 @@ STAGE_B="$PWD/main"
 if [ ! -x "$STAGE_B" ]; then
     echo "Stage B build failed; skipping Stage B tests"
 else
-    RUNTIME_OBJ=/tmp/qoz_runtime_b.o
-    GC_OBJ=/tmp/gc_b.o
-    clang -c -I stage_a/runtime stage_a/runtime/qoz_runtime.c -o "$RUNTIME_OBJ" 2>/dev/null
-    clang -c -I stage_a/runtime stage_a/runtime/gc.c -o "$GC_OBJ" 2>/dev/null
+    # Stage B's emitted .c is self-contained (runtime baked in via
+    # #load_string in emit.qoz), so no extra object files or -I needed.
 
     run_stage_b_pos() {
         local t="$1"
@@ -87,7 +85,7 @@ else
             return 1
         fi
         bin=$(mktemp -t qozb.XXXXXX)
-        if ! clang -I stage_a/runtime -Wall -Werror "${t}.c" "$RUNTIME_OBJ" "$GC_OBJ" -o "$bin" >/tmp/qozb_clang.log 2>&1; then
+        if ! clang -Wall -Werror "${t}.c" -o "$bin" >/tmp/qozb_clang.log 2>&1; then
             FAIL=$((FAIL+1))
             fails+=("$t (clang failed; see /tmp/qozb_clang.log)")
             rm -f "$bin" "${t}.c"
