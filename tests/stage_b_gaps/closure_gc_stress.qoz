@@ -1,0 +1,32 @@
+// expect: 0
+// Closures capturing managed strings; many calls under GC pressure
+// to confirm the captured prefixes are reachable through the env.
+
+import std/vec
+import std/strings
+import std/fmt
+
+let make_appender(prefix: string): (string) -> string =
+    (s: string): string -> strings.cat(prefix, s)
+
+let main(): i64 = {
+    var bag: Vec<string> = vec.make()
+    var i: i64 = 0
+    while i < 64 {
+        let pre = strings.cat("p", strings.cat(fmt.format("{}", i), "_"))
+        let f = make_appender(pre)
+        var j: i64 = 0
+        while j < 32 {
+            let s: string = f(fmt.format("{}", j))
+            vec.push(&bag, s)
+            j = j + 1
+        }
+        i = i + 1
+    }
+    // Spot-check that the captured prefix survived.
+    let first = bag[0]
+    let last  = bag[len(bag) - 1]
+    if !strings.has_prefix(first, "p0_")    { return 1 }
+    if !strings.has_prefix(last,  "p63_")   { return 2 }
+    0
+}
