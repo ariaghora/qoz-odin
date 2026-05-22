@@ -1,0 +1,4 @@
+// expect: 100
+// Underscores in numeric literals (1_000_000 / 10_000).
+
+let main(): i64 = 1_000_000 / 10_000

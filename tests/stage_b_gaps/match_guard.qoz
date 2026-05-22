@@ -1,0 +1,13 @@
+// expect: 42
+
+import std/option
+
+let unwrap_pos(o: Option<i64>): i64 = {
+    match o {
+    | Some(n) if n > 0  -> n
+    | Some(_)           -> 0
+    | None              -> -1
+    }
+}
+
+let main(): i64 = unwrap_pos(Some(42))

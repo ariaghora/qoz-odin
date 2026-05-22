@@ -1,0 +1,8 @@
+// expect: 6
+
+let apply(f: (i64) -> i64, x: i64): i64 = f(x)
+
+let main(): i64 = {
+    let inc = (x: i64): i64 -> x + 1
+    apply(inc, 5)
+}

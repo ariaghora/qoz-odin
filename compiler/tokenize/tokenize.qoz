@@ -7,7 +7,9 @@ import std/map
 type TokenKind =
     | TokIdent
     | TokInt
+    | TokFloat
     | TokString
+    | TokChar
     | TokPunct
     | TokKeyword
     | TokEOF
@@ -45,6 +47,9 @@ let is_space(c: i64): bool = c == 32 || c == 9 || c == 10 || c == 13
 let is_digit(c: i64): bool = c >= 48 && c <= 57
 let is_alpha(c: i64): bool = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95
 let is_alnum(c: i64): bool = is_alpha(c) || is_digit(c)
+let is_hex_digit(c: i64): bool = is_digit(c) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102)
+let is_bin_digit(c: i64): bool = c == 48 || c == 49
+let is_oct_digit(c: i64): bool = c >= 48 && c <= 55
 
 let is_punct(c: i64): bool =
     c == 40 || c == 41 || c == 123 || c == 125 || c == 91 || c == 93 ||
@@ -124,16 +129,68 @@ let lex_one(l: *Lexer, kw: *Map<string, bool>): Token = {
     let c = lex_at(l)
 
     if is_digit(c) {
-        while l.pos < len(l.src) && is_digit(lex_at(l)) {
+        // 0x / 0b / 0o prefix: consume hex/bin/oct digits plus underscores.
+        if c == 48 && l.pos + 1 < len(l.src) {
+            let n = strings.byte_at(l.src, l.pos + 1)
+            if n == 120 || n == 88 {
+                lex_advance(l); lex_advance(l)
+                while l.pos < len(l.src) && (is_hex_digit(lex_at(l)) || lex_at(l) == 95) {
+                    lex_advance(l)
+                }
+                return Token { kind: TokInt, text: strings.slice(l.src, start_pos, l.pos), line: start_line, col: start_col }
+            }
+            if n == 98 || n == 66 {
+                lex_advance(l); lex_advance(l)
+                while l.pos < len(l.src) && (is_bin_digit(lex_at(l)) || lex_at(l) == 95) {
+                    lex_advance(l)
+                }
+                return Token { kind: TokInt, text: strings.slice(l.src, start_pos, l.pos), line: start_line, col: start_col }
+            }
+            if n == 111 || n == 79 {
+                lex_advance(l); lex_advance(l)
+                while l.pos < len(l.src) && (is_oct_digit(lex_at(l)) || lex_at(l) == 95) {
+                    lex_advance(l)
+                }
+                return Token { kind: TokInt, text: strings.slice(l.src, start_pos, l.pos), line: start_line, col: start_col }
+            }
+        }
+        var is_float = false
+        while l.pos < len(l.src) && (is_digit(lex_at(l)) || lex_at(l) == 95) {
             lex_advance(l)
         }
         if l.pos + 1 < len(l.src) && lex_at(l) == 46 && is_digit(strings.byte_at(l.src, l.pos + 1)) {
+            is_float = true
             lex_advance(l)
+            while l.pos < len(l.src) && (is_digit(lex_at(l)) || lex_at(l) == 95) {
+                lex_advance(l)
+            }
+        }
+        if l.pos < len(l.src) && (lex_at(l) == 101 || lex_at(l) == 69) {
+            is_float = true
+            lex_advance(l)
+            if l.pos < len(l.src) && (lex_at(l) == 43 || lex_at(l) == 45) {
+                lex_advance(l)
+            }
             while l.pos < len(l.src) && is_digit(lex_at(l)) {
                 lex_advance(l)
             }
         }
-        return Token { kind: TokInt, text: strings.slice(l.src, start_pos, l.pos), line: start_line, col: start_col }
+        let kind: TokenKind = if is_float { TokFloat } else { TokInt }
+        return Token { kind: kind, text: strings.slice(l.src, start_pos, l.pos), line: start_line, col: start_col }
+    }
+
+    if c == 39 {
+        lex_advance(l)
+        if l.pos < len(l.src) && lex_at(l) == 92 {
+            lex_advance(l)
+        }
+        if l.pos < len(l.src) {
+            lex_advance(l)
+        }
+        if l.pos < len(l.src) && lex_at(l) == 39 {
+            lex_advance(l)
+        }
+        return Token { kind: TokChar, text: strings.slice(l.src, start_pos, l.pos), line: start_line, col: start_col }
     }
 
     if is_alpha(c) {
@@ -171,6 +228,7 @@ let lex_one(l: *Lexer, kw: *Map<string, bool>): Token = {
                 (c == 33 && n == 61) ||
                 (c == 60 && n == 61) ||
                 (c == 62 && n == 61) ||
+                (c == 60 && n == 60) ||
                 (c == 45 && n == 62) ||
                 (c == 38 && n == 38) ||
                 (c == 124 && n == 124) ||
@@ -191,21 +249,118 @@ let lex_one(l: *Lexer, kw: *Map<string, bool>): Token = {
     return Token { kind: TokPunct, text: strings.slice(l.src, start_pos, l.pos), line: start_line, col: start_col }
 }
 
+let is_stmt_ender(t: Token): bool = {
+    match t.kind {
+    | TokIdent | TokInt | TokFloat | TokString | TokChar -> true
+    | TokKeyword -> {
+        if strings.eq_raw(t.text, "true")   { return true }
+        if strings.eq_raw(t.text, "false")  { return true }
+        if strings.eq_raw(t.text, "nil")    { return true }
+        if strings.eq_raw(t.text, "return") { return true }
+        false
+    }
+    | TokPunct -> {
+        if strings.eq_raw(t.text, ")") { return true }
+        if strings.eq_raw(t.text, "]") { return true }
+        if strings.eq_raw(t.text, "}") { return true }
+        false
+    }
+    | _ -> false
+    }
+}
+
+// Returns true when the upcoming token clearly extends the previous
+// expression: binary operators, postfix operators, closing brackets,
+// alternation `|`, the `else`/`as`/`in` keywords, and so on. When this
+// holds, do not synthesise a semicolon at the line break.
+let is_line_continuation(t: Token): bool = {
+    match t.kind {
+    | TokKeyword -> {
+        if strings.eq_raw(t.text, "else") { return true }
+        if strings.eq_raw(t.text, "as")   { return true }
+        if strings.eq_raw(t.text, "in")   { return true }
+        false
+    }
+    | TokPunct -> {
+        let s = t.text
+        if strings.eq_raw(s, "|")  { return true }
+        if strings.eq_raw(s, "||") { return true }
+        if strings.eq_raw(s, "&")  { return true }
+        if strings.eq_raw(s, "&&") { return true }
+        if strings.eq_raw(s, "+")  { return true }
+        if strings.eq_raw(s, "-")  { return true }
+        if strings.eq_raw(s, "*")  { return true }
+        if strings.eq_raw(s, "/")  { return true }
+        if strings.eq_raw(s, "%")  { return true }
+        if strings.eq_raw(s, "^")  { return true }
+        if strings.eq_raw(s, "<")  { return true }
+        if strings.eq_raw(s, ">")  { return true }
+        if strings.eq_raw(s, "<=") { return true }
+        if strings.eq_raw(s, ">=") { return true }
+        if strings.eq_raw(s, "<<") { return true }
+        if strings.eq_raw(s, "==") { return true }
+        if strings.eq_raw(s, "!=") { return true }
+        if strings.eq_raw(s, "=")  { return true }
+        if strings.eq_raw(s, "+=") { return true }
+        if strings.eq_raw(s, "-=") { return true }
+        if strings.eq_raw(s, "*=") { return true }
+        if strings.eq_raw(s, "/=") { return true }
+        if strings.eq_raw(s, "%=") { return true }
+        if strings.eq_raw(s, "->") { return true }
+        if strings.eq_raw(s, ".")  { return true }
+        if strings.eq_raw(s, ",")  { return true }
+        if strings.eq_raw(s, ":")  { return true }
+        if strings.eq_raw(s, "?")  { return true }
+        if strings.eq_raw(s, ")")  { return true }
+        if strings.eq_raw(s, "]")  { return true }
+        if strings.eq_raw(s, "}")  { return true }
+        if strings.eq_raw(s, "..") { return true }
+        if strings.eq_raw(s, "..<") { return true }
+        if strings.eq_raw(s, "..=") { return true }
+        false
+    }
+    | _ -> false
+    }
+}
+
 let run(src: string): Vec<Token> = {
-    var out: Vec<Token> = vec.make()
+    var raw: Vec<Token> = vec.make()
     var l = make_lexer(src)
     let kw = build_keywords()
     var running = true
     while running {
         let t = lex_one(&l, &kw)
         match t.kind {
-        | TokEOF     -> running = false
-        | TokIdent   -> vec.push(&out, t)
-        | TokInt     -> vec.push(&out, t)
-        | TokString  -> vec.push(&out, t)
-        | TokPunct   -> vec.push(&out, t)
-        | TokKeyword -> vec.push(&out, t)
+        | TokEOF -> running = false
+        | _      -> vec.push(&raw, t)
         }
+    }
+    // Post-process pass: inject ASI semicolons at line breaks where the
+    // previous token can end a statement and the next token is not a
+    // continuation. Suppress inside `(` and `[` so multi-line argument
+    // lists, generic type lists, and array literals are unaffected.
+    var out: Vec<Token> = vec.make()
+    var paren_depth: i64 = 0
+    var i: i64 = 0
+    while i < len(raw) {
+        let cur = raw[i]
+        if i > 0 && paren_depth == 0 {
+            let prev = raw[i - 1]
+            if cur.line > prev.line && is_stmt_ender(prev) && !is_line_continuation(cur) {
+                vec.push(&out, Token { kind: TokPunct, text: ";", line: prev.line, col: prev.col })
+            }
+        }
+        vec.push(&out, cur)
+        match cur.kind {
+        | TokPunct -> {
+            if strings.eq_raw(cur.text, "(") { paren_depth = paren_depth + 1 }
+            else if strings.eq_raw(cur.text, "[") { paren_depth = paren_depth + 1 }
+            else if strings.eq_raw(cur.text, ")") { paren_depth = paren_depth - 1 }
+            else if strings.eq_raw(cur.text, "]") { paren_depth = paren_depth - 1 }
+        }
+        | _ -> { }
+        }
+        i = i + 1
     }
     out
 }

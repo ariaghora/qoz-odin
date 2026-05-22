@@ -6,6 +6,12 @@
 
 set -u
 
+# Resource caps inherited by every child process. A runaway compiler
+# invocation can otherwise grow without bound: see the parser hang on
+# unhandled function types. These caps trade a hard fail for a hung laptop.
+ulimit -d 1048576 2>/dev/null || true   # data segment: 1 GB
+ulimit -t 30 2>/dev/null || true        # CPU seconds: 30 per child
+
 QOZ="./stage_a/stage_a.exe"
 if [ ! -x "$QOZ" ]; then
     echo "$QOZ not found. Build with: cd stage_a && odin build . -out:stage_a.exe -debug"
@@ -60,9 +66,9 @@ if [ ! -x "$STAGE_B" ]; then
     echo "Stage B build failed; skipping Stage B tests"
 else
     RUNTIME_OBJ=/tmp/qoz_runtime_b.o
-    TGC_OBJ=/tmp/tgc_b.o
+    GC_OBJ=/tmp/gc_b.o
     clang -c -I stage_a/runtime stage_a/runtime/qoz_runtime.c -o "$RUNTIME_OBJ" 2>/dev/null
-    clang -c -I stage_a/runtime stage_a/runtime/tgc.c -o "$TGC_OBJ" 2>/dev/null
+    clang -c -I stage_a/runtime stage_a/runtime/gc.c -o "$GC_OBJ" 2>/dev/null
 
     run_stage_b_pos() {
         local t="$1"
@@ -81,7 +87,7 @@ else
             return 1
         fi
         bin=$(mktemp -t qozb.XXXXXX)
-        if ! clang -I stage_a/runtime -Wall -Werror "${t}.c" "$RUNTIME_OBJ" "$TGC_OBJ" -o "$bin" >/tmp/qozb_clang.log 2>&1; then
+        if ! clang -I stage_a/runtime -Wall -Werror "${t}.c" "$RUNTIME_OBJ" "$GC_OBJ" -o "$bin" >/tmp/qozb_clang.log 2>&1; then
             FAIL=$((FAIL+1))
             fails+=("$t (clang failed; see /tmp/qozb_clang.log)")
             rm -f "$bin" "${t}.c"
@@ -119,6 +125,11 @@ else
     for t in tests/stage_b_neg/*.qoz; do
         [ -f "$t" ] || continue
         run_stage_b_neg "$t"
+    done
+
+    for t in tests/stage_b_gaps/*.qoz; do
+        [ -f "$t" ] || continue
+        run_stage_b_pos "$t"
     done
 fi
 

@@ -1,0 +1,10 @@
+// expect: 1
+
+type Pt = { x: i64, y: i64 }
+
+let main(): i64 = {
+    let a = Pt { x: 1, y: 2 }
+    let b = Pt { x: 1, y: 2 }
+    let c = Pt { x: 1, y: 3 }
+    if hash(a) == hash(b) && hash(a) != hash(c) { 1 } else { 0 }
+}

@@ -15,13 +15,13 @@ Qoz is a statically typed, garbage-collected systems language that compiles to C
 ## Lexical
 
 - Identifiers: `[A-Za-z_][A-Za-z0-9_]*`. Type names conventionally start uppercase.
-- Integer literals: `0`, `42`, `0xff`, `0b1010`. Untyped by default, coerce to context.
-- Float literals: `1.0`, `3.14`, `1e9`, `2.5e-3`.
+- Integer literals: decimal `42`, hex `0xff`, binary `0b1010`, octal `0o755`. Untyped by default, coerce to context. Underscores `_` may appear between digits and are ignored: `1_000_000`, `0xff_ff`.
+- Float literals: `1.0`, `3.14`, `1e9`, `2.5e-3`. Underscores are ignored as in integer literals.
 - String literals: `"hello\n"`. UTF-8 bytes.
 - Character literals: `'a'`, `'\n'`. A single byte.
 - Boolean literals: `true`, `false`.
 - Comments: `// line` and `/* block */`. Block comments nest.
-- Statements are terminated by newline. A trailing comma in any list is permitted.
+- Statements are terminated by newline. A trailing comma in any list is permitted. A long expression may be split across lines either by ending the previous line with the operator (`x = a +\n    b`) or by starting the next line with the operator (`x = a\n    + b`); both are accepted.
 
 ---
 
@@ -121,6 +121,27 @@ Tuples are anonymous, positional, and used for multiple returns and ad-hoc group
 
 ---
 
+## Operators
+
+Built-in operators on primitive types:
+
+| Category | Operators | Operand types |
+|----------|-----------|---------------|
+| Arithmetic | `+`, `-`, `*`, `/`, `%` | integers and floats |
+| Comparison | `==`, `!=`, `<`, `>`, `<=`, `>=` | integers, floats, `bool`, `char`, `string`, `cstring` |
+| Logical | `&&`, `\|\|`, `!` | `bool` |
+| Bitwise | `&`, `\|`, `^`, `<<`, `>>` | integer types only |
+| Unary | `-`, `!`, `*` (deref), `&` (address-of) | per type |
+| Cast | `expr as T` | numeric, pointer, and primitive conversions |
+
+Bitwise `|` and match-arm `|` share the token; inside a `match` arm body, a bare `|` is treated as the next arm separator. Parenthesise to use bitwise `|` inside a match arm: `match c { | x -> (x | 0xff) }`.
+
+The right-shift token `>>` is recognised by the parser as two `>` tokens when they are column-adjacent. This avoids ambiguity with nested generic type arguments such as `Vec<Vec<i32>>`.
+
+Records and ADTs gain operators through `@operator` registrations and structural derivation; see [Operator Overloading](#operator-overloading).
+
+---
+
 ## Pattern Matching
 
 ```
@@ -147,6 +168,7 @@ Match is exhaustive. The compiler rejects matches that do not cover all variants
 - Variant patterns: `Some(p)`, `Shape.Rectangle { width: w, height: h }`
 - Tuple patterns: `(a, b)`
 - Guard clauses: `pattern if expr -> body`
+- Multi-pattern arms: `| A | B | C -> body`. The same body runs when any listed pattern matches. Every alternative must bind the same names to compatible types so the body sees a consistent environment. Useful for collapsing variants that share an action: `| EInt(sp, _) | EFloat(sp, _) | EString(sp, _) -> sp`.
 
 Patterns nest. Each arm starts with `|` and uses `->`. Arms are enclosed in braces.
 
@@ -224,6 +246,10 @@ Closures use a parenthesised parameter list followed by `->` and a body expressi
 
 Closures capture surrounding bindings by reference when they are mutable, by value when they are immutable. The captured environment lives on the heap and is managed by the garbage collector.
 
+A function type spelled `(T1, T2, ..., Tn) -> R` is the type of any callable value of matching arity and signature. A closure literal and a top-level function with the same signature are interchangeable as values of this type.
+
+A closure value is represented as a pair `(env, fn)`. The environment is a heap-allocated record containing the captured bindings, allocated by the garbage collector. A plain top-level function used in a closure-typed slot is wrapped by an adapter thunk whose environment is `NULL`. Closures without captures use the same representation with a `NULL` environment.
+
 ---
 
 ## Control Flow
@@ -252,6 +278,18 @@ for i in 0..=10 {                               // 0, 1, ..., 10
 ```
 
 `if` is an expression. Both arms must have the same type. `while` and `for` are statements; their value is `unit`.
+
+### If-Let
+
+```
+if let Some(v) = map.get(&m, key) {
+    use(v)
+} else {
+    handle_missing()
+}
+```
+
+`if let pattern = expr { ... } else { ... }` desugars to a two-arm `match` whose first arm is `pattern -> then_block` and whose second arm is `_ -> else_block`. The else clause is optional; when omitted, the value of the form when no match occurs is `unit`. The form composes nested `Option` and `Result` access without forcing the user to write a full `match` for a single shape of interest.
 
 ### Ranges
 
@@ -619,19 +657,13 @@ import std/fmt
 import std/vec
 
 let main() = {
-    var v: Vec<i32> = vec.make()
-    vec.push(&v, 10)
-    vec.push(&v, 20)
-    vec.push(&v, 30)
-
-    var i: i64 = 0
+    let v: Vec<i32> = [10, 20, 30]
     var sum: i32 = 0
-    while i < len(&v) {
-        sum = sum + v[i]
-        i = i + 1
+    for x in v {
+        sum = sum + x
     }
     fmt.println("sum:", sum)                        // 60
 }
 ```
 
-`vec.map`, `vec.filter`, `vec.fold` and array literals are planned but not yet supported. The example above uses the surface that exists today: a `while` loop with `len(&v)` and the `[]` operator.
+Array literal syntax `[a, b, c]` constructs a `Vec<T>` whose element type is inferred from the literal's elements or from the binding annotation. The literal lowers to `vec.make<T>()` followed by `vec.push<T>(&tmp, e)` for each element. `for x in v` iterates the resulting `Vec`. `vec.map`, `vec.filter`, and `vec.fold` are planned but not yet supported.

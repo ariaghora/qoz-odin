@@ -1,0 +1,4 @@
+// expect: 255
+// Hex literal (0xFF). Stage A supports; Stage B does not.
+
+let main(): i64 = 0xFF

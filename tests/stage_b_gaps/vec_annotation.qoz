@@ -1,0 +1,14 @@
+// expect: 30
+
+import std/vec
+
+let main(): i64 = {
+    let xs: Vec<i32> = vec.make()
+    vec.push(&xs, 10)
+    vec.push(&xs, 20)
+    var sum: i64 = 0
+    for x in xs {
+        sum = sum + (x as i64)
+    }
+    sum
+}

@@ -1,0 +1,18 @@
+// expect: 2
+
+type Color =
+    | Red
+    | Green
+    | Blue
+    | Yellow
+
+let is_warm(c: Color): i64 = {
+    match c {
+    | Red | Yellow -> 1
+    | Green | Blue -> 0
+    }
+}
+
+let main(): i64 = {
+    is_warm(Red) + is_warm(Yellow) - is_warm(Green) - is_warm(Blue)
+}

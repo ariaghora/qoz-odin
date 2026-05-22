@@ -138,7 +138,7 @@ let rewrite_ident_refs(e: Expr, pkg: string, local_fns: Map<string, bool>): Expr
     | EIf(sp, c, t, f) -> EIf(sp, rewrite_ident_refs(c, pkg, local_fns), rewrite_ident_refs(t, pkg, local_fns), rewrite_ident_refs(f, pkg, local_fns))
     | EMatch(sp, scrut, arms) -> {
         var na: Vec<MatchArm> = vec.make()
-        for a in arms { vec.push(&na, MatchArm { pat: a.pat, body: rewrite_ident_refs(a.body, pkg, local_fns) }) }
+        for a in arms { vec.push(&na, MatchArm { pat: a.pat, body: rewrite_ident_refs(a.body, pkg, local_fns), has_guard: a.has_guard, guard: a.guard }) }
         EMatch(sp, rewrite_ident_refs(scrut, pkg, local_fns), na)
     }
     | EWhile(sp, c, b) -> EWhile(sp, rewrite_ident_refs(c, pkg, local_fns), rewrite_ident_refs(b, pkg, local_fns))

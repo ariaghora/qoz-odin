@@ -1,0 +1,12 @@
+// expect: 11
+
+let classify(n: i64): i64 = {
+    match n {
+    | 0           -> 1
+    | 1           -> 2
+    | x if x < 10 -> 3
+    | _           -> 4
+    }
+}
+
+let main(): i64 = classify(0) + classify(1) + classify(5) + classify(100) + 1

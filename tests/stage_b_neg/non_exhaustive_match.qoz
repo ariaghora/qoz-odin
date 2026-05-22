@@ -1,0 +1,15 @@
+// Must fail: missing variant in match.
+
+type Color =
+    | Red
+    | Green
+    | Blue
+
+let to_int(c: Color): i64 = {
+    match c {
+    | Red   -> 0
+    | Green -> 1
+    }
+}
+
+let main(): i64 = to_int(Red)

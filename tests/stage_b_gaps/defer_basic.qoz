@@ -1,0 +1,20 @@
+// expect: 12
+
+// Tests that defers run in LIFO order at scope exit.
+// After run(): defers execute in reverse push order, building a number:
+//   second defer runs first: log = 0*10 + 2 = 2
+//   first defer runs second: log = 2*10 + 1 = 21
+// Return 21 - 9 = 12.
+
+import std/vec
+
+let run(log: *Vec<i64>) = {
+    defer vec.push(log, 1)
+    defer vec.push(log, 2)
+}
+
+let main(): i64 = {
+    var log: Vec<i64> = vec.make()
+    run(&log)
+    log[0] * 10 + log[1] - 9
+}

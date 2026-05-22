@@ -1,0 +1,11 @@
+// expect: 1
+
+type Person = { name: string, age: i64 }
+type Team = { lead: Person, size: i64 }
+
+let main(): i64 = {
+    let a = Team { lead: Person { name: "alice", age: 30 }, size: 4 }
+    let b = Team { lead: Person { name: "alice", age: 30 }, size: 4 }
+    let c = Team { lead: Person { name: "bob",   age: 30 }, size: 4 }
+    if a == b && a != c { 1 } else { 0 }
+}

@@ -1,0 +1,16 @@
+// expect: 6
+
+type Shape =
+    | Circle(i64)
+    | Square(i64)
+    | Triangle(i64, i64, i64)
+
+let area_score(s: Shape): i64 = {
+    match s {
+    | Circle(r)        -> r
+    | Square(side)     -> side * 2
+    | Triangle(a, b, c) -> a + b + c
+    }
+}
+
+let main(): i64 = area_score(Triangle(1, 2, 3))

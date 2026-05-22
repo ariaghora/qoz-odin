@@ -1,0 +1,12 @@
+// expect: 42
+
+import std/option
+
+let unwrap_or(o: Option<i64>, def: i64): i64 = {
+    match o {
+    | Some(n) -> n
+    | None    -> def
+    }
+}
+
+let main(): i64 = unwrap_or(Some(42), 0)

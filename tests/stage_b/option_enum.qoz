@@ -1,9 +1,7 @@
 // expect: 5
 // Generic ADT Option<T> with match and inferred unwrap_or.
 
-type Option<T> =
-    | Some(T)
-    | None
+import std/option
 
 let unwrap_or<T>(o: Option<T>, fallback: T): T = match o {
 | Some(x) -> x

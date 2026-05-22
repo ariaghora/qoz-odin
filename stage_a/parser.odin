@@ -27,6 +27,9 @@ parse_file :: proc(file: string, tokens: []Token, allocator := context.allocator
 
     decls := make([dynamic]Decl, allocator)
     for !at(&p, .EOF) {
+        // Skip ASI-synthesised semicolons between top-level declarations.
+        for accept(&p, .Semicolon) { }
+        if at(&p, .EOF) do break
         d, ok := parse_decl(&p)
         if ok {
             append(&decls, d)
@@ -109,6 +112,9 @@ recover_to_top_level :: proc(p: ^Parser) {
 
 parse_decl :: proc(p: ^Parser) -> (Decl, bool) {
     attrs := parse_attributes(p)
+    // ASI may inject a `;` between an attribute line and the declaration
+    // it adorns; consume it so the attribute attaches to the next decl.
+    for accept(p, .Semicolon) { }
 
     decl: Decl
     ok: bool
@@ -386,11 +392,13 @@ finish_record_decl :: proc(p: ^Parser, span: Span, name: string, type_params: []
 
 finish_enum_decl :: proc(p: ^Parser, span: Span, name: string, type_params: []string) -> (Decl, bool) {
     variants := make([dynamic]Variant_Decl)
+    for accept(p, .Semicolon) { }
     for at(p, .Pipe) {
         p.pos += 1                                     // consume `|`
         v, vok := parse_variant(p)
         if !vok do return nil, false
         append(&variants, v)
+        for accept(p, .Semicolon) { }
     }
     d := new(Decl_Enum)
     d.span = span; d.name = name; d.type_params = type_params; d.variants = variants[:]
@@ -1118,6 +1126,37 @@ finish_record_literal :: proc(p: ^Parser, span: Span, path: ^Expr_Path) -> (Expr
 parse_if :: proc(p: ^Parser) -> (Expr, bool) {
     span := current_span(p)
     if !eat(p, .KW_If, "`if`") do return nil, false
+    // `if let PAT = EXPR { ... } else { ... }` desugars to a match with the
+    // user's pattern as the first arm and a wildcard as the second.
+    if accept(p, .KW_Let) {
+        pat, pok := parse_pattern(p); if !pok do return nil, false
+        if !eat(p, .Eq, "`=` after if-let pattern") do return nil, false
+        scrut, sok := parse_expr(p); if !sok do return nil, false
+        then_b, tok := parse_block(p); if !tok do return nil, false
+        else_b: Expr = nil
+        if accept(p, .KW_Else) {
+            if at(p, .KW_If) {
+                e, eok := parse_if(p); if !eok do return nil, false
+                else_b = e
+            } else {
+                b, bok := parse_block(p); if !bok do return nil, false
+                else_b = b
+            }
+        }
+        if else_b == nil {
+            else_blk := new(Expr_Block)
+            else_blk.span = span
+            else_blk.stmts = {}
+            else_blk.tail = nil
+            else_b = else_blk
+        }
+        wild := new(Pat_Wild); wild.span = span
+        arms := make([dynamic]Match_Arm)
+        append(&arms, Match_Arm{pat = pat, guard = nil, body = then_b})
+        append(&arms, Match_Arm{pat = wild,  guard = nil, body = else_b})
+        out := new(Expr_Match); out.span = span; out.scrutinee = scrut; out.arms = arms[:]
+        return out, true
+    }
     cond, ok := parse_expr(p); if !ok do return nil, false
     then_b, tok := parse_block(p); if !tok do return nil, false
     else_b: Expr = nil
@@ -1165,9 +1204,17 @@ parse_match :: proc(p: ^Parser) -> (Expr, bool) {
     scrutinee, ok := parse_expr(p); if !ok do return nil, false
     if !eat(p, .Left_Brace, "`{`") do return nil, false
     arms := make([dynamic]Match_Arm)
+    for accept(p, .Semicolon) { }
     for at(p, .Pipe) {
         p.pos += 1                                                  // consume `|`
-        pat, pok := parse_pattern(p); if !pok do return nil, false
+        pats := make([dynamic]Pattern)
+        first_pat, pok := parse_pattern(p); if !pok do return nil, false
+        append(&pats, first_pat)
+        for at(p, .Pipe) {
+            p.pos += 1
+            np, npok := parse_pattern(p); if !npok do return nil, false
+            append(&pats, np)
+        }
         guard: Expr = nil
         if accept(p, .KW_If) {
             g, gok := parse_expr(p); if !gok do return nil, false
@@ -1175,7 +1222,10 @@ parse_match :: proc(p: ^Parser) -> (Expr, bool) {
         }
         if !eat(p, .Arrow, "`->` in match arm") do return nil, false
         body, bok := parse_expr(p); if !bok do return nil, false
-        append(&arms, Match_Arm{pat = pat, guard = guard, body = body})
+        for pat in pats {
+            append(&arms, Match_Arm{pat = pat, guard = guard, body = body})
+        }
+        for accept(p, .Semicolon) { }
     }
     if !eat(p, .Right_Brace, "`}` to close match") do return nil, false
     out := new(Expr_Match); out.span = span; out.scrutinee = scrutinee; out.arms = arms[:]

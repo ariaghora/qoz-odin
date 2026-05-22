@@ -1,0 +1,22 @@
+// expect: 1
+
+type Tag =
+    | A
+    | B
+    | C
+
+@operator("==")
+let tag_eq(a: *Tag, b: *Tag): bool = {
+    match (*a) {
+    | A -> match (*b) { | A -> true  | _ -> false }
+    | B -> match (*b) { | B -> true  | _ -> false }
+    | C -> match (*b) { | C -> true  | _ -> false }
+    }
+}
+
+let main(): i64 = {
+    let x: Tag = A
+    let y: Tag = A
+    let z: Tag = B
+    if x == y && x != z { 1 } else { 0 }
+}

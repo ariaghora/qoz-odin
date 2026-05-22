@@ -1,0 +1,13 @@
+// expect: 42
+
+// Verifies that the tokenizer's automatic semicolon insertion lets
+// statements terminate at end of line without explicit `;` separators.
+
+let add(a: i64, b: i64): i64 = a + b
+
+let main(): i64 = {
+    let bias: i64 = 2
+    let base: i64 = 30
+    let result = add(base, 10)
+    result + bias - 0
+}

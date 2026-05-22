@@ -35,6 +35,11 @@ type BinaryOp =
     | BOpGe
     | BOpAnd
     | BOpOr
+    | BOpBitAnd
+    | BOpBitOr
+    | BOpBitXor
+    | BOpShl
+    | BOpShr
     | BOpRange
     | BOpRangeInclusive
 
@@ -51,6 +56,7 @@ type TypeExpr =
     | TEPtr(Span, TypeExpr)
     | TETuple(Span, Vec<TypeExpr>)
     | TEUnit(Span)
+    | TEFn(Span, Vec<TypeExpr>, TypeExpr)
 
 type Pattern =
     | PatWild(Span)
@@ -72,8 +78,10 @@ type RecordFieldLit = {
 }
 
 type MatchArm = {
-    pat:  Pattern,
-    body: Expr,
+    pat:       Pattern,
+    body:      Expr,
+    has_guard: bool,
+    guard:     Expr,
 }
 
 type Expr =

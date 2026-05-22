@@ -1,0 +1,7 @@
+// expect: 75
+// Scientific notation: 7.5e1 = 75.
+
+let main(): i64 = {
+    let f: f64 = 7.5e1
+    f as i64
+}

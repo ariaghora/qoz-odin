@@ -161,7 +161,40 @@ tokenize :: proc(file: string, source: string, allocator := context.allocator) -
     }
 
     append(&t.tokens, Token{kind = .EOF, source = "", line = t.line, column = t.column})
+    // Stage A keeps explicit-terminator semantics. ASI lives in Stage B
+    // (compiler/tokenize/tokenize.qoz). compiler/main.qoz uses explicit
+    // structure where needed, so Stage A does not run the post-pass.
     return t.tokens, nil
+}
+
+// Post-process pass: walk the token stream and inject synthetic
+// semicolons at line breaks where the surrounding tokens permit it.
+// Insertion happens when the previous token can end a statement, the
+// next token is on a later line, the next token is not a continuation
+// (operator, comma, closing bracket, `else`, `as`, ...), and the
+// position is not inside `(` or `[` brackets.
+insert_asi_semicolons :: proc(input: [dynamic]Token, allocator := context.allocator) -> [dynamic]Token {
+    out := make([dynamic]Token, allocator)
+    paren_depth := 0
+    for tok, i in input {
+        if i > 0 && paren_depth <= 0 {
+            prev := input[i - 1]
+            if tok.line > prev.line && is_stmt_ender(prev) && !is_line_continuation(tok.kind) {
+                append(&out, Token{
+                    kind   = .Semicolon,
+                    source = ";",
+                    line   = prev.line,
+                    column = prev.column,
+                })
+            }
+        }
+        append(&out, tok)
+        #partial switch tok.kind {
+        case .Left_Paren, .Left_Bracket:  paren_depth += 1
+        case .Right_Paren, .Right_Bracket: paren_depth -= 1
+        }
+    }
+    return out
 }
 
 current_char :: proc(t: ^Tokenizer) -> rune {
@@ -201,6 +234,37 @@ emit :: proc(t: ^Tokenizer, kind: Token_Kind, width: int) {
         line   = start_line,
         column = start_col,
     })
+}
+
+is_stmt_ender :: proc(tok: Token) -> bool {
+    #partial switch tok.kind {
+    case .Ident, .Lit_Int, .Lit_Float, .Lit_String, .Lit_Char,
+         .Lit_True, .Lit_False, .Lit_Nil,
+         .Right_Paren, .Right_Bracket, .Right_Brace,
+         .KW_Return:
+        return true
+    }
+    return false
+}
+
+// Returns true when the next token is a continuation token that consumes
+// the previous expression (binary operators, postfix operators, closing
+// brackets, alternation `|`, the `else`/`as` keywords, etc.). When this
+// holds, do not synthesise a semicolon at the line break: the source
+// clearly intends to keep one expression flowing across lines.
+is_line_continuation :: proc(kind: Token_Kind) -> bool {
+    #partial switch kind {
+    case .Pipe, .Or_Or, .And_And, .Amp,
+         .Plus, .Minus, .Star, .Slash, .Percent,
+         .Eq, .Eq_Eq, .Not_Eq, .Lt, .Gt, .Lt_Eq, .Gt_Eq,
+         .Plus_Eq, .Minus_Eq, .Star_Eq, .Slash_Eq, .Percent_Eq,
+         .Arrow, .Dot, .Comma, .Colon, .Question,
+         .Right_Paren, .Right_Bracket, .Right_Brace,
+         .Dot_Dot, .Range_Excl, .Range_Incl,
+         .KW_Else, .KW_As, .KW_In:
+        return true
+    }
+    return false
 }
 
 skip_trivia :: proc(t: ^Tokenizer) -> Maybe(Tokenize_Error) {

@@ -3,13 +3,16 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include "tgc.h"
-
-extern tgc_t qoz_gc;
+#include <stddef.h>
+#include "gc.h"
 
 typedef struct {
     const char *data;
     int64_t len;
+    /* Allocation-start pointer that keeps the data buffer reachable
+     * through tgc's exact-match scan. Equal to data for fresh allocations,
+     * inherited from the source for slices, NULL for static literals. */
+    const char *root;
 } qoz_string;
 
 void qoz_init(int *stack_anchor);

@@ -1,0 +1,7 @@
+// expect: 13
+
+let main(): i64 = {
+    let pair = (3, "ten")
+    let (n, _) = pair
+    n + 10
+}

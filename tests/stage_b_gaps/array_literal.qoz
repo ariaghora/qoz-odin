@@ -1,0 +1,10 @@
+// expect: 6
+
+import std/vec
+
+let main(): i64 = {
+    let xs = [1, 2, 3]
+    var sum: i64 = 0
+    for x in xs { sum = sum + x }
+    sum
+}

@@ -234,18 +234,56 @@ output_name_for :: proc(src_path: string) -> string {
     return strings.clone(base)
 }
 
-// runtime_dir locates the stage_a/runtime/ directory regardless of where the
-// driver is invoked from. The runtime sits next to the stage_a binary in dev.
-runtime_dir :: proc() -> string {
-    exe_path := os.args[0]
-    abs, _ := filepath.abs(exe_path, context.temp_allocator)
-    dir := filepath.dir(abs, context.temp_allocator)
-    // Try ./runtime first (when invoked from stage_a/)
-    candidate, _ := filepath.join({dir, "runtime"}, context.temp_allocator)
-    if _, err := os.stat(candidate, context.temp_allocator); err == nil {
-        return strings.clone(candidate)
+// Runtime C/H sources are baked into the driver binary so Stage A does
+// not depend on the stage_a/runtime/ directory existing at compile time.
+// On first use, ensure_runtime_dir writes them to a session temp path
+// and returns it; subsequent calls reuse the same path.
+@(private)
+runtime_qoz_runtime_c := #load("runtime/qoz_runtime.c")
+@(private)
+runtime_qoz_runtime_h := #load("runtime/qoz_runtime.h")
+@(private)
+runtime_gc_c := #load("runtime/gc.c")
+@(private)
+runtime_gc_h := #load("runtime/gc.h")
+
+@(private)
+runtime_dir_cache: string = ""
+
+ensure_runtime_dir :: proc() -> string {
+    if runtime_dir_cache != "" do return runtime_dir_cache
+
+    tmp_root := os.get_env("TMPDIR", context.temp_allocator)
+    if tmp_root == "" do tmp_root = "/tmp"
+    rt, _ := filepath.join({tmp_root, "qoz-stage-a-runtime"}, context.allocator)
+
+    if _, err := os.stat(rt, context.temp_allocator); err != nil {
+        if mk_err := os.make_directory(rt); mk_err != nil {
+            fmt.eprintfln("could not create runtime cache %s: %v", rt, mk_err)
+        }
     }
-    return strings.clone(candidate)
+
+    write_if_changed :: proc(path: string, data: []byte) {
+        existing, read_err := os.read_entire_file(path, context.temp_allocator)
+        if read_err == nil && len(existing) == len(data) {
+            same := true
+            for b, i in existing { if b != data[i] { same = false; break } }
+            if same do return
+        }
+        _ = os.write_entire_file(path, data)
+    }
+
+    p1, _ := filepath.join({rt, "qoz_runtime.c"}, context.temp_allocator)
+    p2, _ := filepath.join({rt, "qoz_runtime.h"}, context.temp_allocator)
+    p3, _ := filepath.join({rt, "gc.c"},          context.temp_allocator)
+    p4, _ := filepath.join({rt, "gc.h"},          context.temp_allocator)
+    write_if_changed(p1, runtime_qoz_runtime_c)
+    write_if_changed(p2, runtime_qoz_runtime_h)
+    write_if_changed(p3, runtime_gc_c)
+    write_if_changed(p4, runtime_gc_h)
+
+    runtime_dir_cache = rt
+    return rt
 }
 
 compile_and_link :: proc(c_source: string, out_name: string) -> bool {
@@ -255,9 +293,9 @@ compile_and_link :: proc(c_source: string, out_name: string) -> bool {
         return false
     }
 
-    rt := runtime_dir()
+    rt := ensure_runtime_dir()
     qoz_rt_c, _ := filepath.join({rt, "qoz_runtime.c"}, context.temp_allocator)
-    tgc_c, _    := filepath.join({rt, "tgc.c"},         context.temp_allocator)
+    gc_c, _     := filepath.join({rt, "gc.c"},          context.temp_allocator)
     include_flag := fmt.tprintf("-I%s", rt)
 
     cmd := []string{
@@ -286,7 +324,7 @@ compile_and_link :: proc(c_source: string, out_name: string) -> bool {
         include_flag,
         tmp_c,
         qoz_rt_c,
-        tgc_c,
+        gc_c,
         "-o", out_name,
     }
 
@@ -301,7 +339,9 @@ compile_and_link :: proc(c_source: string, out_name: string) -> bool {
         if len(stderr) > 0 do fmt.eprint(string(stderr))
         return false
     }
-    os.remove(tmp_c)
+    if os.get_env("QOZ_KEEP_C", context.temp_allocator) == "" {
+        os.remove(tmp_c)
+    }
     return true
 }
 

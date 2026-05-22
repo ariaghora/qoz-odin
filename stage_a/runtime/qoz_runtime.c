@@ -4,8 +4,6 @@
 #include <string.h>
 #include <inttypes.h>
 
-tgc_t qoz_gc;
-
 static int qoz_argc_val = 0;
 static char **qoz_argv_val = NULL;
 
@@ -53,7 +51,7 @@ qoz_string qoz_fs_read_file(qoz_string path) {
     char *data = (char *)qoz_alloc((int64_t)n);
     size_t got = fread(data, 1, (size_t)n, f);
     fclose(f);
-    return (qoz_string){ data, (int64_t)got };
+    return (qoz_string){ data, (int64_t)got, data };
 }
 
 bool qoz_fs_file_exists(qoz_string path) {
@@ -91,7 +89,7 @@ qoz_string qoz_string_cat(qoz_string a, qoz_string b) {
     char *buf = (char *)qoz_alloc(n);
     if (a.len > 0) memcpy(buf,         a.data, (size_t)a.len);
     if (b.len > 0) memcpy(buf + a.len, b.data, (size_t)b.len);
-    return (qoz_string){ buf, n };
+    return (qoz_string){ buf, n, buf };
 }
 
 int64_t qoz_string_byte_at(qoz_string s, int64_t i) {
@@ -110,7 +108,7 @@ qoz_string qoz_string_slice(qoz_string s, int64_t from, int64_t to) {
     if (from < 0) from = 0;
     if (to > s.len) to = s.len;
     if (from > to) from = to;
-    return (qoz_string){ s.data + from, to - from };
+    return (qoz_string){ s.data + from, to - from, s.root };
 }
 
 void qoz_strbuf_init(qoz_strbuf *b) {
@@ -164,7 +162,7 @@ void qoz_strbuf_append_bool(qoz_strbuf *b, bool v) {
 }
 
 qoz_string qoz_strbuf_finish(qoz_strbuf *b) {
-    return (qoz_string){ b->buf, b->len };
+    return (qoz_string){ b->buf, b->len, b->buf };
 }
 
 int64_t qoz_string_parse_int(qoz_string s) {
@@ -176,33 +174,43 @@ int64_t qoz_string_parse_int(qoz_string s) {
 }
 
 void qoz_init(int *stack_anchor) {
-    tgc_start(&qoz_gc, stack_anchor);
+    (void)stack_anchor;
+    /* gc.c owns the heap. Auto-collection is paused; the compiler
+     * workload does not require intermediate sweeps and pausing avoids
+     * register-resident-root races until the shadow-stack covers
+     * everything that needs it. Process exit frees the rest. */
 }
 
 void qoz_shutdown(void) {
-    tgc_stop(&qoz_gc);
-}
-
-void qoz_gc_pause(void) {
-    tgc_pause(&qoz_gc);
-}
-
-void qoz_gc_resume(void) {
-    tgc_resume(&qoz_gc);
+    qoz_gc_shutdown();
 }
 
 void *qoz_alloc(int64_t size) {
-    return tgc_alloc(&qoz_gc, (size_t)size);
+    /* Used by string / Vec / Map data buffers and other arrays that do
+     * not carry a per-element type descriptor. Tracked by gc.c so the
+     * shutdown sweep frees them. */
+    return qoz_gc_alloc(size, NULL);
 }
 
 void *qoz_calloc(int64_t size) {
-    void *p = tgc_alloc(&qoz_gc, (size_t)size);
-    if (p != NULL) memset(p, 0, (size_t)size);
-    return p;
+    /* qoz_gc_alloc already zero-fills. */
+    return qoz_gc_alloc(size, NULL);
 }
 
 void *qoz_realloc(void *ptr, int64_t size) {
-    return tgc_realloc(&qoz_gc, ptr, (size_t)size);
+    if (ptr == NULL) return qoz_gc_alloc(size, NULL);
+    /* For now treat realloc as alloc-and-copy. The GC tracks the new
+     * allocation; the old one will be freed by the next sweep (or at
+     * shutdown). Vec/Map are the common callers and they always retain
+     * a reference to the new pointer, so this is safe. */
+    int64_t old_size = qoz_gc_alloc_size(ptr);
+    void *p = qoz_gc_alloc(size, NULL);
+    if (p != NULL && old_size > 0) {
+        int64_t copy = old_size < size ? old_size : size;
+        memcpy(p, ptr, (size_t)copy);
+    }
+    qoz_gc_free(ptr);
+    return p;
 }
 
 bool qoz_string_eq(qoz_string a, qoz_string b) {

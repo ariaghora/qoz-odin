@@ -97,6 +97,13 @@ let resolve_type(tc: *TyContext, te: TypeExpr): Ty = {
     | TEPtr(_, inner)            -> ty.ty_ptr_(resolve_type(tc, inner))
     | TETuple(_, _)              -> ty.ty_error_()
     | TENamed(span, path, args)  -> resolve_named(tc, span, path, args)
+    | TEFn(_, params, ret)       -> {
+        var resolved: Vec<Ty> = vec.make()
+        for p in params {
+            vec.push(&resolved, resolve_type(tc, p))
+        }
+        ty.ty_fn_(resolved, resolve_type(tc, ret))
+    }
     }
 }
 
@@ -219,7 +226,18 @@ let synth(tc: *TyContext, env: *Env, e: Expr): Ty = {
     | EReturn(_, v)          -> { let _ = synth(tc, env, v); ty.ty_unit_() }
     | EDefer(_, b)           -> { let _ = synth(tc, env, b); ty.ty_unit_() }
     | ESizeOf(_, _)          -> ty.ty_int_(64, true)
-    | EArrayLit(_, elems)    -> { for el in elems { let _ = synth(tc, env, el) } ty.ty_error_() }
+    | EArrayLit(_, elems)    -> {
+        if len(elems) == 0 { return ty.ty_error_() }
+        let elem_ty = synth(tc, env, elems[0])
+        var i: i64 = 1
+        while i < len(elems) {
+            let _ = synth(tc, env, elems[i])
+            i = i + 1
+        }
+        var args: Vec<Ty> = vec.make()
+        vec.push(&args, elem_ty)
+        ty.ty_record_("Vec", args)
+    }
     }
 }
 
@@ -570,6 +588,11 @@ let synth_binary(tc: *TyContext, env: *Env, op: BinaryOp, l: Expr, r: Expr): Ty 
     | BOpMul            -> lt
     | BOpDiv            -> lt
     | BOpMod            -> lt
+    | BOpBitAnd         -> lt
+    | BOpBitOr          -> lt
+    | BOpBitXor         -> lt
+    | BOpShl            -> lt
+    | BOpShr            -> lt
     | BOpRange          -> lt
     | BOpRangeInclusive -> lt
     }
@@ -608,7 +631,101 @@ let synth_match(tc: *TyContext, env: *Env, scrut: Expr, arms: Vec<MatchArm>): Ty
             first = false
         }
     }
+    check_match_exhaustiveness(tc, scrut, scrut_ty, arms)
     result
+}
+
+let check_match_exhaustiveness(tc: *TyContext, scrut: Expr, scrut_ty: Ty, arms: Vec<MatchArm>) = {
+    let enum_name = enum_name_of_ty(scrut_ty)
+    if strings.eq_raw(enum_name, "") { return }
+    match map.get(&tc.enums, enum_name) {
+    | Some(decl) -> {
+        match decl {
+        | DEnum(_, _, _, variants) -> {
+            var vs: CoverSet = CoverSet { bound: map.make() }
+            for v in variants { vs.bound[v.name] = true }
+            if has_catch_all_with_variants(arms, &vs) { return }
+            var cs: CoverSet = CoverSet { bound: map.make() }
+            collect_covered_variants(arms, &cs)
+            var missing: Vec<string> = vec.make()
+            for v in variants {
+                if !map.contains(&cs.bound, v.name) {
+                    vec.push(&missing, v.name)
+                }
+            }
+            if len(missing) > 0 {
+                var msg = "non-exhaustive match: missing"
+                for m in missing {
+                    msg = strings.cat(msg, " ")
+                    msg = strings.cat(msg, m)
+                }
+                record_error(tc, scrut_span(scrut), msg)
+            }
+        }
+        | _ -> { }
+        }
+    }
+    | None -> { }
+    }
+}
+
+let scrut_span(scrut: Expr): Span = {
+    match scrut {
+    | ENil(sp)
+    | EInt(sp, _) | EFloat(sp, _) | EString(sp, _) | EChar(sp, _) | EBool(sp, _)
+    | EIdent(sp, _) | EPath(sp, _) | EReturn(sp, _) | EDefer(sp, _) | ESizeOf(sp, _)
+    | EArrayLit(sp, _) | ETry(sp, _) | ETuple(sp, _)
+    | EUnary(sp, _, _) | EField(sp, _, _) | EIndex(sp, _, _) | ECast(sp, _, _)
+    | ERecord(sp, _, _) | EBlock(sp, _, _) | EWhile(sp, _, _) | EMatch(sp, _, _)
+    | EBinary(sp, _, _, _) | EAssign(sp, _, _, _) | ECall(sp, _, _, _)
+    | EIf(sp, _, _, _) | EClosure(sp, _, _, _)
+    | EFor(sp, _, _, _, _) -> sp
+    }
+}
+
+let enum_name_of_ty(t: Ty): string = {
+    match t {
+    | TyAdt(name, _) -> name
+    | _              -> ""
+    }
+}
+
+let has_catch_all_with_variants(arms: Vec<MatchArm>, variants: *CoverSet): bool = {
+    for arm in arms {
+        if !arm.has_guard {
+            match arm.pat {
+            | PatWild(_) -> return true
+            | PatBind(_, name) -> {
+                if !map.contains(&variants.bound, name) {
+                    return true
+                }
+            }
+            | _ -> { }
+            }
+        }
+    }
+    false
+}
+
+type CoverSet = { bound: Map<string, bool> }
+
+let collect_covered_variants(arms: Vec<MatchArm>, cs: *CoverSet) = {
+    for arm in arms {
+        if !arm.has_guard {
+            match arm.pat {
+            | PatVariant(_, path, _) -> {
+                if len(path) > 0 {
+                    let last = path[len(path) - 1]
+                    cs.bound[last] = true
+                }
+            }
+            | PatBind(_, name) -> {
+                cs.bound[name] = true
+            }
+            | _ -> { }
+            }
+        }
+    }
 }
 
 let bind_for_loop(env: *Env, b1: string, b2: string, it_ty: Ty) = {
@@ -649,12 +766,8 @@ let env_truncate(env: *Env, n: i64) = {
 
 let bind_pattern(tc: *TyContext, env: *Env, pat: Pattern, scrut: Ty) = {
     match pat {
-    | PatWild(_)            -> { }
-    | PatBind(_, name)      -> env_define(env, name, scrut)
-    | PatLitInt(_, _)       -> { }
-    | PatLitString(_, _)    -> { }
-    | PatLitBool(_, _)      -> { }
-    | PatTuple(_, _)        -> { }
+    | PatWild(_) | PatLitInt(_, _) | PatLitString(_, _) | PatLitBool(_, _) | PatTuple(_, _) -> { }
+    | PatBind(_, name)              -> env_define(env, name, scrut)
     | PatVariant(_, path, sub_pats) -> bind_variant_pattern(tc, env, path, sub_pats, scrut)
     }
 }
@@ -662,12 +775,8 @@ let bind_pattern(tc: *TyContext, env: *Env, pat: Pattern, scrut: Ty) = {
 let bind_variant_pattern(tc: *TyContext, env: *Env, path: Vec<string>, sub_pats: Vec<Pattern>, scrut: Ty) = {
     if len(path) < 1 { return }
     let variant = path[len(path) - 1]
-    match map.get(&tc.variant_of, variant) {
-    | None -> { }
-    | Some(enum_name) -> {
-        match map.get(&tc.enums, enum_name) {
-        | None -> { }
-        | Some(d) -> {
+    if let Some(enum_name) = map.get(&tc.variant_of, variant) {
+        if let Some(d) = map.get(&tc.enums, enum_name) {
             match d {
             | DEnum(_, _, tparams, variants) -> {
                 var tyargs: Vec<Ty> = vec.make()
@@ -691,8 +800,6 @@ let bind_variant_pattern(tc: *TyContext, env: *Env, path: Vec<string>, sub_pats:
             | _ -> { }
             }
         }
-        }
-    }
     }
 }
 
@@ -778,7 +885,7 @@ let infer_calls_expr(tc: *TyContext, env: *Env, e: Expr, expected: Ty): Expr = {
         for a in arms {
             let saved_len = len(env.bindings)
             bind_pattern(tc, env, a.pat, scrut_ty)
-            vec.push(&na, MatchArm { pat: a.pat, body: infer_calls_expr(tc, env, a.body, expected) })
+            vec.push(&na, MatchArm { pat: a.pat, body: infer_calls_expr(tc, env, a.body, expected), has_guard: a.has_guard, guard: a.guard })
             env_truncate(env, saved_len)
         }
         EMatch(sp, new_scrut, na)

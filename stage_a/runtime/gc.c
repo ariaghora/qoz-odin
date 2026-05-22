@@ -1,0 +1,319 @@
+/* qoz_gc: precise mark/sweep with type descriptors.
+ *
+ * Owns the heap directly. Each call to qoz_gc_alloc returns malloc'd
+ * memory and registers the allocation in a side table that records the
+ * pointer, its TypeDesc, and a mark bit. Roots come from a shadow stack
+ * the compiler emits at every function entry.
+ *
+ * Auto-collection is paused at startup; the compiler workload does not
+ * need intermediate sweeps and pausing avoids a class of premature-
+ * collection crashes seen when callers hold buffer pointers only in
+ * registers across allocation calls. Programs that need true GC
+ * behaviour call qoz_gc_resume() and qoz_gc_run() explicitly. Shutdown
+ * frees everything regardless.
+ */
+
+#include "gc.h"
+
+#include <stdint.h>
+#include <stdlib.h>
+#include <stdbool.h>
+
+/* state: 0 = empty (probe stops); 1 = live; 2 = tombstone (probe continues) */
+typedef struct {
+    void                       *ptr;
+    const qoz_type_desc        *desc;
+    int64_t                     size;
+    uint8_t                     mark;
+    uint8_t                     state;
+} qoz_gc_slot;
+
+typedef struct {
+    qoz_gc_slot *slots;
+    int64_t      nslots;
+    int64_t      nlive;
+    int64_t      ntomb;
+} qoz_gc_table;
+
+static qoz_gc_table g_table  = { NULL, 0, 0, 0 };
+static int          g_paused = 1;
+
+#define ROOT_STACK_INIT 4096
+static void   **g_roots     = NULL;
+static int64_t  g_roots_top = 0;
+static int64_t  g_roots_cap = 0;
+
+static uint64_t hash_ptr(const void *p) {
+    uint64_t x = (uint64_t)(uintptr_t)p;
+    x ^= x >> 30; x *= 0xbf58476d1ce4e5b9ULL;
+    x ^= x >> 27; x *= 0x94d049bb133111ebULL;
+    x ^= x >> 31;
+    return x;
+}
+
+static void table_init_if_needed(void) {
+    if (g_table.slots) return;
+    g_table.nslots = 1024;
+    g_table.slots  = (qoz_gc_slot *)calloc((size_t)g_table.nslots, sizeof(qoz_gc_slot));
+    g_table.nlive  = 0;
+}
+
+static qoz_gc_slot *find_slot(const void *ptr, int insert) {
+    table_init_if_needed();
+    int64_t mask = g_table.nslots - 1;
+    int64_t i = (int64_t)(hash_ptr(ptr) & (uint64_t)mask);
+    qoz_gc_slot *first_tomb = NULL;
+    for (int64_t step = 0; step < g_table.nslots; step++) {
+        qoz_gc_slot *s = &g_table.slots[(i + step) & mask];
+        if (s->state == 0) {
+            if (insert) return first_tomb ? first_tomb : s;
+            return NULL;
+        }
+        if (s->state == 2) {
+            if (insert && !first_tomb) first_tomb = s;
+            continue;
+        }
+        if (s->ptr == ptr) return s;
+    }
+    return insert ? first_tomb : NULL;
+}
+
+static void table_grow(void) {
+    int64_t      old_n     = g_table.nslots;
+    qoz_gc_slot *old_slots = g_table.slots;
+    g_table.nslots = old_n * 2;
+    g_table.slots  = (qoz_gc_slot *)calloc((size_t)g_table.nslots, sizeof(qoz_gc_slot));
+    g_table.nlive  = 0;
+    g_table.ntomb  = 0;
+    for (int64_t i = 0; i < old_n; i++) {
+        if (old_slots[i].state == 1) {
+            qoz_gc_slot *s = find_slot(old_slots[i].ptr, 1);
+            if (s) {
+                *s = old_slots[i];
+                g_table.nlive++;
+            }
+        }
+    }
+    free(old_slots);
+}
+
+void *qoz_gc_alloc(int64_t size, const qoz_type_desc *desc) {
+    void *p = calloc(1, (size_t)size);
+    if (!p) return NULL;
+    table_init_if_needed();
+    if ((g_table.nlive + g_table.ntomb) * 2 >= g_table.nslots) table_grow();
+    qoz_gc_slot *s = find_slot(p, 1);
+    if (s) {
+        uint8_t prev = s->state;
+        s->ptr   = p;
+        s->desc  = desc;
+        s->size  = size;
+        s->mark  = 0;
+        s->state = 1;
+        if (prev == 2) g_table.ntomb--;
+        g_table.nlive++;
+    }
+    return p;
+}
+
+const qoz_type_desc *qoz_gc_desc_of(const void *ptr) {
+    if (!ptr) return NULL;
+    qoz_gc_slot *s = find_slot(ptr, 0);
+    return (s && s->state == 1) ? s->desc : NULL;
+}
+
+void qoz_gc_push_root(void *root) {
+    if (g_roots_top == g_roots_cap) {
+        int64_t new_cap = g_roots_cap ? g_roots_cap * 2 : ROOT_STACK_INIT;
+        g_roots = (void **)realloc(g_roots, (size_t)new_cap * sizeof(void *));
+        g_roots_cap = new_cap;
+    }
+    g_roots[g_roots_top++] = root;
+}
+
+void qoz_gc_pop_roots(int64_t n) {
+    g_roots_top -= n;
+    if (g_roots_top < 0) g_roots_top = 0;
+}
+
+int64_t qoz_gc_shadow_top(void) { return g_roots_top; }
+
+void qoz_gc_shadow_set_top(int64_t top) {
+    if (top < 0) top = 0;
+    if (top > g_roots_top) return;
+    g_roots_top = top;
+}
+
+void qoz_gc_restore_shadow(int64_t *base) {
+    qoz_gc_shadow_set_top(*base);
+}
+
+void qoz_gc_walk_shadow_roots(void (*cb)(void *arg, void *child), void *arg) {
+    for (int64_t i = 0; i < g_roots_top; i++) {
+        void *slot = g_roots[i];
+        if (!slot) continue;
+        void *p = *((void **)slot);
+        if (p) cb(arg, p);
+    }
+}
+
+void qoz_gc_clear_marks(void) {
+    table_init_if_needed();
+    for (int64_t i = 0; i < g_table.nslots; i++) g_table.slots[i].mark = 0;
+}
+
+bool qoz_gc_is_marked(const void *ptr) {
+    qoz_gc_slot *s = find_slot(ptr, 0);
+    return (s && s->state == 1) ? (s->mark != 0) : false;
+}
+
+int64_t qoz_gc_total_allocations(void) { return g_table.nlive; }
+
+int qoz_gc_scan_object_callback(void *ptr,
+                                void (*cb)(void *arg, void *child),
+                                void *arg) {
+    qoz_gc_slot *s = find_slot(ptr, 0);
+    if (!s || s->state != 1 || !s->desc) return 0;
+    const qoz_type_desc *desc = s->desc;
+    switch (desc->kind) {
+    case QOZ_DESC_LEAF:
+        return 1;
+    case QOZ_DESC_OFFSETS:
+        for (int32_t i = 0; i < desc->nptrs; i++) {
+            void *child = *((void **)((char *)ptr + desc->offsets[i]));
+            if (child) cb(arg, child);
+        }
+        return 1;
+    case QOZ_DESC_ADT: {
+        int32_t tag = *((int32_t *)((char *)ptr + desc->tag_off));
+        for (int32_t v = 0; v < desc->nvariants; v++) {
+            if (desc->variants[v].tag == tag) {
+                void *payload = (char *)ptr + desc->payload_off;
+                for (int32_t i = 0; i < desc->variants[v].nptrs; i++) {
+                    void *child = *((void **)((char *)payload + desc->variants[v].offsets[i]));
+                    if (child) cb(arg, child);
+                }
+                break;
+            }
+        }
+        return 1;
+    }
+    case QOZ_DESC_CONSERVATIVE:
+    default:
+        return 0;
+    }
+}
+
+typedef struct {
+    void  **items;
+    int64_t top;
+    int64_t cap;
+} qoz_gc_mark_stack;
+
+static void mark_stack_push(qoz_gc_mark_stack *ms, void *p) {
+    if (ms->top == ms->cap) {
+        int64_t new_cap = ms->cap ? ms->cap * 2 : 1024;
+        ms->items = (void **)realloc(ms->items, (size_t)new_cap * sizeof(void *));
+        ms->cap = new_cap;
+    }
+    ms->items[ms->top++] = p;
+}
+
+static void mark_callback(void *arg, void *child) {
+    mark_stack_push((qoz_gc_mark_stack *)arg, child);
+}
+
+int64_t qoz_gc_mark_phase(void) {
+    qoz_gc_clear_marks();
+    qoz_gc_mark_stack ms = { NULL, 0, 0 };
+    qoz_gc_walk_shadow_roots(mark_callback, &ms);
+
+    int64_t marked = 0;
+    while (ms.top > 0) {
+        void *obj = ms.items[--ms.top];
+        qoz_gc_slot *s = find_slot(obj, 0);
+        if (!s || s->state != 1 || s->mark) continue;
+        s->mark = 1;
+        marked++;
+        if (s->desc && s->desc->kind == QOZ_DESC_LEAF) continue;
+        if (!qoz_gc_scan_object_callback(obj, mark_callback, &ms)) {
+            /* No descriptor: conservative scan of the allocation. */
+            int64_t nwords = s->size / (int64_t)sizeof(void *);
+            void **words = (void **)obj;
+            for (int64_t k = 0; k < nwords; k++) {
+                if (words[k]) mark_stack_push(&ms, words[k]);
+            }
+        }
+    }
+    free(ms.items);
+    return marked;
+}
+
+int64_t qoz_gc_sweep_phase(void) {
+    int64_t freed = 0;
+    table_init_if_needed();
+    for (int64_t i = 0; i < g_table.nslots; i++) {
+        qoz_gc_slot *s = &g_table.slots[i];
+        if (s->state == 1 && !s->mark) {
+            free(s->ptr);
+            s->ptr   = NULL;
+            s->desc  = NULL;
+            s->size  = 0;
+            s->state = 2;
+            g_table.nlive--;
+            g_table.ntomb++;
+            freed++;
+        }
+    }
+    return freed;
+}
+
+int64_t qoz_gc_run(void) {
+    qoz_gc_mark_phase();
+    return qoz_gc_sweep_phase();
+}
+
+void qoz_gc_pause(void)  { g_paused = 1; }
+void qoz_gc_resume(void) { g_paused = 0; }
+bool qoz_gc_is_paused(void) { return g_paused != 0; }
+
+int64_t qoz_gc_alloc_size(const void *ptr) {
+    if (!ptr) return 0;
+    qoz_gc_slot *s = find_slot(ptr, 0);
+    return (s && s->state == 1) ? s->size : 0;
+}
+
+void qoz_gc_free(void *ptr) {
+    if (!ptr) return;
+    qoz_gc_slot *s = find_slot(ptr, 0);
+    if (!s || s->state != 1) return;
+    free(s->ptr);
+    s->ptr   = NULL;
+    s->desc  = NULL;
+    s->size  = 0;
+    s->mark  = 0;
+    s->state = 2;
+    g_table.nlive--;
+    g_table.ntomb++;
+}
+
+/* Free everything (called at process shutdown). */
+void qoz_gc_shutdown(void) {
+    if (!g_table.slots) return;
+    for (int64_t i = 0; i < g_table.nslots; i++) {
+        if (g_table.slots[i].state == 1) {
+            free(g_table.slots[i].ptr);
+            g_table.slots[i].ptr   = NULL;
+            g_table.slots[i].state = 0;
+        }
+    }
+    free(g_table.slots);
+    g_table.slots  = NULL;
+    g_table.nslots = 0;
+    g_table.nlive  = 0;
+    g_table.ntomb  = 0;
+    free(g_roots);
+    g_roots     = NULL;
+    g_roots_top = 0;
+    g_roots_cap = 0;
+}

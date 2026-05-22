@@ -1,0 +1,11 @@
+// expect: 42
+
+let make_adder(base: i64): (i64) -> i64 = {
+    let bias: i64 = 2
+    (x: i64): i64 -> x + base + bias
+}
+
+let main(): i64 = {
+    let f = make_adder(30)
+    f(10)
+}

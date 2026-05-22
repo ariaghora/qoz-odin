@@ -1,0 +1,4 @@
+// expect: 5
+// Binary literal (0b101).
+
+let main(): i64 = 0b101

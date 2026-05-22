@@ -1,0 +1,7 @@
+// expect: 65
+// Character literal 'A' should evaluate to 65.
+
+let main(): i64 = {
+    let c: char = 'A'
+    c as i64
+}
