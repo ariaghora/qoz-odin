@@ -1,7 +1,8 @@
 // std/mem: GC-managed heap allocation.
 //
-// All routines route through the tgc-based runtime. The user does not free;
-// the collector reclaims unreachable memory.
+// All routines route through the precise mark/sweep collector in the
+// runtime. The user does not free; the collector reclaims unreachable
+// memory on its own schedule.
 
 @link_name("qoz_alloc")
 external let alloc(size: i64): *void
@@ -11,9 +12,3 @@ external let calloc(size: i64): *void
 
 @link_name("qoz_realloc")
 external let realloc(ptr: *void, size: i64): *void
-
-@link_name("qoz_gc_pause")
-external let gc_pause()
-
-@link_name("qoz_gc_resume")
-external let gc_resume()

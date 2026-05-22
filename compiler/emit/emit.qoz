@@ -4505,6 +4505,15 @@ let enum_name_from_type(e: *Emitter, te: TypeExpr, bare_enum: string): string = 
     }
 }
 
+let variant_inst_args(e: *Emitter, enum_name: string, bare: string): Vec<TypeExpr> = {
+    for inst in e.enum_insts {
+        if strings.eq_raw(inst.mangled, enum_name) {
+            return inst.args
+        }
+    }
+    mangled_args(e, enum_name, bare)
+}
+
 let variant_payload_typeexpr(e: *Emitter, enum_name: string, variant: string, pos: i64): TypeExpr = {
     let bare = strip_mangled(enum_name)
     let unit_sp = Span { file: "", line: 0, col: 0 }
@@ -4513,7 +4522,7 @@ let variant_payload_typeexpr(e: *Emitter, enum_name: string, variant: string, po
     | Some(d) -> {
         match d {
         | DEnum(_, _, tparams, variants) -> {
-            let inst_args = mangled_args(e, enum_name, bare)
+            let inst_args = variant_inst_args(e, enum_name, bare)
             for v in variants {
                 if strings.eq_raw(v.name, variant) {
                     if pos >= 0 && pos < len(v.pos) {
@@ -4539,7 +4548,7 @@ let variant_payload_ctype(e: *Emitter, enum_name: string, variant: string, pos: 
     | Some(d) -> {
         match d {
         | DEnum(_, _, tparams, variants) -> {
-            let inst_args = mangled_args(e, enum_name, bare)
+            let inst_args = variant_inst_args(e, enum_name, bare)
             for v in variants {
                 if strings.eq_raw(v.name, variant) {
                     if pos >= 0 && pos < len(v.pos) {

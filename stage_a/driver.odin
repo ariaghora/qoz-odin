@@ -302,6 +302,13 @@ compile_and_link :: proc(c_source: string, out_name: string) -> bool {
         "clang",
         "-std=c11",
         "-O2",
+        // The emitted C frequently aliases differently-typed pointers
+        // (e.g. Vec data buffers reused after qoz_realloc, ADT payload
+        // unions). At -O2 with strict aliasing the optimizer assumes
+        // these accesses cannot alias and the resulting binary
+        // segfaults during self-compilation. Disable strict aliasing
+        // until the codegen is audited and the violations removed.
+        "-fno-strict-aliasing",
         "-Wall",
         "-Werror",
         // The codegen emits some style patterns that clang would flag, none

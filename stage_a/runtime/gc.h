@@ -85,10 +85,6 @@ int64_t qoz_gc_sweep_phase(void);
 /* Mark + sweep in one call. Returns the number of allocations freed. */
 int64_t qoz_gc_run(void);
 
-void qoz_gc_pause(void);
-void qoz_gc_resume(void);
-bool qoz_gc_is_paused(void);
-
 /* Record the bottom of the C stack (called once from qoz_init with the
  * address of a local in main). The conservative supplement scans from
  * the current top up to this anchor at every collection. */

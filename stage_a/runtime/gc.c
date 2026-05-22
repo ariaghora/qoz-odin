@@ -33,13 +33,21 @@ typedef struct {
 } qoz_gc_table;
 
 static qoz_gc_table g_table  = { NULL, 0, 0, 0 };
-static int          g_paused = 0;
 
 /* Heap-usage tracking. qoz_gc_run triggers automatically from
  * qoz_gc_alloc once g_bytes_live crosses g_bytes_threshold. After each
  * sweep, the threshold is reset to max(initial, 2 * live_after_sweep)
- * so steady-state working sets pay one collection per doubling. */
-#define QOZ_GC_INITIAL_THRESHOLD (1 << 20)   /* 1 MiB */
+ * so steady-state working sets pay one collection per doubling.
+ *
+ * The initial threshold is large because Stage A does not yet emit the
+ * shadow-stack pushes that the precise scan needs, so the GC relies on
+ * the conservative C-stack scan alone for roots. That scan is enough
+ * for most programs but loses some live pointers under -O2 in the
+ * compiler self-host workload. Raising the threshold above the peak
+ * compiler working set keeps the system correct until Stage A emits
+ * shadow-stack pushes (TODO) and qoz_string fields are flattened into
+ * descriptor offsets (TODO). */
+#define QOZ_GC_INITIAL_THRESHOLD (1LL << 30)   /* 1 GiB */
 static int64_t g_bytes_live      = 0;
 static int64_t g_bytes_threshold = QOZ_GC_INITIAL_THRESHOLD;
 
@@ -111,7 +119,7 @@ static void table_grow(void) {
 }
 
 void *qoz_gc_alloc(int64_t size, const qoz_type_desc *desc) {
-    if (!g_paused && g_bytes_live >= g_bytes_threshold) {
+    if (g_bytes_live >= g_bytes_threshold) {
         qoz_gc_run();
     }
     void *p = calloc(1, (size_t)size);
@@ -317,10 +325,6 @@ int64_t qoz_gc_run(void) {
                         ? doubled : QOZ_GC_INITIAL_THRESHOLD;
     return freed;
 }
-
-void qoz_gc_pause(void)  { g_paused = 1; }
-void qoz_gc_resume(void) { g_paused = 0; }
-bool qoz_gc_is_paused(void) { return g_paused != 0; }
 
 void qoz_gc_set_stack_bottom(void *anchor) { g_stack_bottom = anchor; }
 
