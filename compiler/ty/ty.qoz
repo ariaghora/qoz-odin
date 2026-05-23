@@ -189,3 +189,174 @@ let ty_args_eq(a: Vec<Ty>, b: Vec<Ty>): bool = {
     }
     true
 }
+
+// Render a Ty as a short, user-facing string for diagnostics. The
+// format mirrors the surface syntax: `i32`, `string`, `Vec<i64>`,
+// `Result<i64, string>`, `*Foo`, `(i32, i32)`, `fn(i32) -> i64`.
+let ty_show(t: Ty): string = {
+    match t {
+    | TyInt(i) -> {
+        let prefix = if i.is_signed { "i" } else { "u" }
+        let w = if i.width == 8 { "8" }
+                else { if i.width == 16 { "16" }
+                else { if i.width == 32 { "32" }
+                else { "64" } } }
+        strings.cat(prefix, w)
+    }
+    | TyFloat(f) -> if f.width == 32 { "f32" } else { "f64" }
+    | TyBool    -> "bool"
+    | TyChar    -> "char"
+    | TyString  -> "string"
+    | TyCstring -> "cstring"
+    | TyUnit    -> "unit"
+    | TyNil     -> "nil"
+    | TyError   -> "<error>"
+    | TyVar(_, n) -> n
+    | TyPtr(inner) -> strings.cat("*", ty_show(inner))
+    | TyAdt(n, args) | TyRecord(n, args) -> {
+        if len(args) == 0 { return n }
+        var out = strings.cat(n, "<")
+        var i: i64 = 0
+        for a in args {
+            if i > 0 { out = strings.cat(out, ", ") }
+            out = strings.cat(out, ty_show(a))
+            i = i + 1
+        }
+        strings.cat(out, ">")
+    }
+    | TyFn(params, ret) -> {
+        var out = "fn("
+        var i: i64 = 0
+        for p in params {
+            if i > 0 { out = strings.cat(out, ", ") }
+            out = strings.cat(out, ty_show(p))
+            i = i + 1
+        }
+        out = strings.cat(out, ") -> ")
+        strings.cat(out, ty_show(ret))
+    }
+    | TyTuple(elems) -> {
+        var out = "("
+        var i: i64 = 0
+        for e in elems {
+            if i > 0 { out = strings.cat(out, ", ") }
+            out = strings.cat(out, ty_show(e))
+            i = i + 1
+        }
+        strings.cat(out, ")")
+    }
+    }
+}
+
+// True when `arg` is acceptable in a position expecting `param`. The
+// rule is stricter than full unification but looser than equality.
+// Type errors and the open type variable propagate as accepting any
+// type so a single mismatch does not cascade.
+let arg_is_nil_accepted_by(param: Ty): bool = {
+    match param {
+    | TyPtr(_) -> true
+    | _        -> false
+    }
+}
+
+let untyped_int_fits(param: Ty): bool = {
+    match param {
+    | TyInt(_) -> true
+    | _        -> false
+    }
+}
+
+let untyped_float_fits(param: Ty): bool = {
+    match param {
+    | TyFloat(_) -> true
+    | _          -> false
+    }
+}
+
+let int_widens_to(param_int: IntInfo, arg_int: IntInfo): bool = {
+    if param_int.is_signed != arg_int.is_signed { return false }
+    arg_int.width <= param_int.width
+}
+
+let arg_passes_to_param(param: Ty, arg: Ty): bool = {
+    match arg {
+    | TyError -> true
+    | TyNil   -> arg_is_nil_accepted_by(param)
+    | TyInt(ai) -> {
+        if ai.untyped && untyped_int_fits(param) { return true }
+        // Allow widening an integer with matching signedness, mirroring
+        // C's implicit promotion for argument passing.
+        match param {
+        | TyInt(pi) -> int_widens_to(pi, ai)
+        | _         -> false
+        }
+    }
+    | TyFloat(af) -> {
+        if af.untyped && untyped_float_fits(param) { return true }
+        match param {
+        | TyFloat(pf) -> pf.width >= af.width
+        | _           -> false
+        }
+    }
+    | _ -> false
+    }
+}
+
+// True when both are the same generic shape and every corresponding
+// argument type is assignable. Lets `Option<T>` (an open type from a
+// variant constructor whose payload binds T) flow into an `Option<i64>`
+// parameter without first unifying the constructor's type arguments.
+let same_constructor_assignable(param: Ty, arg: Ty): bool = {
+    match param {
+    | TyAdt(pn, pa) -> {
+        match arg {
+        | TyAdt(an, aa) -> {
+            if !strings.eq_raw(pn, an) { return false }
+            if len(pa) != len(aa) { return false }
+            var i: i64 = 0
+            while i < len(pa) {
+                if !ty_assignable(pa[i], aa[i]) { return false }
+                i = i + 1
+            }
+            true
+        }
+        | _ -> false
+        }
+    }
+    | TyRecord(pn, pa) -> {
+        match arg {
+        | TyRecord(an, aa) -> {
+            if !strings.eq_raw(pn, an) { return false }
+            if len(pa) != len(aa) { return false }
+            var i: i64 = 0
+            while i < len(pa) {
+                if !ty_assignable(pa[i], aa[i]) { return false }
+                i = i + 1
+            }
+            true
+        }
+        | _ -> false
+        }
+    }
+    | TyPtr(pi) -> {
+        match arg { | TyPtr(ai) -> ty_assignable(pi, ai) | _ -> false }
+    }
+    | _ -> false
+    }
+}
+
+let ty_assignable(param: Ty, arg: Ty): bool = {
+    if ty_eq(param, arg) { return true }
+    if arg_passes_to_param(param, arg) { return true }
+    // A type variable on either side acts as a wildcard. This matches
+    // how the inference pipeline treats unconstrained type parameters
+    // before they are pinned to a concrete instantiation.
+    match arg { | TyVar(_, _) -> return true | _ -> { } }
+    match param { | TyVar(_, _) -> return true | _ -> { } }
+    if same_constructor_assignable(param, arg) { return true }
+    match param {
+    | TyError -> true
+    | TyVar(_, _) -> true
+    | _ -> false
+    }
+}

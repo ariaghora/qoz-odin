@@ -222,7 +222,21 @@ let synth_inner(tc: *TyContext, env: *Env, e: Expr): Ty = {
     | EField(sp, base, name) -> synth_field(tc, env, sp, base, name)
     | EIndex(_, base, idx)   -> synth_index(tc, env, base, idx)
     | ECast(_, _, te)        -> resolve_type(tc, te)
-    | ETry(_, v)             -> synth(tc, env, v)
+    | ETry(_, v)             -> {
+        // The `?` operator on a Result<T, E> evaluates to T (with an
+        // early return on the Err branch handled by codegen). The
+        // synthesised type is the inner success value's type.
+        let t = synth(tc, env, v)
+        match t {
+        | TyAdt(name, args) -> {
+            if strings.eq_raw(name, "Result") && len(args) >= 1 {
+                return args[0]
+            }
+            t
+        }
+        | _ -> t
+        }
+    }
     | ETuple(_, elems)       -> {
         var elem_tys: Vec<Ty> = vec.make()
         for el in elems { vec.push(&elem_tys, synth(tc, env, el)) }
@@ -476,8 +490,21 @@ let synth_variant_ctor(tc: *TyContext, name: string): Ty = {
 let synth_call_with_decl(tc: *TyContext, sp: Span, d: Decl, type_args: Vec<TypeExpr>, arg_tys: Vec<Ty>): Ty = {
     match d {
     | DFn(_, _, tparams, params, ret, _, _) -> {
+        if len(arg_tys) != len(params) {
+            record_error(tc, sp, "function expects {len(params)} argument(s), got {len(arg_tys)}")
+        }
         if len(tparams) == 0 {
             set_type_params(tc, tparams)
+            var i: i64 = 0
+            while i < len(params) && i < len(arg_tys) {
+                let p_ty = resolve_type(tc, params[i].ty)
+                if !ty.ty_assignable(p_ty, arg_tys[i]) {
+                    let want = ty.ty_show(p_ty)
+                    let got  = ty.ty_show(arg_tys[i])
+                    record_error(tc, sp, "expected {want}, got {got}")
+                }
+                i = i + 1
+            }
             let r = resolve_type(tc, ret)
             clear_type_params(tc)
             return r

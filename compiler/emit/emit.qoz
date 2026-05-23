@@ -331,6 +331,33 @@ let literal_typeexpr(ex: Expr): Option<TypeExpr> = {
     }
 }
 
+// When a `let v: Vec<T> = [...]` declares an explicit element type that
+// differs from what the array literal's first element would infer (for
+// example `Vec<i32> = [10, 20]` where the literals default to i64),
+// register the annotated instantiation up front so vec.make<T> and
+// vec.push<T> exist with the correct C suffix at link time.
+let walk_let_value_for_array_hint(e: *Emitter, ty: TypeExpr, val: Expr) = {
+    if is_unit_typeexpr(ty) { return }
+    match ty {
+    | TENamed(sp, path, args) -> {
+        if len(path) < 1 { return }
+        if !strings.eq_raw(path[len(path) - 1], "Vec") { return }
+        if len(args) < 1 { return }
+        match val {
+        | EArrayLit(_, _) -> {
+            var vec_args: Vec<TypeExpr> = vec.make()
+            vec.push(&vec_args, args[0])
+            walk_typeexpr(e, TENamed(sp, path, vec_args))
+            register_fn_instantiation(e, EField(sp, EIdent(sp, "vec"), "make"), vec_args)
+            register_fn_instantiation(e, EField(sp, EIdent(sp, "vec"), "push"), vec_args)
+        }
+        | _ -> { }
+        }
+    }
+    | _ -> { }
+    }
+}
+
 let walk_expr_for_types(e: *Emitter, ex: Expr) = {
     match ex {
     | EBlock(_, stmts, tail) -> {
@@ -338,16 +365,15 @@ let walk_expr_for_types(e: *Emitter, ex: Expr) = {
             match s {
             | SLet(_, name, ty, val) -> {
                 walk_typeexpr(e, ty)
+                walk_let_value_for_array_hint(e, ty, val)
                 walk_expr_for_types(e, val)
-                // Make let-bound locals visible to subsequent walk
-                // steps (e.g. walk_assign_for_map_helpers, which needs
-                // the local's TypeExpr to register Map<K,V> instances).
                 if !is_unit_typeexpr(ty) {
                     e.locals[name] = ty
                 }
             }
             | SVar(_, name, ty, val) -> {
                 walk_typeexpr(e, ty)
+                walk_let_value_for_array_hint(e, ty, val)
                 walk_expr_for_types(e, val)
                 if !is_unit_typeexpr(ty) {
                     e.locals[name] = ty
@@ -1155,6 +1181,31 @@ let emit_expr(e: *Emitter, ex: Expr) = {
     | EString(_, text)  -> push(e, "QOZ_STR_LIT({text})")
     | EBinary(_, op, lhs, rhs) -> emit_binary(e, op, lhs, rhs)
     | EUnary(_, op, rhs) -> {
+        // Operator-overload dispatch: `-pair`, `!pair`, etc. fall back
+        // to the user-registered `@operator(\"unary-\")` function when
+        // the operand is a record type. Other operands take the C
+        // unary form below.
+        let op_text = unary_op_text(op)
+        if !strings.eq_raw(op_text, "") {
+            let rhs_te = infer_value_te(e, rhs)
+            let tname = operator_first_param_type_name(rhs_te)
+            if !strings.eq_raw(tname, "") {
+                let key = strings.cat(strings.cat(op_text, "::"), tname)
+                if let Some(fn_name) = map.get(&e.op_dispatch, key) {
+                    let ct = c_type_for(e, rhs_te)
+                    let ret_te = match map.get(&e.fn_returns, fn_name) {
+                    | Some(t) -> t
+                    | None    -> TEUnit(Span { file: "", line: 0, col: 0 })
+                    }
+                    let ret_ct = c_type_for(e, ret_te)
+                    ensure_unary_byval_dispatch_helper(e, fn_name, ct, ret_ct)
+                    push(e, "_qoz_byval_{fn_name}(")
+                    emit_expr(e, rhs)
+                    push(e, ")")
+                    return
+                }
+            }
+        }
         push(e, unary_c_op(op))
         // Wrap a binary operand in parens so the C unary operator does
         // not steal precedence: `!(a == b)` must not lower to `!a == b`,
@@ -2487,15 +2538,27 @@ let emit_call(e: *Emitter, callee: Expr, type_args: Vec<TypeExpr>, args: Vec<Exp
         }
     }
     // Bare-name call to an external: dispatch to the C link symbol.
+    // Argument emission uses the declared parameter types as hints so
+    // string literals flowing into a `cstring` parameter lower to a
+    // bare C string literal, not a qoz_string struct.
     match callee {
     | EIdent(_, name) -> {
         match map.get(&e.externs, name) {
         | Some(sym) -> {
             push(e, "{sym}(")
+            var hints: Vec<TypeExpr> = vec.make()
+            match map.get(&e.fn_params, name) {
+            | Some(pts) -> hints = pts
+            | None      -> { }
+            }
             var i: i64 = 0
             for a in args {
                 if i > 0 { push(e, ", ") }
-                emit_expr(e, a)
+                if i < len(hints) {
+                    emit_value_with_hint(e, a, hints[i])
+                } else {
+                    emit_expr(e, a)
+                }
                 i = i + 1
             }
             push(e, ")")
@@ -2575,6 +2638,42 @@ let callee_value_typeexpr(e: *Emitter, callee: Expr): TypeExpr = {
 // takes `*T` arguments; the forwarder accepts both operands by value
 // and passes their addresses through. Emitted at most once per
 // `fn_name` per compilation.
+// Same shape as ensure_byval_dispatch_helper but for unary operators.
+// The user's `let neg(a: *T): T` is declared with a pointer receiver;
+// the by-value forwarder accepts T by value so the operand can be
+// address-taken inside the helper.
+let ensure_unary_byval_dispatch_helper(e: *Emitter, fn_name: string, operand_ct: string, ret_ct: string) = {
+    if map.contains(&e.byval_helpers_emitted, fn_name) { return }
+    e.byval_helpers_emitted[fn_name] = true
+    var src = "static "
+    src = strings.cat(src, ret_ct)
+    src = strings.cat(src, " _qoz_byval_")
+    src = strings.cat(src, fn_name)
+    src = strings.cat(src, "(")
+    src = strings.cat(src, operand_ct)
+    src = strings.cat(src, " a) { return ")
+    src = strings.cat(src, fn_name)
+    src = strings.cat(src, "(&a); }\n")
+    var proto = "static "
+    proto = strings.cat(proto, ret_ct)
+    proto = strings.cat(proto, " _qoz_byval_")
+    proto = strings.cat(proto, fn_name)
+    proto = strings.cat(proto, "(")
+    proto = strings.cat(proto, operand_ct)
+    proto = strings.cat(proto, ");\n")
+    vec.push(&e.synth_fn_decls, proto)
+    vec.push(&e.synth_fn_defs, src)
+}
+
+let unary_op_text(op: UnaryOp): string = {
+    match op {
+    | UOpNeg   -> "unary-"
+    | UOpNot   -> "unary!"
+    | UOpDeref -> ""
+    | UOpAddr  -> ""
+    }
+}
+
 let ensure_byval_dispatch_helper(e: *Emitter, fn_name: string, operand_ct: string, ret_ct: string) = {
     if map.contains(&e.byval_helpers_emitted, fn_name) { return }
     e.byval_helpers_emitted[fn_name] = true
@@ -3668,7 +3767,28 @@ let emit_block_tail_as_value(e: *Emitter, tail: Expr) = {
     }
 }
 
+// True when `hint` is the `cstring` type. A string literal flowing into
+// a cstring-typed parameter lowers to a bare C string literal rather
+// than a qoz_string struct value, matching what the FFI expects.
+let hint_is_cstring(hint: TypeExpr): bool = {
+    match hint {
+    | TENamed(_, path, _) -> len(path) == 1 && strings.eq_raw(path[0], "cstring")
+    | _ -> false
+    }
+}
+
 let emit_value_with_hint(e: *Emitter, value: Expr, hint: TypeExpr) = {
+    match value {
+    | EString(_, raw) -> {
+        if hint_is_cstring(hint) {
+            push(e, raw)
+        } else {
+            push(e, "QOZ_STR_LIT({raw})")
+        }
+        return
+    }
+    | _ -> { }
+    }
     match value {
     | ERecord(_, te, fields) -> emit_record_lit_with_hint(e, te, fields, hint)
     | ECall(_, callee, ta, args) -> emit_call_with_hint(e, callee, ta, args, hint)
