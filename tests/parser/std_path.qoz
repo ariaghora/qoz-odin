@@ -1,0 +1,55 @@
+import std/path
+import std/vec
+
+let main(): i64 = {
+    let a = path.base("a/b/c.txt")
+    if !(a == "c.txt") { return 1 }
+
+    let d = path.dir("a/b/c.txt")
+    if !(d == "a/b") { return 2 }
+
+    let r = path.dir("/usr/local")
+    if !(r == "/usr") { return 3 }
+
+    let rr = path.dir("/foo")
+    if !(rr == "/") { return 4 }
+
+    let noslash = path.dir("alone")
+    if !(noslash == ".") { return 5 }
+
+    let e = path.ext("a/b/c.txt")
+    if !(e == ".txt") { return 6 }
+
+    let nox = path.ext("README")
+    if !(nox == "") { return 7 }
+
+    let j = path.join2("a/b", "c/d")
+    if !(j == "a/b/c/d") { return 8 }
+
+    let je = path.join2("", "x")
+    if !(je == "x") { return 9 }
+
+    let abs = path.join2("a", "/b/c")
+    if !(abs == "/b/c") { return 10 }
+
+    var parts: Vec<string> = vec.make()
+    vec.push(&parts, "a")
+    vec.push(&parts, "b")
+    vec.push(&parts, "c")
+    let jv = path.join(parts)
+    if !(jv == "a/b/c") { return 11 }
+
+    let c1 = path.clean("a//b/./c")
+    if !(c1 == "a/b/c") { return 12 }
+
+    let c2 = path.clean("a/b/../c")
+    if !(c2 == "a/c") { return 13 }
+
+    let c3 = path.clean("/a/../../x")
+    if !(c3 == "/x") { return 14 }
+
+    let c4 = path.clean("")
+    if !(c4 == ".") { return 15 }
+
+    0
+}

@@ -1,0 +1,136 @@
+// std/path: POSIX filesystem path manipulation.
+//
+// Operations work on path strings byte-by-byte. The path separator is
+// `/`. Programs that need Windows-style backslash handling should
+// normalise before calling these functions.
+
+import std/strings
+import std/vec
+
+// Index of the last `/` byte in `p`. Returns -1 when there is none.
+let last_slash(p: string): i64 = {
+    var found: i64 = 0 - 1
+    var i: i64 = len(p) - 1
+    while i >= 0 {
+        if strings.byte_at(p, i) == 47 {
+            found = i
+            i = 0 - 1
+        } else {
+            i = i - 1
+        }
+    }
+    found
+}
+
+// The directory part of `p`. Returns `.` when `p` has no slash, `/`
+// when `p` is rooted at the top level, and the substring up to the
+// last slash otherwise. Trailing slashes are stripped except for the
+// root `/`.
+let dir(p: string): string = {
+    let i = last_slash(p)
+    if i < 0 { return "." }
+    if i == 0 { return "/" }
+    strings.slice(p, 0, i)
+}
+
+// The final segment of `p`. Returns the input unchanged when there is
+// no slash, and the substring after the last slash otherwise. A path
+// ending in `/` returns the empty string.
+let base(p: string): string = {
+    let i = last_slash(p)
+    if i < 0 { return p }
+    strings.slice(p, i + 1, len(p))
+}
+
+// The extension of `p`, including the leading dot. `foo.txt` returns
+// `.txt`. A leading dot on the final segment (`.bashrc`) is treated
+// as part of the name, not an extension; returns "".
+let ext(p: string): string = {
+    let b = base(p)
+    let n = len(b)
+    var i: i64 = n - 1
+    while i > 0 {
+        if strings.byte_at(b, i) == 46 {
+            return strings.slice(b, i, n)
+        }
+        i = i - 1
+    }
+    ""
+}
+
+// `b` joined onto `a` with exactly one `/` between them. Either part
+// being empty returns the other. An absolute `b` (leading `/`)
+// replaces `a` entirely.
+let join2(a: string, b: string): string = {
+    if len(a) == 0 { return b }
+    if len(b) == 0 { return a }
+    if strings.byte_at(b, 0) == 47 { return b }
+    let an = len(a)
+    let a_ends_slash = strings.byte_at(a, an - 1) == 47
+    if a_ends_slash { return strings.cat(a, b) }
+    strings.cat(strings.cat(a, "/"), b)
+}
+
+// Join a sequence of path segments. Each pair is combined with
+// `join2`, so segments that begin with `/` reset the accumulator.
+let join(parts: Vec<string>): string = {
+    var acc = ""
+    for p in parts {
+        acc = join2(acc, p)
+    }
+    acc
+}
+
+// Collapse repeated slashes and resolve `.` and `..` segments. An
+// absolute path stays absolute; a relative path stays relative.
+// `..` that walks above the root collapses to the root; above a
+// relative start it becomes a literal `..` segment.
+let clean(p: string): string = {
+    let n = len(p)
+    if n == 0 { return "." }
+    let rooted = strings.byte_at(p, 0) == 47
+    var segs: Vec<string> = vec.make()
+    var i: i64 = if rooted { 1 } else { 0 }
+    while i < n {
+        // Skip consecutive slashes.
+        while i < n && strings.byte_at(p, i) == 47 { i = i + 1 }
+        if i >= n { i = n }
+        var j: i64 = i
+        while j < n && strings.byte_at(p, j) != 47 { j = j + 1 }
+        if j > i {
+            let seg = strings.slice(p, i, j)
+            if strings.eq_raw(seg, ".") {
+                // Drop.
+            }
+            else if strings.eq_raw(seg, "..") {
+                let segs_len = len(segs)
+                if segs_len > 0 && !strings.eq_raw(segs[segs_len - 1], "..") {
+                    // Pop the previous segment.
+                    var rebuilt: Vec<string> = vec.make()
+                    var k: i64 = 0
+                    while k < segs_len - 1 {
+                        vec.push(&rebuilt, segs[k])
+                        k = k + 1
+                    }
+                    segs = rebuilt
+                }
+                else if !rooted {
+                    vec.push(&segs, seg)
+                }
+            }
+            else {
+                vec.push(&segs, seg)
+            }
+        }
+        i = j
+    }
+    var out = if rooted { "/" } else { "" }
+    var first = true
+    for s in segs {
+        if !first { out = strings.cat(out, "/") }
+        out = strings.cat(out, s)
+        first = false
+    }
+    if len(out) == 0 { return "." }
+    out
+}
