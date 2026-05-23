@@ -449,10 +449,21 @@ let parse_record_literal(p: *Parser, span: Span, type_path: Vec<string>): Expr =
     var fields: Vec<RecordFieldLit> = vec.make()
     while !is_punct(peek(p), "}") && !at_eof(p) {
         let start_pos = p.pos
-        let name = expect_ident(p)
-        expect_punct(p, ":")
-        let value = parse_expr(p)
-        vec.push(&fields, RecordFieldLit { name: name, value: value })
+        // `..base` introduces a partial-update: every field not listed
+        // explicitly takes its value from the same field of `base`. The
+        // base expression is stored as a field with the sentinel name
+        // ".." so later phases can expand it once the record's field
+        // set is known.
+        if is_punct(peek(p), "..") {
+            advance(p)
+            let base = parse_expr(p)
+            vec.push(&fields, RecordFieldLit { name: "..", value: base })
+        } else {
+            let name = expect_ident(p)
+            expect_punct(p, ":")
+            let value = parse_expr(p)
+            vec.push(&fields, RecordFieldLit { name: name, value: value })
+        }
         if is_punct(peek(p), ",") { advance(p) }
         if p.pos == start_pos { advance(p) }
     }

@@ -1195,7 +1195,10 @@ let emit_expr(e: *Emitter, ex: Expr) = {
                     let ct = c_type_for(e, rhs_te)
                     let ret_te = match map.get(&e.fn_returns, fn_name) {
                     | Some(t) -> t
-                    | None    -> TEUnit(Span { file: "", line: 0, col: 0 })
+                    | None    -> {
+                        let _ = emit_die(span_of_expr(rhs), "operator `{op_text}` for `{tname}` has no recorded return type")
+                        TEUnit(span_of_expr(rhs))
+                    }
                     }
                     let ret_ct = c_type_for(e, ret_te)
                     ensure_unary_byval_dispatch_helper(e, fn_name, ct, ret_ct)
@@ -2765,7 +2768,10 @@ let emit_binary(e: *Emitter, op: BinaryOp, lhs: Expr, rhs: Expr) = {
                 let ct = c_type_for(e, lhs_te)
                 let ret_te = match map.get(&e.fn_returns, fn_name) {
                 | Some(t) -> t
-                | None    -> TEUnit(Span { file: "", line: 0, col: 0 })
+                | None    -> {
+                    let _ = emit_die(span_of_expr(lhs), "operator `{op_text}` for `{tname}` has no recorded return type")
+                    TEUnit(span_of_expr(lhs))
+                }
                 }
                 let ret_ct = c_type_for(e, ret_te)
                 ensure_byval_dispatch_helper(e, fn_name, ct, ret_ct)
@@ -3999,10 +4005,11 @@ let hint_args_for_enum(hint: TypeExpr, enum_name: string): Vec<TypeExpr> = {
 
 let emit_record_lit_with_hint(e: *Emitter, te: TypeExpr, fields: Vec<RecordFieldLit>, hint: TypeExpr) = {
     let effective = pick_type_with_args(te, hint)
+    let expanded = expand_record_spread_fields(e, effective, fields)
     let ec = c_type_for(e, effective)
     push(e, "(({ec}){{ ")
     var i: i64 = 0
-    for f in fields {
+    for f in expanded {
         if i > 0 { push(e, ", ") }
         let fn = f.name
         push(e, ".{fn} = ")
@@ -4011,6 +4018,91 @@ let emit_record_lit_with_hint(e: *Emitter, te: TypeExpr, fields: Vec<RecordField
         i = i + 1
     }
     push(e, " }})")
+}
+
+// Replace a `..base` sentinel field with explicit `field: base.field`
+// entries for every field of the struct that the user did not write
+// explicitly. The struct's declared field list is looked up through
+// e.struct_decls; when the type is not a known struct the emit dies
+// rather than let the sentinel reach the C output as a literal `...`.
+let expand_record_spread_fields(e: *Emitter, te: TypeExpr, fields: Vec<RecordFieldLit>): Vec<RecordFieldLit> = {
+    var has_spread = false
+    var sp = Span { file: "", line: 0, col: 0 }
+    var spread_base: Expr = ENil(sp)
+    var listed: Map<string, bool> = map.make()
+    var i: i64 = 0
+    while i < len(fields) {
+        let f = fields[i]
+        if strings.eq_raw(f.name, "..") {
+            has_spread = true
+            spread_base = f.value
+            sp = span_of_expr(f.value)
+        } else {
+            listed[f.name] = true
+        }
+        i = i + 1
+    }
+    if !has_spread { return fields }
+
+    let decl_field_names = struct_field_names_from_te(e, te)
+    if len(decl_field_names) == 0 {
+        let _ = emit_die(sp, "record spread `..base` requires a known struct type")
+        return fields
+    }
+
+    var out: Vec<RecordFieldLit> = vec.make()
+    var j: i64 = 0
+    while j < len(fields) {
+        let f = fields[j]
+        if !strings.eq_raw(f.name, "..") {
+            vec.push(&out, f)
+        }
+        j = j + 1
+    }
+    var k: i64 = 0
+    while k < len(decl_field_names) {
+        let fname = decl_field_names[k]
+        if !map.contains(&listed, fname) {
+            vec.push(&out, RecordFieldLit {
+                name:  fname,
+                value: EField(sp, spread_base, fname),
+            })
+        }
+        k = k + 1
+    }
+    out
+}
+
+let struct_decl_field_names(fields: Vec<StructField>): Vec<string> = {
+    var out: Vec<string> = vec.make()
+    var i: i64 = 0
+    while i < len(fields) {
+        vec.push(&out, fields[i].name)
+        i = i + 1
+    }
+    out
+}
+
+let struct_field_names_from_te(e: *Emitter, te: TypeExpr): Vec<string> = {
+    let empty: Vec<string> = vec.make()
+    var path_segments: Vec<string> = vec.make()
+    match te {
+    | TENamed(_, path, _) -> path_segments = path
+    | _ -> { return empty }
+    }
+    if len(path_segments) < 1 { return empty }
+    let key = type_lookup_key(e, path_segments)
+    // e.struct_decls holds every DStruct declared in the program,
+    // generic or not. No second registry is needed.
+    match map.get(&e.struct_decls, key) {
+    | Some(decl) -> {
+        match decl {
+        | DStruct(_, _, _, fs) -> struct_decl_field_names(fs)
+        | _ -> empty
+        }
+    }
+    | None -> empty
+    }
 }
 
 // For a TENamed referring to a struct/enum, return the registry key under
