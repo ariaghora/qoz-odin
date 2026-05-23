@@ -348,3 +348,95 @@ void qoz_print_line(qoz_string s) {
     fputc('\n', stdout);
     fflush(stdout);
 }
+
+#include <unistd.h>
+#include <sys/wait.h>
+#include <errno.h>
+
+/* Drain a file descriptor into a newly-allocated qoz_string. The pipe
+ * is read in chunks; the buffer doubles when full. Returns a string
+ * whose `len` is the byte count and whose `data` and `root` point to a
+ * GC allocation, so the returned value stays reachable while in scope. */
+static qoz_string qoz_drain_fd(int fd) {
+    int64_t cap = 4096;
+    char *buf = (char *)qoz_alloc(cap);
+    int64_t n = 0;
+    for (;;) {
+        if (n + 1024 > cap) {
+            int64_t new_cap = cap * 2;
+            char *nb = (char *)qoz_alloc(new_cap);
+            memcpy(nb, buf, (size_t)n);
+            buf = nb;
+            cap = new_cap;
+        }
+        ssize_t got = read(fd, buf + n, (size_t)(cap - n));
+        if (got <= 0) break;
+        n += (int64_t)got;
+    }
+    close(fd);
+    return (qoz_string){ buf, n, buf };
+}
+
+void qoz_process_exec(qoz_string *argv, int64_t n,
+                      int64_t *out_exit,
+                      qoz_string *out_stdout,
+                      qoz_string *out_stderr) {
+    *out_exit = -1;
+    *out_stdout = (qoz_string){ NULL, 0 };
+    *out_stderr = (qoz_string){ NULL, 0 };
+
+    if (n <= 0 || argv == NULL) return;
+
+    /* Build a NUL-terminated char** for execvp from the input qoz_string
+     * array. Strings inside argv may not be NUL-terminated (they can
+     * alias slices), so each one is copied into its own buffer. */
+    char **cargv = (char **)qoz_alloc((int64_t)((n + 1) * (int64_t)sizeof(char *)));
+    for (int64_t i = 0; i < n; i++) {
+        int64_t len = argv[i].len;
+        char *s = (char *)qoz_alloc(len + 1);
+        if (len > 0) memcpy(s, argv[i].data, (size_t)len);
+        s[len] = '\0';
+        cargv[i] = s;
+    }
+    cargv[n] = NULL;
+
+    int out_pipe[2] = { -1, -1 };
+    int err_pipe[2] = { -1, -1 };
+    if (pipe(out_pipe) != 0) return;
+    if (pipe(err_pipe) != 0) { close(out_pipe[0]); close(out_pipe[1]); return; }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(out_pipe[0]); close(out_pipe[1]);
+        close(err_pipe[0]); close(err_pipe[1]);
+        return;
+    }
+    if (pid == 0) {
+        /* Child. */
+        dup2(out_pipe[1], 1);
+        dup2(err_pipe[1], 2);
+        close(out_pipe[0]); close(out_pipe[1]);
+        close(err_pipe[0]); close(err_pipe[1]);
+        execvp(cargv[0], cargv);
+        /* If exec fails the child exits 127, matching POSIX convention
+         * for "command not found". */
+        _exit(127);
+    }
+
+    /* Parent. Close the write ends; read until EOF so the child can
+     * make progress when its pipes are full. */
+    close(out_pipe[1]);
+    close(err_pipe[1]);
+    *out_stdout = qoz_drain_fd(out_pipe[0]);
+    *out_stderr = qoz_drain_fd(err_pipe[0]);
+
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno != EINTR) { *out_exit = -1; return; }
+    }
+    if (WIFEXITED(status)) {
+        *out_exit = (int64_t)WEXITSTATUS(status);
+    } else {
+        *out_exit = -1;
+    }
+}

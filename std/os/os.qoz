@@ -2,6 +2,12 @@
 
 import std/vec
 
+type ProcessResult = {
+    exit_code: i64,
+    stdout:    string,
+    stderr:    string,
+}
+
 @link_name("qoz_os_argc")
 external let argc_raw(): i64
 
@@ -30,4 +36,20 @@ let args(): Vec<string> = {
         i = i + 1
     }
     v
+}
+
+@link_name("qoz_process_exec")
+external let process_exec_raw(argv: *string, n: i64,
+                              out_exit: *i64, out_stdout: *string, out_stderr: *string)
+
+// Fork-exec a child process and return its exit code together with the
+// stdout and stderr it produced. The first element of `argv` is the
+// program; the rest are its arguments. The function does not block on
+// other work, so very large output streams sit fully in memory.
+let process_exec(argv: Vec<string>): ProcessResult = {
+    var exit_code: i64 = 0
+    var so: string = ""
+    var se: string = ""
+    process_exec_raw(argv.data, argv.len, &exit_code, &so, &se)
+    ProcessResult { exit_code: exit_code, stdout: so, stderr: se }
 }

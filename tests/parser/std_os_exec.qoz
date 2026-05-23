@@ -1,0 +1,22 @@
+import std/os
+import std/strings
+import std/vec
+
+let main(): i64 = {
+    var ar1: Vec<string> = vec.make()
+    vec.push(&ar1, "/bin/echo")
+    vec.push(&ar1, "hello")
+    let r = os.process_exec(ar1)
+
+    if !(r.exit_code == 0) { return 1 }
+    if !strings.has_prefix(r.stdout, "hello") { return 2 }
+
+    var ar2: Vec<string> = vec.make()
+    vec.push(&ar2, "/bin/sh")
+    vec.push(&ar2, "-c")
+    vec.push(&ar2, "exit 7")
+    let r2 = os.process_exec(ar2)
+    if !(r2.exit_code == 7) { return 3 }
+
+    0
+}

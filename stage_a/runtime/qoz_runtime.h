@@ -105,4 +105,15 @@ qoz_string qoz_strbuf_finish(void *b);
 
 #define QOZ_STR_LIT(s) ((qoz_string){ (s), (int64_t)(sizeof(s) - 1) })
 
+/* Fork+exec a child, capture its stdout and stderr into Qoz strings,
+ * and report the child's exit status. `argv` points to an array of `n`
+ * qoz_string values; the first is the program to launch, the rest are
+ * its arguments. The output pointers must point to valid storage; on
+ * return they hold the captured streams. Exit code is the process's
+ * raw exit value, or -1 if the spawn itself failed. */
+void qoz_process_exec(qoz_string *argv, int64_t n,
+                      int64_t *out_exit,
+                      qoz_string *out_stdout,
+                      qoz_string *out_stderr);
+
 #endif
