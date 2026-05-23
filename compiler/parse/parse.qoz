@@ -817,7 +817,8 @@ let split_template_chunks(template: string): Vec<string> = {
 let interp_block(template: string, args: Vec<Expr>, span: Span): Expr = {
     let sb_name = interp_var_name(span)
 
-    // type Strbuf = { buf: *u8, len: i64, cap: i64 }
+    // type Strbuf = { buf: *u8, len: i64, cap: i64 } (from std/strings).
+    // The user must `import std/strings` for interpolation to type-check.
     var strbuf_path: Vec<string> = vec.make()
     vec.push(&strbuf_path, "Strbuf")
     var no_args: Vec<TypeExpr> = vec.make()
