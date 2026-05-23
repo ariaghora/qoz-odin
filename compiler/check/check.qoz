@@ -446,6 +446,15 @@ let resolve_callee_fn(tc: *TyContext, callee: Expr): string = {
             if map.contains(&tc.packages, pkg) {
                 return strings.cat(strings.cat(pkg, "_"), method)
             }
+            // `Enum.Variant(...)`: the base is a known enum and the
+            // field is one of its variants. Return the bare variant
+            // name so the variant constructor dispatch downstream
+            // handles the call.
+            if map.contains(&tc.enums, pkg) {
+                if map.contains(&tc.variant_of, method) {
+                    return method
+                }
+            }
             ""
         }
         | _ -> ""
@@ -476,30 +485,97 @@ let synth_call_full(tc: *TyContext, env: *Env, sp: Span, callee: Expr, type_args
     | None -> {
         match map.get(&tc.externs, fn_name) {
         | Some(d) -> synth_call_with_decl(tc, sp, d, type_args, arg_tys)
-        | None    -> synth_variant_ctor(tc, fn_name)
+        | None    -> synth_variant_ctor_with_args(tc, fn_name, arg_tys)
         }
     }
     }
 }
 
 let synth_variant_ctor(tc: *TyContext, name: string): Ty = {
-    match map.get(&tc.variant_of, name) {
-    | Some(enum_name) -> {
-        match map.get(&tc.enums, enum_name) {
-        | Some(d) -> {
-            match d {
-            | DEnum(_, _, tparams, _) -> {
-                var args: Vec<Ty> = vec.make()
-                for p in tparams { vec.push(&args, ty.ty_var_(p)) }
-                ty.ty_adt_(enum_name, args)
-            }
-            | _ -> ty.ty_error_()
-            }
+    synth_variant_ctor_with_args(tc, name, vec.make())
+}
+
+// Like synth_variant_ctor, but unifies the value-argument types against
+// the variant's declared positional payload to bind the enum's type
+// parameters. `Option.Some(42)` returns `Option<i64>` rather than the
+// open `Option<T>`. Falls back to the open form when no args are
+// available or unification leaves a tparam unbound.
+let synth_variant_ctor_with_args(tc: *TyContext, name: string, arg_tys: Vec<Ty>): Ty = {
+    let enum_name = variant_enum_name(tc, name)
+    if strings.eq_raw(enum_name, "") { return ty.ty_error_() }
+    let tparams = enum_tparams(tc, enum_name)
+    if len(tparams) == 0 { return ty.ty_adt_(enum_name, vec.make()) }
+    let variant_pos = variant_positional_types(tc, enum_name, name)
+    var bindings: Map<string, Ty> = map.make()
+    let saved = tc.type_params
+    set_type_params(tc, tparams)
+    var i: i64 = 0
+    while i < len(variant_pos) {
+        if i < len(arg_tys) {
+            let pos_ty = resolve_type(tc, variant_pos[i])
+            let _ = unify(pos_ty, arg_tys[i], &bindings)
         }
-        | None -> ty.ty_error_()
+        i = i + 1
+    }
+    tc.type_params = saved
+    var args: Vec<Ty> = vec.make()
+    var ti: i64 = 0
+    while ti < len(tparams) {
+        let tp = tparams[ti]
+        match map.get(&bindings, tp) {
+        | Some(t) -> vec.push(&args, t)
+        | None    -> vec.push(&args, ty.ty_var_(tp))
+        }
+        ti = ti + 1
+    }
+    ty.ty_adt_(enum_name, args)
+}
+
+let variant_enum_name(tc: *TyContext, variant: string): string = {
+    match map.get(&tc.variant_of, variant) {
+    | Some(en) -> en
+    | None     -> ""
+    }
+}
+
+let enum_tparams(tc: *TyContext, enum_name: string): Vec<string> = {
+    let empty: Vec<string> = vec.make()
+    match map.get(&tc.enums, enum_name) {
+    | Some(d) -> {
+        match d {
+        | DEnum(_, _, tps, _) -> tps
+        | _                   -> empty
         }
     }
-    | None -> ty.ty_error_()
+    | None -> empty
+    }
+}
+
+let variant_positional_types(tc: *TyContext, enum_name: string, variant: string): Vec<TypeExpr> = {
+    let empty: Vec<TypeExpr> = vec.make()
+    match map.get(&tc.enums, enum_name) {
+    | Some(d) -> {
+        match d {
+        | DEnum(_, _, _, variants) -> {
+            var out: Vec<TypeExpr> = vec.make()
+            var found = false
+            var i: i64 = 0
+            while i < len(variants) {
+                let v = variants[i]
+                if !found {
+                    if strings.eq_raw(v.name, variant) {
+                        out = v.pos
+                        found = true
+                    }
+                }
+                i = i + 1
+            }
+            out
+        }
+        | _ -> empty
+        }
+    }
+    | None -> empty
     }
 }
 
@@ -510,6 +586,10 @@ let synth_call_with_decl(tc: *TyContext, sp: Span, d: Decl, type_args: Vec<TypeE
             record_error(tc, sp, "function expects {len(params)} argument(s), got {len(arg_tys)}")
         }
         if len(tparams) == 0 {
+            // Save and restore the enclosing fn's type_params so a
+            // call from inside a generic body does not lose its own
+            // type-parameter bindings.
+            let saved = tc.type_params
             set_type_params(tc, tparams)
             var i: i64 = 0
             while i < len(params) && i < len(arg_tys) {
@@ -522,7 +602,7 @@ let synth_call_with_decl(tc: *TyContext, sp: Span, d: Decl, type_args: Vec<TypeE
                 i = i + 1
             }
             let r = resolve_type(tc, ret)
-            clear_type_params(tc)
+            tc.type_params = saved
             return r
         }
         var tyarg_tys: Vec<Ty> = vec.make()

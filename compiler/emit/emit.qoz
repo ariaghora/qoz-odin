@@ -458,11 +458,32 @@ let walk_expr_for_types(e: *Emitter, ex: Expr) = {
         walk_expr_for_types(e, r)
         walk_assign_for_map_helpers(e, l)
     }
-    | ECall(_, callee, type_args, args) -> {
+    | ECall(sp, callee, type_args, args) -> {
         walk_expr_for_types(e, callee)
         for ta in type_args { walk_typeexpr(e, ta) }
         for a in args { walk_expr_for_types(e, a) }
         register_fn_instantiation(e, callee, type_args)
+        // Implicit variant-constructor instantiation: `Option.Some(42)`
+        // with no explicit type args reaches this point with empty
+        // type_args. Walk-time inference uses literal_typeexpr only,
+        // because locals are not yet bound. The full emit-time inference
+        // covers the rest of the cases through the normal dispatch.
+        if len(type_args) == 0 {
+            let vname = variant_callee_name(e, callee)
+            if !strings.eq_raw(vname, "") {
+                match map.get(&e.variant_of, vname) {
+                | Some(en) -> {
+                    let inferred = literal_variant_type_args(e, en, vname, args, sp)
+                    if len(inferred) > 0 {
+                        var path: Vec<string> = vec.make()
+                        vec.push(&path, en)
+                        walk_typeexpr(e, TENamed(sp, path, inferred))
+                    }
+                }
+                | None -> { }
+                }
+            }
+        }
     }
     | EField(_, base, _) -> walk_expr_for_types(e, base)
     | EIndex(_, base, idx) -> { walk_expr_for_types(e, base); walk_expr_for_types(e, idx) }
@@ -1784,6 +1805,51 @@ let single_named_te(sp: Span, name: string): TypeExpr = {
     var path: Vec<string> = vec.make()
     vec.push(&path, name)
     TENamed(sp, path, vec.make())
+}
+
+// Walk-time variant type-arg inference. Same shape as
+// infer_variant_type_args but uses literal_typeexpr instead of
+// infer_value_te so it works before locals are bound. Returns an
+// empty Vec when any argument is not a literal whose type is known.
+let literal_variant_type_args(e: *Emitter, enum_name: string, variant: string, args: Vec<Expr>, sp: Span): Vec<TypeExpr> = {
+    var out: Vec<TypeExpr> = vec.make()
+    let empty: Vec<TypeExpr> = vec.make()
+    match map.get(&e.enum_decls, enum_name) {
+    | None -> empty
+    | Some(d) -> {
+        match d {
+        | DEnum(_, _, tparams, variants) -> {
+            if len(tparams) == 0 { return empty }
+            var bindings: Map<string, TypeExpr> = map.make()
+            var resolved_all = true
+            for v in variants {
+                if strings.eq_raw(v.name, variant) {
+                    var i: i64 = 0
+                    for pos_te in v.pos {
+                        if i < len(args) {
+                            match literal_typeexpr(args[i]) {
+                            | Some(arg_te) -> unify_te(pos_te, arg_te, &bindings)
+                            | None         -> resolved_all = false
+                            }
+                        }
+                        i = i + 1
+                    }
+                }
+            }
+            if !resolved_all { return empty }
+            for tp in tparams {
+                match map.get(&bindings, tp) {
+                | Some(t) -> vec.push(&out, t)
+                | None    -> { }
+                }
+            }
+            if len(out) != len(tparams) { return empty }
+            out
+        }
+        | _ -> empty
+        }
+    }
+    }
 }
 
 // Unify the variant's declared positional TypeExprs (which may contain
