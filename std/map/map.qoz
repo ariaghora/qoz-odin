@@ -24,6 +24,11 @@ type Map<K, V> = {
 let make<K, V>(): Map<K, V> = Map { slots: nil, len: 0, cap: 0 }
 
 let probe<K, V>(m: *Map<K, V>, key: K): i64 = {
+    // Empty backing array: no slot exists. Return zero so callers
+    // looking for a slot to insert into can grow first; callers that
+    // are looking for an existing entry should consult `m.cap > 0`
+    // before invoking probe (the public get/contains paths do).
+    if m.cap == 0 { return 0 }
     let h = hash(key)
     var idx: i64 = (h % (m.cap as u64)) as i64
     while m.slots[idx].occupied {

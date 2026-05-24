@@ -1,0 +1,7 @@
+// Negative: cannot assign to a let-bound identifier.
+
+let main(): i64 = {
+    let x: i64 = 1
+    x = 2
+    x
+}

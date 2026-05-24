@@ -198,11 +198,10 @@ let replace_all(s: string, needle: string, replacement: string): string = {
     out
 }
 
-// Render an i64 as a decimal string. Handles negative numbers via a
-// leading `-`. The integer `0` returns "0". INT64_MIN is rendered
-// without special-casing; the leading minus stays correct because the
-// digit loop reads `0 - v` as unsigned bit pattern, which divmod-10
-// still produces the right digit sequence.
+// Render an i64 as a decimal string. The integer `0` returns "0".
+// INT64_MIN is special-cased because negating it overflows in two's
+// complement (`0 - INT64_MIN == INT64_MIN`); detect that case by
+// observing that negation did not flip the sign.
 let i64_to_string(v: i64): string = {
     if v == 0 { return "0" }
     let scratch = mem.alloc(21)
@@ -211,6 +210,15 @@ let i64_to_string(v: i64): string = {
     var n: i64 = v
     let neg = n < 0
     if neg { n = 0 - n }
+    if n < 0 {
+        // INT64_MIN. Emit one digit before the divmod loop can
+        // proceed with a positive value. -9223372036854775808 has
+        // last digit 8, and the prefix 922337203685477580 fits in
+        // i64 positive range.
+        pos -= 1
+        bp[pos] = 56 as u8
+        n = 922337203685477580
+    }
     while n > 0 {
         pos -= 1
         bp[pos] = ((n % 10) + 48) as u8

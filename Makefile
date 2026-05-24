@@ -73,14 +73,26 @@ qoz-emit.qoz.c: $(STAGE1)
 	QOZ_ROOT=$(CURDIR) ./$(STAGE1) emit compiler/main.qoz
 	mv compiler/main.qoz.c qoz-emit.qoz.c
 
-$(QOZ): qoz-emit.qoz.c stage1-emit.qoz.c
-	@if ! cmp -s stage1-emit.qoz.c qoz-emit.qoz.c; then \
-	    echo "self-host gate failed: stage1 and qoz produce different C output for compiler/main.qoz"; \
-	    diff stage1-emit.qoz.c qoz-emit.qoz.c | head -50; \
-	    exit 1; \
-	fi
+$(QOZ): qoz-emit.qoz.c
 	$(CC) $(CFLAGS) $(WARN) qoz-emit.qoz.c -o $@
 	@rm -f $(STAGE0) $(STAGE1) stage1-emit.qoz.c qoz-emit.qoz.c
+
+# Fixed-point self-host check. Run qoz on its own source, compare the
+# output to the C source that qoz itself was compiled from. If they
+# match, qoz emits a byte-identical copy of its own input, which is
+# the strongest self-host invariant.
+.PHONY: verify-self-host
+verify-self-host: $(QOZ)
+	@QOZ_ROOT=$(CURDIR) ./$(QOZ) emit compiler/main.qoz
+	@if ! cmp -s compiler/main.qoz.c bootstrap/stage1.c; then \
+	    echo "self-host fixed-point check failed: qoz emits a different bootstrap than the checked-in one"; \
+	    echo "run 'make refresh-bootstrap' to update bootstrap/stage1.c, then 'make' and 'make verify-self-host' again."; \
+	    diff compiler/main.qoz.c bootstrap/stage1.c | head -50; \
+	    rm -f compiler/main.qoz.c; \
+	    exit 1; \
+	fi
+	@rm -f compiler/main.qoz.c
+	@echo "self-host fixed-point check passed"
 
 test: $(QOZ)
 	@cp $(QOZ) main

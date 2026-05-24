@@ -58,7 +58,9 @@ qoz_string qoz_fs_read_file(qoz_string path) {
     long n = ftell(f);
     if (n < 0) { fclose(f); return (qoz_string){ NULL, -1 }; }
     if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return (qoz_string){ NULL, -1 }; }
+    if (n == 0) { fclose(f); return (qoz_string){ NULL, 0, NULL }; }
     char *data = (char *)qoz_alloc((int64_t)n);
+    if (data == NULL) { fclose(f); return (qoz_string){ NULL, -1 }; }
     size_t got = fread(data, 1, (size_t)n, f);
     fclose(f);
     return (qoz_string){ data, (int64_t)got, data };
@@ -184,24 +186,40 @@ void qoz_shutdown(void) {
 void *qoz_alloc(int64_t size) {
     /* Used by string / Vec / Map data buffers and other arrays that do
      * not carry a per-element type descriptor. Tracked by gc.c so the
-     * shutdown sweep frees them. */
+     * shutdown sweep frees them. A negative size is a programmer bug
+     * (typically an arithmetic underflow); fail loudly rather than
+     * silently producing a huge size_t and returning NULL. */
+    if (size < 0) {
+        qoz_panic((qoz_string){"qoz_alloc: negative size", 23, NULL});
+    }
     return qoz_gc_alloc(size, NULL);
 }
 
 void *qoz_calloc(int64_t size) {
     /* qoz_gc_alloc already zero-fills. */
+    if (size < 0) {
+        qoz_panic((qoz_string){"qoz_calloc: negative size", 25, NULL});
+    }
     return qoz_gc_alloc(size, NULL);
 }
 
 void *qoz_realloc(void *ptr, int64_t size) {
+    if (size < 0) {
+        qoz_panic((qoz_string){"qoz_realloc: negative size", 26, NULL});
+    }
     if (ptr == NULL) return qoz_gc_alloc(size, NULL);
-    /* For now treat realloc as alloc-and-copy. The GC tracks the new
-     * allocation; the old one will be freed by the next sweep (or at
-     * shutdown). Vec/Map are the common callers and they always retain
-     * a reference to the new pointer, so this is safe. */
+    /* Alloc-and-copy. The GC tracks the new allocation and the old
+     * block is freed only after the copy completes. Vec / Map and
+     * other callers retain a reference to the new pointer. */
     int64_t old_size = qoz_gc_alloc_size(ptr);
     void *p = qoz_gc_alloc(size, NULL);
-    if (p != NULL && old_size > 0) {
+    if (p == NULL) {
+        /* New allocation failed. Leave the old block alive so the
+         * caller can keep using it (or fail safely) rather than
+         * destroying their data. */
+        return NULL;
+    }
+    if (old_size > 0) {
         int64_t copy = old_size < size ? old_size : size;
         memcpy(p, ptr, (size_t)copy);
     }
@@ -231,7 +249,9 @@ uint64_t qoz_string_hash(qoz_string s) {
 }
 
 void qoz_print_str(qoz_string s) {
-    fwrite(s.data, 1, (size_t)s.len, stdout);
+    if (s.len > 0) {
+        fwrite(s.data, 1, (size_t)s.len, stdout);
+    }
 }
 
 void qoz_print_cstr(const char *s) {
@@ -272,29 +292,25 @@ void qoz_print_line(qoz_string s) {
 #include <unistd.h>
 #include <sys/wait.h>
 #include <errno.h>
+#include <poll.h>
 
-/* Drain a file descriptor into a newly-allocated qoz_string. The pipe
- * is read in chunks; the buffer doubles when full. Returns a string
- * whose `len` is the byte count and whose `data` and `root` point to a
- * GC allocation, so the returned value stays reachable while in scope. */
-static qoz_string qoz_drain_fd(int fd) {
-    int64_t cap = 4096;
-    char *buf = (char *)qoz_alloc(cap);
-    int64_t n = 0;
-    for (;;) {
-        if (n + 1024 > cap) {
-            int64_t new_cap = cap * 2;
-            char *nb = (char *)qoz_alloc(new_cap);
-            memcpy(nb, buf, (size_t)n);
-            buf = nb;
-            cap = new_cap;
-        }
-        ssize_t got = read(fd, buf + n, (size_t)(cap - n));
-        if (got <= 0) break;
-        n += (int64_t)got;
+/* Append `got` bytes from `chunk` into a growing buffer. Doubles `cap`
+ * when needed. Allocations go through qoz_alloc so the result stays
+ * reachable through the GC for the caller's qoz_string. */
+static char *qoz_buf_append(char *buf, int64_t *cap, int64_t *n, const char *chunk, int64_t got) {
+    if (*n + got > *cap) {
+        int64_t new_cap = *cap;
+        if (new_cap < 4096) new_cap = 4096;
+        while (new_cap < *n + got) new_cap *= 2;
+        char *nb = (char *)qoz_alloc(new_cap);
+        if (nb == NULL) return buf;
+        if (*n > 0) memcpy(nb, buf, (size_t)*n);
+        buf = nb;
+        *cap = new_cap;
     }
-    close(fd);
-    return (qoz_string){ buf, n, buf };
+    memcpy(buf + *n, chunk, (size_t)got);
+    *n += got;
+    return buf;
 }
 
 void qoz_process_exec(qoz_string *argv, int64_t n,
@@ -343,12 +359,46 @@ void qoz_process_exec(qoz_string *argv, int64_t n,
         _exit(127);
     }
 
-    /* Parent. Close the write ends; read until EOF so the child can
-     * make progress when its pipes are full. */
+    /* Parent. Close the write ends and drain both pipes concurrently
+     * through poll(); a sequential drain deadlocks when the child
+     * writes more than one pipe-buffer to whichever stream is read
+     * second. */
     close(out_pipe[1]);
     close(err_pipe[1]);
-    *out_stdout = qoz_drain_fd(out_pipe[0]);
-    *out_stderr = qoz_drain_fd(err_pipe[0]);
+
+    char *o_buf = NULL; int64_t o_cap = 0; int64_t o_n = 0;
+    char *e_buf = NULL; int64_t e_cap = 0; int64_t e_n = 0;
+    struct pollfd fds[2];
+    fds[0].fd = out_pipe[0]; fds[0].events = POLLIN;
+    fds[1].fd = err_pipe[0]; fds[1].events = POLLIN;
+    int open_count = 2;
+    char chunk[4096];
+    while (open_count > 0) {
+        int pr = poll(fds, 2, -1);
+        if (pr < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        for (int i = 0; i < 2; i++) {
+            if (fds[i].fd < 0) continue;
+            if (fds[i].revents & (POLLIN | POLLHUP | POLLERR)) {
+                ssize_t got = read(fds[i].fd, chunk, sizeof(chunk));
+                if (got > 0) {
+                    if (i == 0) o_buf = qoz_buf_append(o_buf, &o_cap, &o_n, chunk, (int64_t)got);
+                    else        e_buf = qoz_buf_append(e_buf, &e_cap, &e_n, chunk, (int64_t)got);
+                } else if (got == 0 || (got < 0 && errno != EINTR && errno != EAGAIN)) {
+                    close(fds[i].fd);
+                    fds[i].fd = -1;
+                    open_count--;
+                }
+            }
+        }
+    }
+    if (fds[0].fd >= 0) close(fds[0].fd);
+    if (fds[1].fd >= 0) close(fds[1].fd);
+
+    *out_stdout = (qoz_string){ o_buf, o_n, o_buf };
+    *out_stderr = (qoz_string){ e_buf, e_n, e_buf };
 
     int status = 0;
     while (waitpid(pid, &status, 0) < 0) {
@@ -356,6 +406,10 @@ void qoz_process_exec(qoz_string *argv, int64_t n,
     }
     if (WIFEXITED(status)) {
         *out_exit = (int64_t)WEXITSTATUS(status);
+    } else if (WIFSIGNALED(status)) {
+        /* Child killed by signal: report 128 + signal, matching the
+         * shell convention. Distinguishes from exec failure (-1). */
+        *out_exit = (int64_t)(128 + WTERMSIG(status));
     } else {
         *out_exit = -1;
     }

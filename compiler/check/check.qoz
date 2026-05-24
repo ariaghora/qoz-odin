@@ -252,7 +252,7 @@ let resolve_named(tc: *TyContext, span: Span, path: Vec<string>, args: Vec<TypeE
 
 // --- Environment for local bindings during expression checking ---
 
-type Binding = { name: string, ty: Ty }
+type Binding = { name: string, ty: Ty, is_var: bool }
 
 type Env = {
     bindings: Vec<Binding>,
@@ -261,7 +261,15 @@ type Env = {
 let env_make(): Env = Env { bindings: vec.make() }
 
 let env_define(env: *Env, name: string, t: Ty) = {
-    vec.push(&env.bindings, Binding { name: name, ty: t })
+    vec.push(&env.bindings, Binding { name: name, ty: t, is_var: true })
+}
+
+// Variant of env_define that records whether the binding is mutable.
+// SLet introduces immutable bindings; SVar, function parameters, and
+// closure parameters introduce mutable bindings. `check_assign`
+// consults this flag to reject assignment to a `let`.
+let env_define_var(env: *Env, name: string, t: Ty, is_var: bool) = {
+    vec.push(&env.bindings, Binding { name: name, ty: t, is_var: is_var })
 }
 
 let env_lookup(env: *Env, name: string): Ty = {
@@ -274,6 +282,20 @@ let env_lookup(env: *Env, name: string): Ty = {
         i -= 1
     }
     ty.ty_error_()
+}
+
+let env_is_var(env: *Env, name: string): bool = {
+    var i: i64 = len(env.bindings) - 1
+    while i >= 0 {
+        let b = env.bindings[i]
+        if strings.eq_raw(b.name, name) {
+            return b.is_var
+        }
+        i -= 1
+    }
+    // Unknown names default to mutable so we do not stack a spurious
+    // immutability diagnostic on top of the undefined-name error.
+    true
 }
 
 let env_has(env: *Env, name: string): bool = {
@@ -446,6 +468,18 @@ let is_lvalue_shape(e: Expr): bool = {
 let check_assign(tc: *TyContext, env: *Env, sp: Span, lhs: Expr, rhs: Expr): Ty = {
     if !is_lvalue_shape(lhs) {
         record_error(tc, sp, "left-hand side of `=` is not assignable")
+    }
+    // Reject assignment to a let-bound identifier. Field, index, and
+    // deref lvalues are still permitted because they write through a
+    // reference; only direct ident assignment needs the mutability
+    // check.
+    match lhs {
+    | EIdent(_, name) -> {
+        if env_has(env, name) && !env_is_var(env, name) {
+            record_error(tc, sp, "cannot assign to `let`-bound `{name}`; use `var` to declare a mutable binding")
+        }
+    }
+    | _ -> { }
     }
     let lt = synth(tc, env, lhs)
     let rt = synth(tc, env, rhs)
@@ -1313,13 +1347,13 @@ let synth_block(tc: *TyContext, env: *Env, stmts: Vec<Stmt>, tail: Expr): Ty = {
             let vt = synth(tc, env, val)
             let bound = match te { | TEUnit(_) -> vt | _ -> resolve_type(tc, te) }
             check_binding_compat(tc, sp, te, bound, vt)
-            env_define(env, name, bound)
+            env_define_var(env, name, bound, false)
         }
         | SVar(sp, name, te, val)  -> {
             let vt = synth(tc, env, val)
             let bound = match te { | TEUnit(_) -> vt | _ -> resolve_type(tc, te) }
             check_binding_compat(tc, sp, te, bound, vt)
-            env_define(env, name, bound)
+            env_define_var(env, name, bound, true)
         }
         | SExpr(_, ex)            -> { let _ = synth(tc, env, ex) }
         }
