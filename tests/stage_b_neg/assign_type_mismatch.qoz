@@ -1,0 +1,7 @@
+// Negative: assigning a string to an i64 variable must be rejected.
+
+let main(): i64 = {
+    var n: i64 = 0
+    n = "not an integer"
+    n
+}

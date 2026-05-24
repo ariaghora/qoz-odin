@@ -1373,7 +1373,10 @@ let emit_expr(e: *Emitter, ex: Expr) = {
     }
     | EChar(_, text)               -> push(e, text)
     | EPath(_, _)                  -> push(e, "0")
-    | EAssign(_, _, lhs, rhs)      -> emit_assign(e, lhs, rhs)
+    | EAssign(sp, op, lhs, rhs)    -> {
+        assert_plain_assign(op, sp)
+        emit_assign(e, lhs, rhs)
+    }
     | ECall(_, callee, ta, args)   -> emit_call(e, callee, ta, args)
     | EField(_, base, name)        -> emit_field(e, base, name)
     | EIndex(_, base, idx)         -> emit_index(e, base, idx)
@@ -1466,6 +1469,17 @@ let emit_die(sp: Span, msg: string): string = {
     fmt.println("{sp.file}:{sp.line}:{sp.col}: emit error: {msg}")
     os.exit(1)
     ""
+}
+
+// Compound assignment forms (+=, -=, *=, /=, %=) are desugared at
+// parse time to `lhs = lhs <bin> rhs`. The emitter only handles plain
+// assignment. This guard catches a future parser regression where a
+// compound op reaches the emit phase instead of being desugared.
+let assert_plain_assign(op: AssignOp, sp: Span) = {
+    match op {
+    | AOpSet -> { }
+    | _      -> { let _ = emit_die(sp, "internal: compound assignment reached emit; parse should have desugared it") }
+    }
 }
 
 let infer_base_typeexpr(e: *Emitter, base: Expr): TypeExpr = {
@@ -3226,6 +3240,12 @@ let emit_fn(e: *Emitter, name: string, params: Vec<FnParam>, ret: TypeExpr, body
     push(e, " {{\n    int64_t _qoz_shadow_guard = qoz_gc_shadow_top();\n    ")
     let saved_ret = e.current_return_restore
     e.current_return_restore = "qoz_gc_shadow_set_top(_qoz_shadow_guard); "
+    // Match-scrutinee names (_qoz_ms_N / _qoz_mv_N / _qoz_mm_N) live in
+    // the C function's body scope. A per-function counter keeps the
+    // names unique within that scope. The counter is restored after
+    // the body so nested emits cannot poison an outer function.
+    let saved_match_counter = e.match_counter
+    e.match_counter = 0
     e.locals = map.make()
     for p in params {
         e.locals[p.name] = p.ty
@@ -3252,6 +3272,7 @@ let emit_fn(e: *Emitter, name: string, params: Vec<FnParam>, ret: TypeExpr, body
         close_statement_scope(e, saved)
     }
     e.current_return_restore = saved_ret
+    e.match_counter = saved_match_counter
     e.locals = map.make()
     push(e, "}}\n\n")
 }
@@ -3950,7 +3971,8 @@ let range_cmp_op(op: BinaryOp): string =
 // statement's prologue and leave 0 in place.
 let emit_block_tail_as_value(e: *Emitter, tail: Expr) = {
     match tail {
-    | EAssign(_, _, lhs, rhs) -> {
+    | EAssign(sp, op, lhs, rhs) -> {
+        assert_plain_assign(op, sp)
         push(e, "(")
         emit_assign(e, lhs, rhs)
         push(e, ", 0)")

@@ -1,0 +1,6 @@
+// Negative: assigning to a literal is not a valid lvalue.
+
+let main(): i64 = {
+    1 = 2
+    0
+}

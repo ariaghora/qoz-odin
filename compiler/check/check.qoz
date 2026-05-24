@@ -217,7 +217,7 @@ let synth_inner(tc: *TyContext, env: *Env, e: Expr): Ty = {
     | EPath(_, _)            -> ty.ty_error_()
     | EUnary(_, op, rhs)     -> synth_unary(tc, env, op, rhs)
     | EBinary(_, op, l, r)   -> synth_binary(tc, env, op, l, r)
-    | EAssign(_, _, _, v)    -> { let _ = synth(tc, env, v); ty.ty_unit_() }
+    | EAssign(sp, _, l, v)   -> check_assign(tc, env, sp, l, v)
     | ECall(sp, callee, ta, args) -> synth_call_full(tc, env, sp, callee, ta, args)
     | EField(sp, base, name) -> synth_field(tc, env, sp, base, name)
     | EIndex(_, base, idx)   -> synth_index(tc, env, base, idx)
@@ -281,6 +281,41 @@ let synth_inner(tc: *TyContext, env: *Env, e: Expr): Ty = {
         ty.ty_record_("Vec", args)
     }
     }
+}
+
+// An lvalue is an expression that can appear on the left-hand side
+// of `=`. Variable references, field selections, index expressions,
+// and pointer dereferences are the four shapes Qoz allows. The
+// check stays syntactic; whether an `EIdent` actually names a `var`
+// binding is enforced by a future pass, not here.
+let is_lvalue_shape(e: Expr): bool = {
+    match e {
+    | EIdent(_, _)         -> true
+    | EField(_, _, _)      -> true
+    | EIndex(_, _, _)      -> true
+    | EUnary(_, op, _)     -> { match op { | UOpDeref -> true | _ -> false } }
+    | _                    -> false
+    }
+}
+
+// Type-check an assignment. Reports an error if the lhs has an
+// unassignable shape, and if the rhs type cannot flow into the lhs
+// type. Returns unit; the assignment expression itself produces no
+// value.
+let check_assign(tc: *TyContext, env: *Env, sp: Span, lhs: Expr, rhs: Expr): Ty = {
+    if !is_lvalue_shape(lhs) {
+        record_error(tc, sp, "left-hand side of `=` is not assignable")
+    }
+    let lt = synth(tc, env, lhs)
+    let rt = synth(tc, env, rhs)
+    match lt { | TyError -> return ty.ty_unit_() | _ -> { } }
+    match rt { | TyError -> return ty.ty_unit_() | _ -> { } }
+    if !ty.ty_assignable(lt, rt) {
+        let want = ty.ty_show(lt)
+        let got  = ty.ty_show(rt)
+        record_error(tc, sp, "cannot assign value of type {got} to lhs of type {want}")
+    }
+    ty.ty_unit_()
 }
 
 let synth_unary(tc: *TyContext, env: *Env, op: UnaryOp, rhs: Expr): Ty = {
