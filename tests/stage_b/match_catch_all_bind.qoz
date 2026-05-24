@@ -1,0 +1,22 @@
+// expect: 7
+// A catch-all bind in a match on an enum scrutinee must bind the
+// scrutinee value, not a placeholder zero. The body inspects the
+// bound name's tag to confirm it sees the actual scrutinee.
+
+type Tag = | A | B | C
+
+let tag_to_int(v: Tag): i64 = {
+    match v {
+    | A     -> 1
+    | other -> {
+        match other {
+        | B -> 7
+        | _ -> 99
+        }
+    }
+    }
+}
+
+let main(): i64 = {
+    tag_to_int(Tag.B)
+}

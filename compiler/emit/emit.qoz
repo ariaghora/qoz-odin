@@ -2213,14 +2213,24 @@ let emit_branch_as_statement(e: *Emitter, br: Expr) = {
     match br {
     | EBlock(_, stmts, tail) -> {
         push(e, "{ ")
+        var defers = collect_defers_in_stmts(stmts)
+        var effective_tail = tail
+        match tail {
+        | EDefer(_, dbody) -> {
+            vec.push(&defers, dbody)
+            effective_tail = ENil(span_of_expr(tail))
+        }
+        | _ -> { }
+        }
         for s in stmts {
             emit_stmt(e, s)
         }
-        if !is_nil_expr(tail) {
+        if !is_nil_expr(effective_tail) {
             let saved = open_statement_scope(e)
-            emit_stmt_expr(e, tail)
+            emit_stmt_expr(e, effective_tail)
             close_statement_scope(e, saved)
         }
+        emit_defers_reverse(e, defers)
         push(e, "} ")
     }
     | _ -> {
@@ -4829,8 +4839,14 @@ let emit_match_arm_with_kind(e: *Emitter, enum_name: string, scrut_tmp: string, 
         | None -> {
             // Catch-all bind on a switch-style enum match. Bind
             // `name` to the enum pointer so the body sees the whole
-            // value rather than a placeholder zero.
+            // value rather than a placeholder zero. Register the
+            // binding's TypeExpr so the inner code can call match,
+            // field access, and the like on it.
             push(e, "default: {{ qoz_{enum_name}* {name} = {scrut_tmp}; (void){name}; ")
+            let sp = Span { file: "", line: 0, col: 0 }
+            var segs: Vec<string> = vec.make()
+            vec.push(&segs, enum_name)
+            e.locals[name] = TENamed(sp, segs, vec.make())
             if arm.has_guard {
                 push(e, "if (")
                 emit_expr(e, arm.guard)

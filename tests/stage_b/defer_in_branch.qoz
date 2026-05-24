@@ -1,0 +1,18 @@
+// expect: 42
+// Defer inside a non-function-body branch must execute before the
+// enclosing block exits. Earlier the defer was dropped silently for
+// any defer not directly inside the function body's top-level block.
+
+import std/fmt
+
+let main(): i64 = {
+    var counter: i64 = 0
+    let flag = true
+    if flag {
+        defer { counter = counter + 42 }
+        counter = counter + 0
+    } else {
+        counter = -1
+    }
+    counter
+}
