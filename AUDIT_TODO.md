@@ -37,14 +37,14 @@ rather than ground truth.
 
 ### Emitter (`compiler/emit/emit.qoz`)
 
-- [ ] **`field_access_op` returns `.` for any base that is not `EIdent` or `EUnary(UOpAddr, _)`.** A function returning `*T` followed by `.field` emits `.field` instead of `->field`, producing invalid C. Lines ~2385-2406.
-- [ ] **`emit_stmt_inner` drops `EDefer` silently inside `SExpr`.** Defers in non-function-body blocks never execute. Line ~2115.
-- [ ] **`PatBind` non-enum in match emits `int64_t {name} = 0;` instead of binding the scrutinee value.** The bound name reads zero. `emit_match_arm_with_kind` lines ~4789-4793 and `emit_arm_in_chain_with_te` line ~4684.
-- [ ] **Nested sub-patterns in `PatVariant` arms silently ignore everything except `PatBind`.** `Some(None)`, `Pair(1, x)` do not destructure correctly. Lines ~4716, ~4820.
-- [ ] **`emit_match_arm_with_kind` default arm at line ~4836 swallows `PatLitInt`/`PatLitBool`/`PatLitString`/`PatTuple` silently when reached via the switch path.**
-- [ ] **`emit_expr` emits literal `0` for unhandled cases.** `EPath`, `EWhile`, `EFor`, `EDefer`, `EReturn` reaching expression position produce `0` with payload dropped. Lines ~1375, ~1400-1402. Replace with `emit_die`.
-- [ ] **`binary_c_op` returns `<` / `<=` for `BOpRange` / `BOpRangeInclusive`.** A range expression outside a for-loop iter context (e.g. `let r = 0..n`) silently lowers to a boolean comparison. Lines ~3117-3118.
-- [ ] **`emit_main_tail` unit-return path omits `EReturn` from the statement-shape list.** A `main` ending with explicit `return` makes `qoz_shutdown()` unreachable. Line ~5097.
+- [x] **`field_access_op` returns `.` for any base that is not `EIdent` or `EUnary(UOpAddr, _)`.** Rewritten to consult the base's value TypeExpr via `infer_value_te`. Pointer-typed bases get `->`, everything else `.`.
+- [x] **`emit_stmt_inner` drops `EDefer` silently inside `SExpr`.** Fixed: `emit_branch_body_inline` now collects defers per nested block and emits them in reverse before exit. The function-body collector at `emit_fn_body_block` remains the outer path.
+- [x] **`PatBind` non-enum in match emits `int64_t {name} = 0;`.** Fixed in both the switch path (`emit_match_arm_with_kind`) and the if-chain path (`emit_arm_in_chain_with_te`). Catch-all binds an enum scrutinee to `qoz_<Enum>* {name} = {scrut_tmp}`, so the body sees the actual value.
+- [ ] **Nested sub-patterns in `PatVariant` arms silently ignore everything except `PatBind`.** Not yet fixed. Requires a recursive sub-pattern emitter; deferred to the medium-severity pass below.
+- [ ] **`emit_match_arm_with_kind` default arm at line ~4836 swallows `PatLitInt`/`PatLitBool`/`PatLitString`/`PatTuple` silently when reached via the switch path.** Partly addressed: literal-bearing match-arm sets are rerouted to the if-chain path by `any_arm_is_literal`, so the switch path no longer reaches the silent default. `PatTuple` remains a parser gap.
+- [x] **`emit_expr` emits literal `0` for unhandled cases.** `EPath`, `EWhile`, `EFor`, `EDefer` now call `emit_die` with a span; `EReturn` is handled separately in `emit_main_tail` so the shutdown trailer is not duplicated.
+- [x] **`binary_c_op` returns `<` / `<=` for `BOpRange` / `BOpRangeInclusive`.** `emit_binary` now guards on these operators and calls `emit_die`; the for-loop path is unaffected because it does not go through `emit_binary`.
+- [x] **`emit_main_tail` unit-return path omits `EReturn` from the statement-shape list.** Added an explicit `EReturn` arm that emits the return without the trailing `qoz_shutdown(); return 0;` duplicate.
 
 ---
 

@@ -1372,7 +1372,7 @@ let emit_expr(e: *Emitter, ex: Expr) = {
         push(e, tmp_res)
     }
     | EChar(_, text)               -> push(e, text)
-    | EPath(_, _)                  -> push(e, "0")
+    | EPath(sp, _)                 -> { let _ = emit_die(sp, "path expression in value position; only Enum::Variant in call position is supported") }
     | EAssign(sp, op, lhs, rhs)    -> {
         assert_plain_assign(op, sp)
         emit_assign(e, lhs, rhs)
@@ -1397,9 +1397,9 @@ let emit_expr(e: *Emitter, ex: Expr) = {
         emit_match_as_expr(e, span, scrut, arms)
         e.match_hint = saved
     }
-    | EWhile(_, _, _)              -> push(e, "0")
-    | EFor(_, _, _, _, _)          -> push(e, "0")
-    | EDefer(_, _)                 -> push(e, "0")
+    | EWhile(sp, _, _)             -> { let _ = emit_die(sp, "while expression in value position; wrap in a block or use a tail expression") }
+    | EFor(sp, _, _, _, _)         -> { let _ = emit_die(sp, "for expression in value position; wrap in a block or use a tail expression") }
+    | EDefer(sp, _)                -> { let _ = emit_die(sp, "defer cannot appear in value position; use defer as a statement") }
     | ESizeOf(_, te)               -> { let tc = c_type_for(e, te); push(e, "(int64_t)sizeof({tc})") }
     | EArrayLit(sp, elems)         -> emit_array_lit_using(e, sp, elems, TEUnit(sp))
     }
@@ -2382,26 +2382,14 @@ let emit_field(e: *Emitter, base: Expr, name: string) = {
     push(e, "{op}{name}")
 }
 
+// Pick `->` for a pointer-typed base, `.` for a value-typed base. The
+// base's value type comes from the inference cache; falling back to
+// `.` for unknown values matches the C rule for struct-typed locals.
 let field_access_op(e: *Emitter, base: Expr): string = {
-    match base {
-    | EIdent(_, ident) -> {
-        match map.get(&e.locals, ident) {
-        | Some(te) -> {
-            match te {
-            | TEPtr(_, _) -> "->"
-            | _           -> "."
-            }
-        }
-        | None -> "."
-        }
-    }
-    | EUnary(_, op, _) -> {
-        match op {
-        | UOpAddr -> "->"  // (&x).field rare; treat as pointer
-        | _       -> "."
-        }
-    }
-    | _ -> "."
+    let te = infer_value_te(e, base)
+    match te {
+    | TEPtr(_, _) -> "->"
+    | _           -> "."
     }
 }
 
@@ -2913,20 +2901,32 @@ let ensure_byval_dispatch_helper(e: *Emitter, fn_name: string, operand_ct: strin
     vec.push(&e.synth_fn_defs, src)
 }
 
+// Surface-syntax spelling for each binary operator. Used as the key
+// when looking up `@operator(...)` registrations on user types and as
+// the C operator when no overload is found. Range operators have no
+// surface spelling because they are only valid in for-loop iter
+// position; an overload is not meaningful for them.
 let binary_op_text(op: BinaryOp): string = {
     match op {
-    | BOpEq    -> "=="
-    | BOpNe    -> "!="
-    | BOpLt    -> "<"
-    | BOpGt    -> ">"
-    | BOpLe    -> "<="
-    | BOpGe    -> ">="
-    | BOpAdd   -> "+"
-    | BOpSub   -> "-"
-    | BOpMul   -> "*"
-    | BOpDiv   -> "/"
-    | BOpMod   -> "%"
-    | _        -> ""
+    | BOpEq     -> "=="
+    | BOpNe     -> "!="
+    | BOpLt     -> "<"
+    | BOpGt     -> ">"
+    | BOpLe     -> "<="
+    | BOpGe     -> ">="
+    | BOpAdd    -> "+"
+    | BOpSub    -> "-"
+    | BOpMul    -> "*"
+    | BOpDiv    -> "/"
+    | BOpMod    -> "%"
+    | BOpAnd    -> "&&"
+    | BOpOr     -> "||"
+    | BOpBitAnd -> "&"
+    | BOpBitOr  -> "|"
+    | BOpBitXor -> "^"
+    | BOpShl    -> "<<"
+    | BOpShr    -> ">>"
+    | BOpRange | BOpRangeInclusive -> ""
     }
 }
 
@@ -3018,6 +3018,12 @@ let emit_binary(e: *Emitter, op: BinaryOp, lhs: Expr, rhs: Expr) = {
         }
         | _ -> { }
         }
+    }
+    match op {
+    | BOpRange | BOpRangeInclusive -> {
+        let _ = emit_die(span_of_expr(lhs), "range expression is only valid in for-loop iter position")
+    }
+    | _ -> { }
     }
     let p = binary_prec(op)
     let needs_paren_child = is_logical_op(op)
@@ -4544,14 +4550,24 @@ let map_val_typeexpr(e: *Emitter, te: TypeExpr): TypeExpr = {
 let emit_branch_body_inline(e: *Emitter, body: Expr) = {
     match body {
     | EBlock(_, stmts, tail) -> {
+        var defers = collect_defers_in_stmts(stmts)
+        var effective_tail = tail
+        match tail {
+        | EDefer(_, dbody) -> {
+            vec.push(&defers, dbody)
+            effective_tail = ENil(span_of_expr(tail))
+        }
+        | _ -> { }
+        }
         for s in stmts {
             emit_stmt(e, s)
         }
-        if !is_nil_expr(tail) {
+        if !is_nil_expr(effective_tail) {
             let saved = open_statement_scope(e)
-            emit_stmt_expr(e, tail)
+            emit_stmt_expr(e, effective_tail)
             close_statement_scope(e, saved)
         }
+        emit_defers_reverse(e, defers)
     }
     | _ -> {
         let saved = open_statement_scope(e)
@@ -4681,7 +4697,11 @@ let emit_arm_in_chain_with_te(e: *Emitter, enum_name: string, scrut_tmp: string,
             if let Some(_) = map.get(&e.variant_of, name) {
                 push(e, " && {scrut_tmp}->tag == qoz_{enum_name}_{name}) {{ ")
             } else {
-                push(e, ") {{ int64_t {name} = 0; (void){name}; ")
+                // Catch-all bind on an enum scrutinee: name is bound
+                // to the enum pointer so the arm body can inspect or
+                // forward the entire value.
+                push(e, ") {{ qoz_{enum_name}* {name} = {scrut_tmp}; (void){name}; ")
+                e.locals[name] = scrut_te
             }
         } else {
             let sc = c_type_for(e, scrut_te)
@@ -4786,11 +4806,10 @@ let emit_match_arm_with_kind(e: *Emitter, enum_name: string, scrut_tmp: string, 
             push(e, " break; }} ")
         }
         | None -> {
-            if is_void {
-                push(e, "default: {{ ")
-            } else {
-                push(e, "default: {{ int64_t {name} = 0; (void){name}; ")
-            }
+            // Catch-all bind on a switch-style enum match. Bind
+            // `name` to the enum pointer so the body sees the whole
+            // value rather than a placeholder zero.
+            push(e, "default: {{ qoz_{enum_name}* {name} = {scrut_tmp}; (void){name}; ")
             if arm.has_guard {
                 push(e, "if (")
                 emit_expr(e, arm.guard)
@@ -5094,6 +5113,14 @@ let emit_main_tail(e: *Emitter, kind: MainRetKind, tail: Expr) = {
         | _               -> false
         }
         match tail {
+        | EReturn(_, _) -> {
+            // The user's explicit `return` already leaves main; the
+            // shutdown trailer is emitted separately by the function
+            // wrapper, so do not duplicate it here.
+            emit_expr(e, tail)
+            push(e, ";\n")
+            return
+        }
         | EFor(_, _, _, _, _) | EWhile(_, _, _) | EAssign(_, _, _, _) | EDefer(_, _) -> {
             let saved = open_statement_scope(e)
             emit_stmt_expr(e, tail)
