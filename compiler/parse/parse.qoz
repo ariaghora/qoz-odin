@@ -1224,6 +1224,8 @@ let parse_pattern(p: *Parser): Pattern = {
             if is_ident(part) {
                 vec.push(&path, part.text)
                 advance(p)
+            } else {
+                err_unexpected(p, "identifier after `.` in pattern path", part)
             }
         }
         var pos: Vec<Pattern> = vec.make()
