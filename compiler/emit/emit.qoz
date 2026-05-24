@@ -4621,9 +4621,19 @@ let any_arm_has_guard(arms: Vec<MatchArm>): bool = {
 let any_arm_is_literal(arms: Vec<MatchArm>): bool = {
     for a in arms {
         match a.pat {
-        | PatLitInt(_, _)    -> return true
-        | PatLitString(_, _) -> return true
-        | PatLitBool(_, _)   -> return true
+        | PatLitInt(_, _) | PatLitString(_, _) | PatLitBool(_, _) -> return true
+        | PatVariant(_, _, sub_pats) -> {
+            // Any literal sub-pattern inside a variant routes the
+            // arm set through the if-chain emitter, which can ANDs
+            // the sub-pattern conditions into the if test. The
+            // switch-based dispatch cannot do that.
+            for sp in sub_pats {
+                match sp {
+                | PatLitInt(_, _) | PatLitString(_, _) | PatLitBool(_, _) -> return true
+                | _ -> { }
+                }
+            }
+        }
         | _ -> { }
         }
     }
@@ -4754,20 +4764,49 @@ let emit_arm_in_chain_with_te(e: *Emitter, enum_name: string, scrut_tmp: string,
         }
         if len(path) > 0 {
             let vname = path[len(path) - 1]
-            push(e, " && {scrut_tmp}->tag == qoz_{enum_name}_{vname}) {{ ")
+            push(e, " && {scrut_tmp}->tag == qoz_{enum_name}_{vname}")
+            // Literal sub-patterns extend the if condition with an
+            // equality check against the payload field. Wildcard and
+            // bind sub-patterns require no extra condition and are
+            // handled inside the body. Nested PatVariant inside a
+            // PatVariant is not yet supported and is silently
+            // accepted as a tag-only match.
             var i: i64 = 0
             for sp in sub_pats {
+                let is = int_to_string(i)
                 match sp {
-                | PatBind(_, bname) -> {
-                    let pc = variant_payload_ctype(e, enum_name, vname, i)
-                    let is = int_to_string(i)
-                    push(e, "{pc} {bname} = {scrut_tmp}->payload.{vname}.f{is}; ")
-                    e.locals[bname] = variant_payload_typeexpr(e, enum_name, vname, i)
+                | PatLitInt(_, text) -> {
+                    let tn = strip_numeric_underscores(text)
+                    push(e, " && {scrut_tmp}->payload.{vname}.f{is} == {tn}")
+                }
+                | PatLitBool(_, b) -> {
+                    if b { push(e, " && {scrut_tmp}->payload.{vname}.f{is} == true") }
+                    else { push(e, " && {scrut_tmp}->payload.{vname}.f{is} == false") }
+                }
+                | PatLitString(_, text) -> {
+                    push(e, " && qoz_string_eq({scrut_tmp}->payload.{vname}.f{is}, QOZ_STR_LIT({text}))")
                 }
                 | _ -> { }
                 }
                 i += 1
             }
+            push(e, ") {{ ")
+            var j: i64 = 0
+            for sp in sub_pats {
+                match sp {
+                | PatBind(_, bname) -> {
+                    let pc = variant_payload_ctype(e, enum_name, vname, j)
+                    let js = int_to_string(j)
+                    push(e, "{pc} {bname} = {scrut_tmp}->payload.{vname}.f{js}; ")
+                    e.locals[bname] = variant_payload_typeexpr(e, enum_name, vname, j)
+                }
+                | _ -> { }
+                }
+                j += 1
+            }
+            // Restore the trailing space removed when we changed the
+            // close-paren emission, so the body's first character has
+            // a separator.
         } else {
             push(e, ") {{ ")
         }

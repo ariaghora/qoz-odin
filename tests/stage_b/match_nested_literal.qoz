@@ -1,0 +1,18 @@
+// expect: 42
+// Match arm with a literal sub-pattern inside a variant pattern.
+// The arm fires only when the variant's payload literally equals
+// the given value.
+
+type Tagged = | Wrap(i64)
+
+let classify(t: Tagged): i64 = {
+    match t {
+    | Wrap(0)  -> 1
+    | Wrap(42) -> 42
+    | Wrap(n)  -> n + 100
+    }
+}
+
+let main(): i64 = {
+    classify(Tagged.Wrap(42))
+}
