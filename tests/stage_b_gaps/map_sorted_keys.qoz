@@ -2,9 +2,9 @@
 // map.sorted_keys returns keys in K's `<` order. The test inserts in
 // scrambled order and asserts the iteration order is alphabetical.
 
-import std/map
-import std/vec
-import std/strings
+import map
+import vec
+import strings
 
 let main(): i64 = {
     var m: Map<string, i64> = map.make()

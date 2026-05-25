@@ -1,10 +1,10 @@
 // compiler/tokenize: tokenizer for Qoz source.
 
-import std/strings
-import std/vec
-import std/map
-import std/fmt
-import std/os
+import strings
+import vec
+import map
+import fmt
+import os
 
 
 type TokenKind =

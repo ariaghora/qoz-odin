@@ -1,6 +1,6 @@
 // std/vec: growable dynamic array backed by the GC.
 
-import std/mem
+import mem
 
 type Vec<T> = {
     data: *T,

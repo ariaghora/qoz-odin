@@ -1,8 +1,8 @@
 // stage-b-skip: the compiler has no SLetElse AST yet; the test relies
 // on `let Pattern = expr else { ... }` syntax. Re-enable once that
 // feature lands.
-import std/strings
-import std/fmt
+import strings
+import fmt
 
 type Option =
     | None

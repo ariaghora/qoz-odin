@@ -1,10 +1,10 @@
 // compiler/emit: codegen.
 
-import std/fmt
-import std/os
-import std/strings
-import std/vec
-import std/map
+import fmt
+import os
+import strings
+import vec
+import map
 import compiler/ast
 
 type Instantiation = {

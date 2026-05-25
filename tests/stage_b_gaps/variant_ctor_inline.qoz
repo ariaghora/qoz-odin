@@ -1,6 +1,6 @@
 // expect: 42
 
-import std/option
+import option
 
 let unwrap_or(o: Option<i64>, def: i64): i64 = {
     match o {

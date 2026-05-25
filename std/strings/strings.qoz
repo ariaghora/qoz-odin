@@ -5,8 +5,8 @@
 // run as a GC-tracked string, and qoz_bytes_copy is a portable
 // memcpy wrapper that sidesteps fortify-source macros on darwin.
 
-import std/vec
-import std/mem
+import vec
+import mem
 
 @link_name("qoz_string_data")
 external let string_data(s: string): *void

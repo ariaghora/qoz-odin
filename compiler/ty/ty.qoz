@@ -1,7 +1,7 @@
 // compiler/ty: type representation.
 
-import std/vec
-import std/strings
+import vec
+import strings
 import compiler/ast
 
 type IntInfo = {

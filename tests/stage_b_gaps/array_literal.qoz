@@ -1,6 +1,6 @@
 // expect: 6
 
-import std/vec
+import vec
 
 let main(): i64 = {
     let xs = [1, 2, 3]

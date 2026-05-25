@@ -1,6 +1,6 @@
-import std/fmt
-import std/strings
-import std/vec
+import fmt
+import strings
+import vec
 
 let main() = {
     let parts = strings.split("alpha,beta,gamma,delta", 44)

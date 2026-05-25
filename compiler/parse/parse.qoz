@@ -12,10 +12,10 @@
 //   - expressions: literals (int, string, bool, nil, ident, path), parens,
 //     function calls, indexing, binary ops with precedence, unary `-` and `!`.
 
-import std/strings
-import std/vec
-import std/fmt
-import std/fs
+import strings
+import vec
+import fmt
+import fs
 import compiler/tokenize
 import compiler/ast
 

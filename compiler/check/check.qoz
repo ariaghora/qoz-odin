@@ -1,11 +1,11 @@
 // compiler/check: type checker.
 
-import std/fmt
-import std/vec
-import std/map
-import std/mem
-import std/strings
-import std/fs
+import fmt
+import vec
+import map
+import mem
+import strings
+import fs
 import compiler/ast
 import compiler/ty
 

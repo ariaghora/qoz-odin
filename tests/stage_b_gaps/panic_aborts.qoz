@@ -3,7 +3,7 @@
 // on stderr. Recoverable errors should use Result<T, E> + try; panic is
 // for programmer bugs only.
 
-import std/os
+import os
 
 let main() = {
     os.panic("intentional panic from regression test")

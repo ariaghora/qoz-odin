@@ -4,8 +4,8 @@
 // is encoded by the key alone. Insertion, lookup, and removal use
 // the same probe sequence as the underlying map.
 
-import std/map
-import std/vec
+import map
+import vec
 
 type Set<T> = { items: Map<T, bool> }
 

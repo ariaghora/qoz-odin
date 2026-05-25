@@ -2,9 +2,9 @@
 // Closures capturing managed strings; many calls under GC pressure
 // to confirm the captured prefixes are reachable through the env.
 
-import std/vec
-import std/strings
-import std/fmt
+import vec
+import strings
+import fmt
 
 let make_appender(prefix: string): (string) -> string =
     (s: string): string -> strings.cat(prefix, s)

@@ -1,4 +1,4 @@
-import std/fmt
+import fmt
 
 let main() = {
     fmt.println(no_such_name)

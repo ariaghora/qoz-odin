@@ -1,6 +1,6 @@
-import std/strings
-import std/fmt
-import std/vec
+import strings
+import fmt
+import vec
 
 let main() = {
     var v: Vec<i32> = vec.make()

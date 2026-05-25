@@ -1,5 +1,5 @@
 // Stage B must reject a match on Option that omits None.
-import std/fmt
+import fmt
 
 let main(): i64 = {
     let o = Some(5)

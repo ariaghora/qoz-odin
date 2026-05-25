@@ -4,8 +4,8 @@
 // `/`. Programs that need Windows-style backslash handling should
 // normalise before calling these functions.
 
-import std/strings
-import std/vec
+import strings
+import vec
 
 // Index of the last `/` byte in `p`. Returns -1 when there is none.
 let last_slash(p: string): i64 = {

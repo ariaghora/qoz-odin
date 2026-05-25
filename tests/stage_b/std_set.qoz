@@ -1,7 +1,7 @@
 // expect: 3
 // std/set: add, contains, size.
 
-import std/set
+import set
 
 let main(): i64 = {
     var s: Set<i64> = set.make()

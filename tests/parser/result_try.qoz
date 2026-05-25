@@ -1,5 +1,5 @@
-import std/strings
-import std/fmt
+import strings
+import fmt
 
 let div(a: i64, b: i64): Result<i64, i64> = {
     if b == 0 { Err(b) } else { Ok(a / b) }

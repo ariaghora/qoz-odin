@@ -1,6 +1,6 @@
 // expect: 42
 
-import std/result
+import result
 
 let parse_num(s: string): Result<i64, string> = {
     if s == "ok" { Ok(42) } else { Err("nope") }

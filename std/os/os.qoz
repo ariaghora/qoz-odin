@@ -1,6 +1,6 @@
 // std/os: process and environment.
 
-import std/vec
+import vec
 
 type ProcessResult = {
     exit_code: i64,

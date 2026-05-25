@@ -1,7 +1,7 @@
 // expect: 42
 // std/random: deterministic LCG given the seed.
 
-import std/random
+import random
 
 let main(): i64 = {
     var r = random.make(1)

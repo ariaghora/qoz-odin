@@ -4,8 +4,8 @@
 // the braces are accepted. `{{` and `}}` are escapes for literal
 // braces.
 
-import std/strings
-import std/fmt
+import strings
+import fmt
 
 let main(): i64 = {
     let name = "world"

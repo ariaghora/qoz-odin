@@ -1,6 +1,6 @@
-import std/strings
-import std/fmt
-import std/map
+import strings
+import fmt
+import map
 
 let main() = {
     var m: Map<string, i64> = map.make()

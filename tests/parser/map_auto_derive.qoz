@@ -1,6 +1,6 @@
-import std/strings
-import std/fmt
-import std/map
+import strings
+import fmt
+import map
 
 type Person = { id: i64, name: string }
 

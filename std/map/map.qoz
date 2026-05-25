@@ -4,9 +4,9 @@
 // Slots are zero-initialised through mem.calloc, so `occupied` starts false
 // across every slot without an explicit init loop.
 
-import std/mem
-import std/strings
-import std/vec
+import mem
+import strings
+import vec
 
 type Slot<K, V> = {
     key:      K,

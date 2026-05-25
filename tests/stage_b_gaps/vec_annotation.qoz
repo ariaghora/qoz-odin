@@ -1,6 +1,6 @@
 // expect: 30
 
-import std/vec
+import vec
 
 let main(): i64 = {
     let xs: Vec<i32> = vec.make()

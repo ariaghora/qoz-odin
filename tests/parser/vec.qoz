@@ -1,5 +1,5 @@
-import std/strings
-import std/fmt
+import strings
+import fmt
 
 external let qoz_alloc(size: i64): *void
 external let qoz_realloc(ptr: *void, size: i64): *void

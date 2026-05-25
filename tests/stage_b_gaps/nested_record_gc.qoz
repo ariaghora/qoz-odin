@@ -4,9 +4,9 @@
 // strings through the nested-record descriptor flattening or the
 // strings will be collected while the outer pointer is still in scope.
 
-import std/vec
-import std/strings
-import std/fmt
+import vec
+import strings
+import fmt
 
 type Inner = {
     a: string,
@@ -31,7 +31,7 @@ let make_outer(i: i64): *Outer = {
     o
 }
 
-import std/mem
+import mem
 
 let main(): i64 = {
     var keep: Vec<*Outer> = vec.make()

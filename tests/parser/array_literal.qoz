@@ -1,6 +1,6 @@
-import std/strings
-import std/fmt
-import std/vec
+import strings
+import fmt
+import vec
 
 let main() = {
     let xs: Vec<i32> = [10, 20, 30, 40]

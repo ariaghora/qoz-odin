@@ -1,6 +1,6 @@
-import std/strings
-import std/fmt
-import std/fs
+import strings
+import fmt
+import fs
 
 let main() = {
     let ok = fs.write_file("/tmp/qoz_fs_io_test.txt", "hello qoz\n")

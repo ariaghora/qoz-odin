@@ -1,4 +1,4 @@
-import std/fmt
+import fmt
 
 type Option =
     | None

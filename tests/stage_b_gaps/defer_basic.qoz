@@ -6,7 +6,7 @@
 //   first defer runs second: log = 2*10 + 1 = 21
 // Return 21 - 9 = 12.
 
-import std/vec
+import vec
 
 let run(log: *Vec<i64>) = {
     defer vec.push(log, 1)

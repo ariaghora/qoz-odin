@@ -1,10 +1,10 @@
 // compiler/main: driver.
 
-import std/fmt
-import std/fs
-import std/os
-import std/vec
-import std/strings
+import fmt
+import fs
+import os
+import vec
+import strings
 import compiler/tokenize
 import compiler/ast
 import compiler/parse
@@ -92,8 +92,16 @@ let resolve_import_path(segs: Vec<string>, qoz_root: string): string = {
     }
     let dir_rel   = joined
     let probe_rel = strings.cat(dir_rel, strings.cat("/", strings.cat(last, ".qoz")))
+    // 1. CWD-relative. Local user packages reach here.
     if fs.file_exists(probe_rel) { return dir_rel }
     if len(qoz_root) > 0 {
+        // 2. `<qoz_root>/std/<path>`. Standard-library packages live
+        //    under std/ on disk but user code imports them by their
+        //    bare name (e.g. `import strings`, not `import std/strings`).
+        let std_dir   = strings.cat(strings.cat(qoz_root, "/std/"), dir_rel)
+        let std_probe = strings.cat(strings.cat(qoz_root, "/std/"), probe_rel)
+        if fs.file_exists(std_probe) { return std_dir }
+        // 3. `<qoz_root>/<path>`. Other repo-root packages.
         let abs_dir   = strings.cat(strings.cat(qoz_root, "/"), dir_rel)
         let abs_probe = strings.cat(strings.cat(qoz_root, "/"), probe_rel)
         if fs.file_exists(abs_probe) { return abs_dir }
@@ -213,8 +221,8 @@ let load_all(entry: string, qoz_root: string): Loaded = {
     var sources: Vec<string> = vec.make()
     // Prelude: Option and Result are in scope without an import.
     var prelude_paths: Vec<string> = vec.make()
-    vec.push(&prelude_paths, "std/option")
-    vec.push(&prelude_paths, "std/result")
+    vec.push(&prelude_paths, "option")
+    vec.push(&prelude_paths, "result")
     for pp in prelude_paths {
         let resolved_dir = resolve_import_path(prelude_segs(pp), qoz_root)
         if !strings.eq_raw(resolved_dir, "") {

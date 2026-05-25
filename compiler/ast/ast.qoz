@@ -4,7 +4,7 @@
 // carries the source span as its first positional field so error
 // reporting always has location information.
 
-import std/vec
+import vec
 
 type Span = {
     file: string,

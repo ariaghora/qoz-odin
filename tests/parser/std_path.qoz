@@ -1,5 +1,5 @@
-import std/path
-import std/vec
+import path
+import vec
 
 let main(): i64 = {
     let a = path.base("a/b/c.txt")

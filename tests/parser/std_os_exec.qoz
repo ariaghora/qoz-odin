@@ -1,6 +1,6 @@
-import std/os
-import std/strings
-import std/vec
+import os
+import strings
+import vec
 
 let main(): i64 = {
     var ar1: Vec<string> = vec.make()

@@ -3,7 +3,7 @@
 // enclosing block exits. Earlier the defer was dropped silently for
 // any defer not directly inside the function body's top-level block.
 
-import std/fmt
+import fmt
 
 let main(): i64 = {
     var counter: i64 = 0

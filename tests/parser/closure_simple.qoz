@@ -1,5 +1,5 @@
-import std/strings
-import std/fmt
+import strings
+import fmt
 
 let apply(f: (i32) -> i32, x: i32): i32 = f(x)
 

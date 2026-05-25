@@ -6,7 +6,7 @@
 // qoz_string_alias wraps a raw byte run as a GC-tracked string at
 // finish time.
 
-import std/mem
+import mem
 
 type Strbuf = { buf: *u8, len: i64, cap: i64 }
 

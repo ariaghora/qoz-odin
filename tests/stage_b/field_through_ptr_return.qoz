@@ -3,7 +3,7 @@
 // The receiver is pointer-typed; field_access_op must emit `->`
 // rather than `.` for the access.
 
-import std/mem
+import mem
 
 type Cell = { v: i64 }
 

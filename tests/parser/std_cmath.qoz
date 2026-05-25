@@ -1,4 +1,4 @@
-import std/cmath
+import cmath
 
 let close_enough(a: f64, b: f64): bool = {
     let d = a - b

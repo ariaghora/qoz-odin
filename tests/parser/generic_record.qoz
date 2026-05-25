@@ -1,5 +1,5 @@
-import std/strings
-import std/fmt
+import strings
+import fmt
 
 type Pair<A, B> = { fst: A, snd: B }
 

@@ -2,9 +2,9 @@
 // The scene is a single sphere centred at z = -1 against a vertical
 // gradient background.
 
-import std/cmath
-import std/fmt
-import std/strings
+import cmath
+import fmt
+import strings
 
 type Vec3 = { x: f64, y: f64, z: f64 }
 

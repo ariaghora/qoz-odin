@@ -1,6 +1,6 @@
-import std/strings
-import std/fmt
-import std/os
+import strings
+import fmt
+import os
 
 let main() = {
     let a = os.args()

@@ -1,5 +1,5 @@
-import std/strings
-import std/fmt
+import strings
+import fmt
 
 let with_cleanup() = {
     fmt.println("enter")

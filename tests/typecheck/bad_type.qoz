@@ -1,4 +1,4 @@
-import std/fmt
+import fmt
 
 let main() = {
     let s: string = 42

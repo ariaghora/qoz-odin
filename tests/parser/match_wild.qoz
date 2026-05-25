@@ -1,4 +1,4 @@
-import std/fmt
+import fmt
 
 type Shape =
     | Circle(f64)

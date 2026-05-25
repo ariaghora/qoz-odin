@@ -1,6 +1,6 @@
 // Negative: Vec index must be an integer.
 
-import std/vec
+import vec
 
 let main(): i64 = {
     var v: Vec<i64> = vec.make()

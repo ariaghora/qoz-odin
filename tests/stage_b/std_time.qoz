@@ -1,7 +1,7 @@
 // expect: 1
 // std/time: unix() returns a positive seconds value after 1970.
 
-import std/time
+import time
 
 let main(): i64 = {
     let t = time.unix()

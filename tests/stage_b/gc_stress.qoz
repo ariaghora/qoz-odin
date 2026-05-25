@@ -4,8 +4,8 @@
 // value comes from a long-lived record that must survive every GC
 // pass.
 
-import std/mem
-import std/vec
+import mem
+import vec
 
 type Cell = { v: i64 }
 

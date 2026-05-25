@@ -1,4 +1,4 @@
-import std/fmt
+import fmt
 
 external let puts(s: cstring): i32
 

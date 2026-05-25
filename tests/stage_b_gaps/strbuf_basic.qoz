@@ -4,8 +4,8 @@
 // (strings.qoz and strbuf.qoz); this test also covers the multi-file
 // package loader.
 
-import std/strings
-import std/fmt
+import strings
+import fmt
 
 let main(): i64 = {
     var b: Strbuf = Strbuf { buf: nil as *u8, len: 0, cap: 0 }
