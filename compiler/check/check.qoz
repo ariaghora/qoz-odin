@@ -760,6 +760,18 @@ let is_interp_intrinsic(name: string): bool = {
     strings.has_prefix(name, "__qoz_interp_")
 }
 
+// True when `t` can be rendered to a string by the auto-derived show
+// machinery. Records, ADTs, tuples, Vec, and Map are all printable
+// because their structure is exposed to the compiler. Function values
+// and the explicit error/unit sentinels are not.
+let can_show_ty(t: Ty): bool = {
+    match t {
+    | TyRecord(_, _) | TyAdt(_, _) | TyTuple(_) -> true
+    | TyPtr(inner)                              -> can_show_ty(inner)
+    | _                                         -> false
+    }
+}
+
 let resolve_callee_fn(tc: *TyContext, callee: Expr): string = {
     match callee {
     | EIdent(_, name) -> name
@@ -810,6 +822,15 @@ let synth_call_full(tc: *TyContext, env: *Env, sp: Span, callee: Expr, type_args
         if strings.eq_raw(fn_name, "__qoz_interp_init")   { return ty.ty_ptr_(ty.ty_unit_()) }
         if strings.eq_raw(fn_name, "__qoz_interp_finish") { return ty.ty_string_() }
         return ty.ty_unit_()
+    }
+    // Auto-derived show. The check phase synthesises a per-type
+    // __qoz_show_<MangledT>(v: T): string call whenever a non-primitive
+    // interpolation slot is encountered; the emit phase generates the
+    // function body. The argument type is checked elsewhere because
+    // the rewriter constructs the call with a known concrete type.
+    if strings.has_prefix(fn_name, "__qoz_show_") {
+        for a in args { let _ = synth(tc, env, a) }
+        return ty.ty_string_()
     }
     var arg_tys: Vec<Ty> = vec.make()
     for a in args { vec.push(&arg_tys, synth(tc, env, a)) }
@@ -2080,7 +2101,17 @@ let rewrite_call(tc: *TyContext, env: *Env, sp: Span, callee: Expr, type_args: V
             }
         }
         | None -> {
-            record_error(tc, sp, `interpolation slot must be a primitive (string, i64, f64, bool, or char); got {ty.ty_show(val_ty)}`)
+            // Non-primitive interpolation slot. Route through the
+            // any-value push intrinsic; emit synthesises a per-type
+            // show function and rewrites the call site to use it.
+            if can_show_ty(val_ty) {
+                let new_callee2: Expr = EIdent(sp, "__qoz_interp_push_any")
+                var new_args: Vec<Expr> = vec.make()
+                vec.push(&new_args, infer_calls_expr(tc, env, args[0], ty.ty_error_()))
+                vec.push(&new_args, infer_calls_expr(tc, env, args[1], val_ty))
+                return ECall(sp, new_callee2, type_args, new_args)
+            }
+            record_error(tc, sp, `interpolation slot type {ty.ty_show(val_ty)} cannot be rendered as a string`)
         }
         }
     }

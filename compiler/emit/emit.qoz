@@ -66,6 +66,9 @@ type Emitter = {
     closure_counter:   i64,                    // monotonic counter for closure-lifted function names
     synth_fn_defs:     Vec<string>,            // pre-rendered C source for each lifted closure body
     synth_fn_decls:    Vec<string>,            // pre-rendered forward declarations for lifted closures
+    show_pending:      Map<string, TypeExpr>,  // mangled type -> TypeExpr, queued for show-fn emission
+    show_order:        Vec<string>,            // mangled type names in registration order
+    show_emitted:      Map<string, bool>,      // mangled type names whose show fn has been rendered
 }
 
 let make_emitter(): Emitter = Emitter {
@@ -107,6 +110,9 @@ let make_emitter(): Emitter = Emitter {
     closure_counter:  0,
     synth_fn_defs:    vec.make(),
     synth_fn_decls:   vec.make(),
+    show_pending:     map.make(),
+    show_order:       vec.make(),
+    show_emitted:     map.make(),
 }
 
 let register_generics(e: *Emitter, file: File) = {
@@ -541,6 +547,292 @@ let mangle_inst(e: *Emitter, name: string, args: Vec<TypeExpr>): string = {
         acc = strings.cat(acc, mangle_type(e, a))
     }
     acc
+}
+
+// ----------------------------------------------------------------
+// Auto-derived show.
+// ----------------------------------------------------------------
+//
+// Backtick interpolation routes every non-primitive slot through a
+// per-type show function. The function takes the value, builds a
+// string with the runtime's interpolation builder, and returns it.
+// Show functions are synthesised on demand, deduplicated by mangled
+// type name, and emitted once at render time.
+
+// Compact text used in diagnostics. The proper `c_type_for` mapping
+// needs an emitter; this version stays self-contained so it can be
+// called from contexts that only have a TypeExpr.
+let te_show_dbg(te: TypeExpr): string = {
+    match te {
+    | TEUnit(_)            -> "unit"
+    | TEPtr(_, inner)      -> strings.cat("*", te_show_dbg(inner))
+    | TETuple(_, _)        -> "tuple"
+    | TEFn(_, _, _)        -> "fn"
+    | TENamed(_, path, args) -> {
+        if len(path) == 0 { return "<unnamed>" }
+        var out = path[len(path) - 1]
+        if len(args) > 0 {
+            out = strings.cat(out, "<")
+            var i: i64 = 0
+            for a in args {
+                if i > 0 { out = strings.cat(out, ", ") }
+                out = strings.cat(out, te_show_dbg(a))
+                i += 1
+            }
+            out = strings.cat(out, ">")
+        }
+        out
+    }
+    }
+}
+
+let register_show_needed(e: *Emitter, mangled: string, te: TypeExpr) = {
+    if map.contains(&e.show_pending, mangled) { return }
+    e.show_pending[mangled] = te
+    vec.push(&e.show_order, mangled)
+    let arg_c = c_type_for(e, te)
+    let fwd = `static qoz_string qoz_show_{mangled}({arg_c} v);\n`
+    vec.push(&e.synth_fn_decls, fwd)
+}
+
+// Emit a C statement that pushes `c_expr` (already a valid C
+// expression of type `te`) onto the interpolation buffer `b`. The
+// dispatch follows the same primitive/composite split as the parser
+// desugar: primitives go through a typed push; composite types route
+// through a (lazily registered) show fn.
+let emit_show_push(e: *Emitter, body_acc: string, c_expr: string, te: TypeExpr): string = {
+    let pname = show_primitive_kind(te)
+    if !strings.eq_raw(pname, "") {
+        if strings.eq_raw(pname, "str") {
+            return strings.cat(body_acc, `qoz_interp_push_str(b, {c_expr});\n`)
+        }
+        if strings.eq_raw(pname, "i64") {
+            return strings.cat(body_acc, `qoz_interp_push_i64(b, (int64_t)({c_expr}));\n`)
+        }
+        if strings.eq_raw(pname, "f64") {
+            return strings.cat(body_acc, `qoz_interp_push_f64(b, (double)({c_expr}));\n`)
+        }
+        if strings.eq_raw(pname, "bool") {
+            return strings.cat(body_acc, `qoz_interp_push_bool(b, {c_expr});\n`)
+        }
+        if strings.eq_raw(pname, "char") {
+            return strings.cat(body_acc, `qoz_interp_push_char(b, (int64_t)({c_expr}));\n`)
+        }
+    }
+    // Composite: register a show fn for `te` and call it.
+    let mangled = mangle_type(e, te)
+    if strings.eq_raw(mangled, "") {
+        return strings.cat(body_acc, `qoz_interp_push_str(b, QOZ_STR_LIT("<unprintable>"));\n`)
+    }
+    register_show_needed(e, mangled, te)
+    strings.cat(body_acc, `qoz_interp_push_str(b, qoz_show_{mangled}({c_expr}));\n`)
+}
+
+let show_primitive_kind(te: TypeExpr): string = {
+    match te {
+    | TENamed(_, path, _) -> {
+        if len(path) != 1 { return "" }
+        let n = path[0]
+        if strings.eq_raw(n, "string")  { return "str" }
+        if strings.eq_raw(n, "bool")    { return "bool" }
+        if strings.eq_raw(n, "char")    { return "char" }
+        if strings.eq_raw(n, "f32") || strings.eq_raw(n, "f64") { return "f64" }
+        if strings.eq_raw(n, "i8") || strings.eq_raw(n, "i16") || strings.eq_raw(n, "i32") || strings.eq_raw(n, "i64") { return "i64" }
+        if strings.eq_raw(n, "u8") || strings.eq_raw(n, "u16") || strings.eq_raw(n, "u32") || strings.eq_raw(n, "u64") { return "i64" }
+        ""
+    }
+    | _ -> ""
+    }
+}
+
+let push_literal(body_acc: string, lit: string): string = {
+    // The literal must already be a safe C string body (no embedded
+    // unescaped quotes). The callers in this module only pass static
+    // ASCII chunks ("(", ", ", " }", variant names, field names), so
+    // escaping does not need to be re-applied here.
+    strings.cat(body_acc, `qoz_interp_push_str(b, QOZ_STR_LIT("{lit}"));\n`)
+}
+
+// Render a show fn body for a record type. `bare` is the
+// unparametrised struct name (e.g. "Point", "Vec"). `mangled` is the
+// C-level name (`qoz_Point`, `qoz_Vec__int64_t`, ...). `args` is the
+// type-argument vector for generic instantiations.
+let render_show_body_record(e: *Emitter, bare: string, mangled: string, args: Vec<TypeExpr>): string = {
+    if strings.eq_raw(bare, "Vec") && len(args) == 1 {
+        return render_show_body_vec(e, mangled, args[0])
+    }
+    if strings.eq_raw(bare, "Map") && len(args) == 2 {
+        return render_show_body_map(e, mangled, args[0], args[1])
+    }
+    match map.get(&e.struct_decls, bare) {
+    | None -> {
+        var body = ""
+        body = push_literal(body, `<{bare}>`)
+        body
+    }
+    | Some(d) -> {
+        match d {
+        | DStruct(_, _, tparams, fields) -> {
+            var body = ""
+            body = push_literal(body, strings.cat(bare, " { "))
+            var fi: i64 = 0
+            for f in fields {
+                if fi > 0 { body = push_literal(body, ", ") }
+                body = push_literal(body, strings.cat(f.name, ": "))
+                let field_te = if len(tparams) > 0 && len(args) == len(tparams) {
+                    substitute_type(e, f.ty, tparams, args)
+                } else { f.ty }
+                let access = `v.{f.name}`
+                body = emit_show_push(e, body, access, field_te)
+                fi += 1
+            }
+            body = push_literal(body, " }")
+            body
+        }
+        | _ -> {
+            var body = ""
+            body = push_literal(body, `<{bare}>`)
+            body
+        }
+        }
+    }
+    }
+}
+
+let render_show_body_vec(e: *Emitter, mangled: string, elem_te: TypeExpr): string = {
+    var body = ""
+    body = push_literal(body, "[")
+    body = strings.cat(body, "for (int64_t i = 0; i < v.len; i++) {\n")
+    body = strings.cat(body, "if (i > 0) qoz_interp_push_str(b, QOZ_STR_LIT(\", \"));\n")
+    body = emit_show_push(e, body, "v.data[i]", elem_te)
+    body = strings.cat(body, "}\n")
+    body = push_literal(body, "]")
+    body
+}
+
+let render_show_body_map(e: *Emitter, mangled: string, key_te: TypeExpr, val_te: TypeExpr): string = {
+    var body = ""
+    body = push_literal(body, "{ ")
+    body = strings.cat(body, "int64_t printed = 0;\n")
+    body = strings.cat(body, "for (int64_t i = 0; i < v.cap; i++) {\n")
+    body = strings.cat(body, "if (!v.slots[i].occupied || v.slots[i].deleted) continue;\n")
+    body = strings.cat(body, "if (printed > 0) qoz_interp_push_str(b, QOZ_STR_LIT(\", \"));\n")
+    body = emit_show_push(e, body, "v.slots[i].key", key_te)
+    body = strings.cat(body, "qoz_interp_push_str(b, QOZ_STR_LIT(\": \"));\n")
+    body = emit_show_push(e, body, "v.slots[i].value", val_te)
+    body = strings.cat(body, "printed += 1;\n")
+    body = strings.cat(body, "}\n")
+    body = push_literal(body, " }")
+    body
+}
+
+// Render a show fn body for an ADT. The C parameter `v` is the
+// `qoz_<MangledEnum>*` pointer; the switch dispatches on its tag
+// and prints `Variant(payload, ...)` for each.
+let render_show_body_adt(e: *Emitter, bare: string, mangled: string, args: Vec<TypeExpr>): string = {
+    let inst_args = if len(args) > 0 { args } else { mangled_args(e, mangled, bare) }
+    // Case labels and enum-prefixed identifiers in the emitted C use
+    // the mangled type name without the leading "qoz_" that mangle_type
+    // adds. Strip it once here so the labels match what emit_enum
+    // produces.
+    let case_prefix = if strings.has_prefix(mangled, "qoz_") {
+        strings.slice(mangled, 4, len(mangled))
+    } else { mangled }
+    match map.get(&e.enum_decls, bare) {
+    | None -> {
+        var body = ""
+        body = push_literal(body, `<{bare}>`)
+        body
+    }
+    | Some(d) -> {
+        match d {
+        | DEnum(_, _, tparams, variants) -> {
+            var body = ""
+            body = strings.cat(body, `switch (v->tag) {{\n`)
+            for vd in variants {
+                let vname = vd.name
+                body = strings.cat(body, `case qoz_{case_prefix}_{vname}: {{\n`)
+                if len(vd.pos) == 0 {
+                    body = push_literal(body, vname)
+                } else {
+                    body = push_literal(body, strings.cat(vname, "("))
+                    var pi: i64 = 0
+                    for pte in vd.pos {
+                        if pi > 0 { body = push_literal(body, ", ") }
+                        let sub_te = if len(tparams) > 0 && len(inst_args) == len(tparams) {
+                            substitute_type(e, pte, tparams, inst_args)
+                        } else { pte }
+                        let pstr = int_to_string(pi)
+                        let access = `v->payload.{vname}.f{pstr}`
+                        body = emit_show_push(e, body, access, sub_te)
+                        pi += 1
+                    }
+                    body = push_literal(body, ")")
+                }
+                body = strings.cat(body, "break;\n} \n")
+            }
+            body = strings.cat(body, `default: qoz_interp_push_str(b, QOZ_STR_LIT("<{bare}:?>")); break;\n`)
+            body = strings.cat(body, "}\n")
+            body
+        }
+        | _ -> {
+            var body = ""
+            body = push_literal(body, `<{bare}>`)
+            body
+        }
+        }
+    }
+    }
+}
+
+let render_show_body_tuple(e: *Emitter, elems: Vec<TypeExpr>): string = {
+    var body = ""
+    body = push_literal(body, "(")
+    var i: i64 = 0
+    for el in elems {
+        if i > 0 { body = push_literal(body, ", ") }
+        let pstr = int_to_string(i)
+        let access = `v._{pstr}`
+        body = emit_show_push(e, body, access, el)
+        i += 1
+    }
+    body = push_literal(body, ")")
+    body
+}
+
+let render_show_fn(e: *Emitter, mangled: string, te: TypeExpr): string = {
+    let arg_c = c_type_for(e, te)
+    let body_inner = match te {
+    | TENamed(_, path, args) -> {
+        if len(path) == 0 {
+            push_literal("", "<unnamed>")
+        } else {
+            let bare = path[len(path) - 1]
+            if map.contains(&e.enum_decls, bare) {
+                render_show_body_adt(e, bare, mangled, args)
+            } else {
+                render_show_body_record(e, bare, mangled, args)
+            }
+        }
+    }
+    | TEPtr(_, inner) -> {
+        // Pointer to a printable value: emit a show fn whose `v` is
+        // the pointer and whose body forwards to the underlying
+        // type's show fn through an automatic dereference.
+        let inner_mangled = mangle_type(e, inner)
+        register_show_needed(e, inner_mangled, inner)
+        var body = `qoz_interp_push_str(b, qoz_show_{inner_mangled}(*v));\n`
+        body
+    }
+    | TETuple(_, elems) -> render_show_body_tuple(e, elems)
+    | _                 -> push_literal("", "<unprintable>")
+    }
+    var out = `static qoz_string qoz_show_{mangled}({arg_c} v) {{\n`
+    out = strings.cat(out, "void* b = qoz_interp_init();\n")
+    out = strings.cat(out, body_inner)
+    out = strings.cat(out, "return qoz_interp_finish(b);\n")
+    out = strings.cat(out, "}\n")
+    out
 }
 
 let mangle_type(e: *Emitter, t: TypeExpr): string = {
@@ -2367,19 +2659,28 @@ let bind_arm_locals_at(e: *Emitter, pat: Pattern, value_te: TypeExpr) = {
         | None    -> e.locals[bname] = value_te
         }
     }
-    | PatVariant(_, path, sub_pats) -> {
-        if len(path) < 1 { return }
+    | PatVariant(sp, path, sub_pats) -> {
+        if len(path) < 1 {
+            let _ = emit_die(sp, "variant pattern has no name")
+            return
+        }
         let vname = path[len(path) - 1]
         let inner_enum = enum_name_of_te(e, value_te)
-        if strings.eq_raw(inner_enum, "") { return }
+        if strings.eq_raw(inner_enum, "") {
+            let _ = emit_die(sp, "nested variant pattern on a scrutinee whose type is not an enum")
+            return
+        }
         var i: i64 = 0
-        for sp in sub_pats {
+        for spat in sub_pats {
             let sub_te = variant_payload_typeexpr(e, inner_enum, vname, i)
-            bind_arm_locals_at(e, sp, sub_te)
+            bind_arm_locals_at(e, spat, sub_te)
             i += 1
         }
     }
-    | _ -> { }
+    | PatWild(_) | PatLitInt(_, _) | PatLitString(_, _) | PatLitBool(_, _) -> { }
+    | PatTuple(sp, _) -> {
+        let _ = emit_die(sp, "tuple patterns in match arms are not yet supported")
+    }
     }
 }
 
@@ -2766,6 +3067,25 @@ let emit_call(e: *Emitter, callee: Expr, type_args: Vec<TypeExpr>, args: Vec<Exp
         // the type checker recognises the prefix and types the call
         // directly.
         if strings.has_prefix(name, "__qoz_interp_") {
+            // Non-primitive interpolation slot. Materialise the value
+            // through a per-type auto-derived show fn so the runtime
+            // sees a string. The show fn is registered for later
+            // emission; subsequent emits of the same type share it.
+            if strings.eq_raw(name, "__qoz_interp_push_any") && len(args) == 2 {
+                let val_te = infer_value_te(e, args[1])
+                let mangled = mangle_type(e, val_te)
+                if strings.eq_raw(mangled, "") {
+                    let _ = emit_die(span_of_expr(args[1]), `cannot derive a show function for type {te_show_dbg(val_te)}`)
+                }
+                register_show_needed(e, mangled, val_te)
+                push(e, "qoz_interp_push_str(")
+                emit_expr(e, args[0])
+                push(e, ", ")
+                push(e, `qoz_show_{mangled}(`)
+                emit_expr(e, args[1])
+                push(e, "))")
+                return
+            }
             let c_name = strings.slice(name, 2, len(name))
             push(e, c_name)
             push(e, "(")
@@ -3694,6 +4014,26 @@ let emit_program(f: File, expr_types: Map<i64, TypeExpr>): string = {
     }
     for s in e.synth_fn_defs {
         push(&e, s)
+    }
+    // Auto-derived show fns. Emitted after all user code so they can
+    // call already-declared user helpers (struct field accesses, ADT
+    // tag constants) without needing additional forward declarations.
+    // The fns themselves are forward-declared inside synth_fn_decls at
+    // register time.
+    var si: i64 = 0
+    while si < len(e.show_order) {
+        let m = e.show_order[si]
+        if !map.contains(&e.show_emitted, m) {
+            e.show_emitted[m] = true
+            match map.get(&e.show_pending, m) {
+            | Some(te) -> {
+                let body = render_show_fn(&e, m, te)
+                push(&e, body)
+            }
+            | None -> { }
+            }
+        }
+        si += 1
     }
     render(&e)
 }
@@ -4811,24 +5151,30 @@ let emit_pat_match_cond(e: *Emitter, p: Pattern, value_expr: string, value_te: T
     | PatLitString(_, text) -> {
         push(e, ` && qoz_string_eq({value_expr}, QOZ_STR_LIT({text}))`)
     }
-    | PatVariant(_, path, sub_pats) -> {
-        if len(path) > 0 {
-            let vname = path[len(path) - 1]
-            let inner_enum = enum_name_of_te(e, value_te)
-            if !strings.eq_raw(inner_enum, "") {
-                push(e, ` && {value_expr}->tag == qoz_{inner_enum}_{vname}`)
-                var i: i64 = 0
-                for sp in sub_pats {
-                    let sub_te = variant_payload_typeexpr(e, inner_enum, vname, i)
-                    let is = int_to_string(i)
-                    let sub_expr = `{value_expr}->payload.{vname}.f{is}`
-                    emit_pat_match_cond(e, sp, sub_expr, sub_te)
-                    i += 1
-                }
-            }
+    | PatVariant(sp, path, sub_pats) -> {
+        if len(path) == 0 {
+            let _ = emit_die(sp, "variant pattern has no name")
+            return
+        }
+        let vname = path[len(path) - 1]
+        let inner_enum = enum_name_of_te(e, value_te)
+        if strings.eq_raw(inner_enum, "") {
+            let _ = emit_die(sp, "nested variant pattern on a scrutinee whose type is not an enum")
+            return
+        }
+        push(e, ` && {value_expr}->tag == qoz_{inner_enum}_{vname}`)
+        var i: i64 = 0
+        for spat in sub_pats {
+            let sub_te = variant_payload_typeexpr(e, inner_enum, vname, i)
+            let is = int_to_string(i)
+            let sub_expr = `{value_expr}->payload.{vname}.f{is}`
+            emit_pat_match_cond(e, spat, sub_expr, sub_te)
+            i += 1
         }
     }
-    | PatTuple(_, _) -> { }
+    | PatTuple(sp, _) -> {
+        let _ = emit_die(sp, "tuple patterns in match arms are not yet supported")
+    }
     }
 }
 
@@ -4843,23 +5189,30 @@ let emit_pat_bindings(e: *Emitter, p: Pattern, value_expr: string, value_te: Typ
         push(e, `{ct} {bname} = {value_expr}; (void){bname}; `)
         e.locals[bname] = value_te
     }
-    | PatVariant(_, path, sub_pats) -> {
-        if len(path) > 0 {
-            let vname = path[len(path) - 1]
-            let inner_enum = enum_name_of_te(e, value_te)
-            if !strings.eq_raw(inner_enum, "") {
-                var i: i64 = 0
-                for sp in sub_pats {
-                    let sub_te = variant_payload_typeexpr(e, inner_enum, vname, i)
-                    let is = int_to_string(i)
-                    let sub_expr = `{value_expr}->payload.{vname}.f{is}`
-                    emit_pat_bindings(e, sp, sub_expr, sub_te)
-                    i += 1
-                }
-            }
+    | PatVariant(sp, path, sub_pats) -> {
+        if len(path) == 0 {
+            let _ = emit_die(sp, "variant pattern has no name")
+            return
+        }
+        let vname = path[len(path) - 1]
+        let inner_enum = enum_name_of_te(e, value_te)
+        if strings.eq_raw(inner_enum, "") {
+            let _ = emit_die(sp, "nested variant pattern on a scrutinee whose type is not an enum")
+            return
+        }
+        var i: i64 = 0
+        for spat in sub_pats {
+            let sub_te = variant_payload_typeexpr(e, inner_enum, vname, i)
+            let is = int_to_string(i)
+            let sub_expr = `{value_expr}->payload.{vname}.f{is}`
+            emit_pat_bindings(e, spat, sub_expr, sub_te)
+            i += 1
         }
     }
-    | _ -> { }
+    | PatWild(_) | PatLitInt(_, _) | PatLitString(_, _) | PatLitBool(_, _) -> { }
+    | PatTuple(sp, _) -> {
+        let _ = emit_die(sp, "tuple patterns in match arms are not yet supported")
+    }
     }
 }
 
@@ -5053,36 +5406,50 @@ let emit_match_arm_with_kind(e: *Emitter, enum_name: string, scrut_tmp: string, 
         }
         }
     }
-    | PatVariant(_, path, sub_pats) -> {
-        if len(path) > 0 {
-            let vname = path[len(path) - 1]
-            push(e, `case qoz_{enum_name}_{vname}: {{ `)
-            var i: i64 = 0
-            for sp in sub_pats {
-                match sp {
-                | PatBind(_, bname) -> {
-                    let pc = variant_payload_ctype(e, enum_name, vname, i)
-                    let is = int_to_string(i)
-                    push(e, `{pc} {bname} = {scrut_tmp}->payload.{vname}.f{is}; `)
-                    e.locals[bname] = variant_payload_typeexpr(e, enum_name, vname, i)
-                }
-                | _ -> { }
-                }
-                i += 1
-            }
-            if arm.has_guard {
-                push(e, "if (")
-                emit_expr(e, arm.guard)
-                push(e, ") { ")
-                emit_arm_body_kind(e, is_void, res_tmp, arm.body, body_hint)
-                push(e, "} ")
-            } else {
-                emit_arm_body_kind(e, is_void, res_tmp, arm.body, body_hint)
-            }
-            push(e, " break; } ")
+    | PatVariant(psp, path, sub_pats) -> {
+        if len(path) == 0 {
+            let _ = emit_die(psp, "variant pattern has no name")
+            return
         }
+        let vname = path[len(path) - 1]
+        push(e, `case qoz_{enum_name}_{vname}: {{ `)
+        var i: i64 = 0
+        for spat in sub_pats {
+            match spat {
+            | PatBind(_, bname) -> {
+                let pc = variant_payload_ctype(e, enum_name, vname, i)
+                let is = int_to_string(i)
+                push(e, `{pc} {bname} = {scrut_tmp}->payload.{vname}.f{is}; `)
+                e.locals[bname] = variant_payload_typeexpr(e, enum_name, vname, i)
+            }
+            | PatWild(_) -> { }
+            | _ -> {
+                // pat_needs_if_chain routes any literal or nested
+                // variant sub-pattern through the if-chain emitter;
+                // reaching this arm means that routing missed a case
+                // and the switch dispatch cannot encode the test.
+                let _ = emit_die(psp, "switch-style match arm received a sub-pattern that requires a runtime test; pat_needs_if_chain is out of sync")
+            }
+            }
+            i += 1
+        }
+        if arm.has_guard {
+            push(e, "if (")
+            emit_expr(e, arm.guard)
+            push(e, ") { ")
+            emit_arm_body_kind(e, is_void, res_tmp, arm.body, body_hint)
+            push(e, "} ")
+        } else {
+            emit_arm_body_kind(e, is_void, res_tmp, arm.body, body_hint)
+        }
+        push(e, " break; } ")
     }
-    | _ -> { }
+    | PatTuple(psp, _) -> {
+        let _ = emit_die(psp, "tuple patterns in match arms are not yet supported")
+    }
+    | PatLitInt(psp, _) | PatLitString(psp, _) | PatLitBool(psp, _) -> {
+        let _ = emit_die(psp, "literal pattern reached switch-style match dispatch; pat_needs_if_chain is out of sync")
+    }
     }
 }
 
