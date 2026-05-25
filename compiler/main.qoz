@@ -215,6 +215,16 @@ type Loaded = {
 }
 
 let load_all(entry: string, qoz_root: string): Loaded = {
+    var entries: Vec<string> = vec.make()
+    vec.push(&entries, entry)
+    load_all_entries(entries, entry, qoz_root)
+}
+
+// Load every file reachable from one or more entry files. The first
+// argument lists the source paths that seed the compilation unit; the
+// second is the path used to identify the resulting `File` (its
+// `path` field is read by downstream phases for diagnostic anchoring).
+let load_all_entries(entries: Vec<string>, primary: string, qoz_root: string): Loaded = {
     var queue: Vec<Pending> = vec.make()
     var visited: Map<string, bool> = map.make()
     var aggregated_decls: Vec<Decl> = vec.make()
@@ -234,7 +244,9 @@ let load_all(entry: string, qoz_root: string): Loaded = {
             }
         }
     }
-    vec.push(&queue, Pending { path: entry, pkg: "" })
+    for ep in entries {
+        vec.push(&queue, Pending { path: ep, pkg: "" })
+    }
     var qi: i64 = 0
     while qi < len(queue) {
         let cur = queue[qi]
@@ -244,7 +256,7 @@ let load_all(entry: string, qoz_root: string): Loaded = {
             process_one(cur, &queue, &visited, &aggregated_decls, &sources, qoz_root)
         }
     }
-    Loaded { file: File { path: entry, decls: aggregated_decls }, sources: sources }
+    Loaded { file: File { path: primary, decls: aggregated_decls }, sources: sources }
 }
 
 let process_one(cur: Pending, queue: *Vec<Pending>, visited: *Map<string, bool>, aggregated_decls: *Vec<Decl>, sources: *Vec<string>, qoz_root: string) = {
@@ -326,9 +338,81 @@ let is_error_placeholder(d: Decl): bool = {
 // Compile `path` to a .qoz.c file next to the source. Returns the
 // emitted .c path. Aborts the process on type-check failure or write
 // failure.
+// Drop a trailing `/` so directory paths normalise to their bare form
+// before splitting into a basename. `foo/` becomes `foo`, `/` stays
+// `/`, and a path that already has no trailing slash is returned
+// unchanged.
+let strip_trailing_slash(path: string): string = {
+    let n = len(path)
+    if n > 1 && strings.byte_at(path, n - 1) == 47 {
+        return strings.slice(path, 0, n - 1)
+    }
+    path
+}
+
+// Last path segment. `a/b/c` returns `c`; a path with no separator
+// returns itself.
+let path_basename(path: string): string = {
+    let n = len(path)
+    var i: i64 = n - 1
+    while i >= 0 && strings.byte_at(path, i) != 47 { i -= 1 }
+    strings.slice(path, i + 1, n)
+}
+
+// Map an input path to a `(entry_file, c_output_path)` pair. The
+// entry file is what load_all is seeded with; the C output path is
+// where the emitted program is written. For a directory, the entry
+// is any .qoz file inside it (load_all then picks up siblings through
+// the package-file enumeration) and the C output is placed alongside
+// the directory using the directory's basename.
+type EntryPaths = { entries: Vec<string>, primary: string, c_path: string }
+
+let resolve_entry_paths(path: string): EntryPaths = {
+    if strings.has_suffix(path, ".qoz") {
+        var v: Vec<string> = vec.make()
+        vec.push(&v, path)
+        return EntryPaths { entries: v, primary: path, c_path: strings.cat(path, ".c") }
+    }
+    let norm = strip_trailing_slash(path)
+    let files = list_package_files(norm)
+    if len(files) == 0 {
+        fmt.println(`{norm}: no .qoz files found in directory`)
+        os.exit(1)
+    }
+    let base = path_basename(norm)
+    let c_path = strings.cat(strings.cat(strings.cat(norm, "/"), base), ".c")
+    EntryPaths { entries: files, primary: files[0], c_path: c_path }
+}
+
+// Count top-level `main` function declarations in the aggregated AST.
+// A package compiled as a build target must contain exactly one. Zero
+// means the program has no entry point; more than one is ambiguous.
+let count_main_decls(decls: Vec<Decl>): i64 = {
+    var n: i64 = 0
+    for d in decls {
+        match d {
+        | DFn(_, name, _, _, _, _, _) -> {
+            if strings.eq_raw(name, "main") { n += 1 }
+        }
+        | _ -> { }
+        }
+    }
+    n
+}
+
 let cmd_build(path: string, qoz_root: string): string = {
-    let loaded = load_all(path, qoz_root)
+    let paths = resolve_entry_paths(path)
+    let loaded = load_all_entries(paths.entries, paths.primary, qoz_root)
     let file = loaded.file
+    let main_count = count_main_decls(file.decls)
+    if main_count == 0 {
+        fmt.println(`{path}: no main function found`)
+        os.exit(1)
+    }
+    if main_count > 1 {
+        fmt.println(`{path}: more than one main function found ({main_count})`)
+        os.exit(1)
+    }
     var tc = check.make_ctx()
     check.register_file(&tc, file)
     check.validate_signatures(&tc, file)
@@ -340,13 +424,25 @@ let cmd_build(path: string, qoz_root: string): string = {
     }
     let c_source = emit.emit_program(inferred, tc.expr_types)
     let _keep_alive = loaded.sources
-    let out_path = strings.cat(path, ".c")
+    let out_path = paths.c_path
     let ok = fs.write_file(out_path, c_source)
     if !ok {
         fmt.println(`could not write {out_path}`)
         os.exit(1)
     }
     out_path
+}
+
+// Derive the executable path from a C output path. Strips the
+// trailing `.c` and appends `.bin` so the result is parallel to the
+// generated source. Falls back to appending `.bin` when the input
+// somehow does not end in `.c`.
+let bin_path_for(c_path: string): string = {
+    if strings.has_suffix(c_path, ".c") {
+        let n = len(c_path)
+        return strings.cat(strings.slice(c_path, 0, n - 2), ".bin")
+    }
+    strings.cat(c_path, ".bin")
 }
 
 // Clang flags used for both `build` and `run`. Kept in one place so
@@ -457,7 +553,7 @@ let clean_line(s: string): string = {
 // the run; users who want the source should invoke `qoz emit`.
 let cmd_run(path: string, qoz_root: string) = {
     let c_path = cmd_build(path, qoz_root)
-    let bin_path = strings.cat(path, ".bin")
+    let bin_path = bin_path_for(c_path)
     let cargv = clang_argv(c_path, bin_path)
     let clang_result = os.process_exec(cargv)
     if clang_result.exit_code != 0 {
@@ -514,7 +610,7 @@ let main() = {
         }
         let path = args[2]
         let c_path = cmd_build(path, qoz_root)
-        let bin_path = strings.cat(path, ".bin")
+        let bin_path = bin_path_for(c_path)
         let cargv = clang_argv(c_path, bin_path)
         let r = os.process_exec(cargv)
         if r.exit_code != 0 {
