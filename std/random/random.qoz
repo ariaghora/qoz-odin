@@ -1,0 +1,26 @@
+// std/random: pseudo-random number generation.
+//
+// A linear congruential generator (LCG) with the constants from
+// Numerical Recipes. Deterministic given the seed; useful for tests
+// and simulations. NOT cryptographically secure.
+
+type Rng = { state: u64 }
+
+let make(seed: u64): Rng = Rng { state: seed }
+
+// Advance the state and return the next u64 value.
+let next_u64(r: *Rng): u64 = {
+    let a: u64 = 1664525
+    let c: u64 = 1013904223
+    r.state = r.state * a + c
+    r.state
+}
+
+// Return an integer in the half-open interval [0, bound). `bound`
+// must be positive; the result is biased by at most 1 / bound when
+// the generator's range is not a multiple of bound.
+let next_below(r: *Rng, bound: i64): i64 = {
+    if bound <= 0 { return 0 }
+    let raw = next_u64(r)
+    ((raw as i64) % bound + bound) % bound
+}

@@ -1,0 +1,13 @@
+// expect: 3
+// std/set: add, contains, size.
+
+import std/set
+
+let main(): i64 = {
+    var s: Set<i64> = set.make()
+    set.add(&s, 1)
+    set.add(&s, 2)
+    set.add(&s, 3)
+    set.add(&s, 2)
+    set.size(&s)
+}

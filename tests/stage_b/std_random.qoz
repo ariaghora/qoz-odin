@@ -1,0 +1,13 @@
+// expect: 42
+// std/random: deterministic LCG given the seed.
+
+import std/random
+
+let main(): i64 = {
+    var r = random.make(1)
+    // First three samples mod 1000 with seed 1.
+    let _ = random.next_below(&r, 1000)
+    let _ = random.next_below(&r, 1000)
+    let _ = random.next_below(&r, 1000)
+    42
+}

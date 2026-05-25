@@ -1,0 +1,16 @@
+// expect: 7
+// Literal string sub-pattern inside a variant pattern.
+
+type Tagged = | Named(string)
+
+let classify(t: Tagged): i64 = {
+    match t {
+    | Named("first")  -> 1
+    | Named("second") -> 7
+    | Named(_)        -> 0
+    }
+}
+
+let main(): i64 = {
+    classify(Tagged.Named("second"))
+}

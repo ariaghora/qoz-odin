@@ -41,6 +41,12 @@ qoz_string qoz_os_getenv(qoz_string name);
  * errors flow through Result<T, E> with the `try` operator. */
 _Noreturn void qoz_panic(qoz_string msg);
 
+/* Wall-clock time. `qoz_time_unix` returns whole seconds since the
+ * Unix epoch. `qoz_time_unix_micros` returns microseconds since the
+ * epoch. Both go through POSIX `gettimeofday`. */
+int64_t qoz_time_unix(void);
+int64_t qoz_time_unix_micros(void);
+
 /* Qoz-level call-frame tracker. The compiler emits push at function
  * entry and pop before each return; qoz_panic walks the frame stack
  * to print a Qoz-level backtrace on abort. */

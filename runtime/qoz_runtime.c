@@ -5,6 +5,7 @@
 #include <inttypes.h>
 #include <dirent.h>
 #include <sys/types.h>
+#include <sys/time.h>
 
 static int qoz_argc_val = 0;
 static char **qoz_argv_val = NULL;
@@ -12,6 +13,18 @@ static char **qoz_argv_val = NULL;
 void qoz_set_argv(int argc, char **argv) {
     qoz_argc_val = argc;
     qoz_argv_val = argv;
+}
+
+int64_t qoz_time_unix(void) {
+    struct timeval tv;
+    if (gettimeofday(&tv, NULL) != 0) return 0;
+    return (int64_t)tv.tv_sec;
+}
+
+int64_t qoz_time_unix_micros(void) {
+    struct timeval tv;
+    if (gettimeofday(&tv, NULL) != 0) return 0;
+    return (int64_t)tv.tv_sec * 1000000 + (int64_t)tv.tv_usec;
 }
 
 int64_t qoz_os_argc(void) { return (int64_t)qoz_argc_val; }

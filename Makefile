@@ -94,10 +94,14 @@ verify-self-host: $(QOZ)
 	@rm -f compiler/main.qoz.c
 	@echo "self-host fixed-point check passed"
 
-test: $(QOZ)
+test: $(QOZ) verify-self-host
 	@cp $(QOZ) main
 	bash tests/run.sh
 	@rm -f main
+
+.PHONY: fuzz
+fuzz: $(QOZ)
+	bash tests/fuzz/run.sh
 
 # Refresh bootstrap/stage1.c from the live source. Requires an
 # existing qoz binary to do the emit.

@@ -1,0 +1,28 @@
+// std/set: hash set built on top of std/map.
+//
+// `Set<T>` stores each element as a key in a Map<T, bool>; presence
+// is encoded by the key alone. Insertion, lookup, and removal use
+// the same probe sequence as the underlying map.
+
+import std/map
+import std/vec
+
+type Set<T> = { items: Map<T, bool> }
+
+let make<T>(): Set<T> = Set { items: map.make() }
+
+let add<T>(s: *Set<T>, x: T) = {
+    map.insert(&s.items, x, true)
+}
+
+let contains<T>(s: *Set<T>, x: T): bool = {
+    map.contains(&s.items, x)
+}
+
+let size<T>(s: *Set<T>): i64 = s.items.len
+
+// Return the set's elements in the key-sort order produced by
+// `map.sorted_keys`. Iteration order is stable across runs.
+let sorted_elements<T>(s: *Set<T>): Vec<T> = {
+    map.sorted_keys(&s.items)
+}

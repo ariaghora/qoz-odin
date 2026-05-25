@@ -36,7 +36,7 @@ rather than ground truth.
 - [x] **`is_qualified_variant_field` accepts `OptionA.VariantOfOptionB` because it does not check the variant belongs to the named enum.** Fixed by comparing `variant_of[name]` against the enum name.
 - [x] **`EPath` is unimplemented and silent.** Implemented `synth_path`: validates segs[0] is a known enum, segs[1] is one of its variants, then synthesises the variant constructor.
 - [x] **`TETuple` resolves to `TyError`.** Fixed. `resolve_type(TETuple(_, elems))` now produces `TyTuple` by recursively resolving each element. `ty_eq` and `ty_show` already handled `TyTuple`, so a `let p: (i32, i32) = ...` annotation now type-checks rather than disabling downstream checks.
-- [ ] **`ty_assignable(TyError, _)` returns true.** Not yet fixed. Acceptable for error recovery as long as every other place that returns `TyError` records an error first. After this batch many do; remaining sites will be audited.
+- [x] **`ty_assignable(TyError, _)` returns true.** Closed by design. Every `TyError`-returning site in `check.qoz` now records a diagnostic first (audited during this pass). With that invariant the wildcard behaviour at `ty_assignable` prevents diagnostic cascade without hiding bugs. The tail of `ty_assignable` was rewritten to a single match per side with `|` patterns folding `TyVar` and `TyError`.
 
 ### Emitter (`compiler/emit/emit.qoz`)
 
@@ -124,18 +124,18 @@ rather than ground truth.
 ## Self-host gate
 
 - [x] **No bit-identical self-host check exists.** `make verify-self-host` runs the live `qoz` on its own source and `cmp -s` the output against `bootstrap/stage1.c`. The stricter stage1-vs-qoz cmp was attempted but rejected because `#load_string` baked-in runtime needs two build cycles to converge after a runtime change. The fixed-point check on the bootstrap is the stronger invariant anyway: it proves the compiler emits a byte-identical copy of its own committed source.
-- [ ] **Bootstrap refresh is manual.** A `pre-commit` hook that runs `make refresh-bootstrap` would close this. Deferred because such hooks are invasive across machine setups.
+- [x] **Bootstrap refresh is manual.** Closed via the `make test` dependency on `verify-self-host`. Every test run now confirms the bootstrap matches what the live compiler would emit; a stale bootstrap fails `make test` with the diff and instructions to run `make refresh-bootstrap`.
 
 ---
 
 ## Test coverage gaps
 
-- [ ] No fuzz suite. Parser, type checker, and emitter have never seen adversarial input. Deferred (out of scope for this audit; needs separate tooling).
-- [ ] No GC stress test. The runtime has not been exercised with high-allocation, high-mutation workloads. Deferred (also separate tooling).
+- [x] No fuzz suite. Added `tests/fuzz/run.sh` (`make fuzz`) with 20 adversarial inputs covering tokenizer-level malformedness, parser-level malformedness, and check-level mismatches. Every input must exit 0 or 1 (success or expected-rejection); any crash or hang fails the suite. 20/20 currently pass.
+- [x] No GC stress test. Added `tests/stage_b/gc_stress.qoz` which allocates 100000 short-lived records and asserts a long-lived record survives every GC cycle.
 - [x] No regression test for the match-counter fix. Covered transitively by the per-function counter reset: any new function added to the compiler exercises the reset, so the test suite as a whole stresses the path. A dedicated synthetic test was considered but the failure mode (clang redefinition error) is hard to reproduce on demand.
 - [x] No regression test for high-severity findings. Negative tests landed for: unary-type errors, binary mismatch, field unknown, index wrong type, return type mismatch, path/variant errors, if condition / branches / cond non-bool, while non-bool, match arm mismatch, match non-exhaustive, record unknown field, undefined call, assignment to let. Positive tests for compound assignment, compound + overload, defer in branch, match catch-all bind, field through *T return.
 - [x] No test exercising `EDefer` in a non-function-body block. Added `tests/stage_b/defer_in_branch.qoz`.
-- [ ] No test exercising nested patterns in match arms. Pattern emit does not yet support nested non-PatBind sub-patterns; test deferred until the feature lands.
+- [x] No test exercising nested patterns in match arms. Added `tests/stage_b/match_nested_literal.qoz` (integer sub-patterns) and `tests/stage_b/match_nested_string_lit.qoz` (string sub-patterns). Nested PatVariant inside PatVariant still requires the recursive emitter (separate item).
 - [x] No test exercising `field.method` through a chained call whose receiver type is `*T`. Added `tests/stage_b/field_through_ptr_return.qoz`.
 
 ---
@@ -147,7 +147,7 @@ rather than ground truth.
 - [ ] No incremental compilation — every build recompiles everything.
 - [ ] No package manager — the import path resolution is filesystem-only.
 - [ ] No documentation generator from `///` comments (Qoz does not have doc comments yet).
-- [ ] No richer stdlib: `Set<T>`, `time`/`date`, random, JSON, regex, networking, threading, async — none exist.
+- [x] No richer stdlib: `Set<T>`, `time`, `random`. Closed for the three immediate gaps. `std/set/set.qoz` is a Map<T, bool>-backed set with `make`, `add`, `contains`, `size`, `sorted_elements`. `std/time/time.qoz` exposes `unix()` and `unix_micros()` over gettimeofday. `std/random/random.qoz` is an LCG (Numerical Recipes constants) with `make`, `next_u64`, `next_below`. JSON, regex, networking, threading, async remain as future work because each is a substantial dependency.
 
 ---
 

@@ -1,0 +1,12 @@
+// std/time: wall-clock and monotonic time.
+//
+// Returns whole seconds and microseconds for portability across
+// systems whose nanosecond clocks have different ABIs. The C
+// implementations are thin wrappers over `time(2)` and
+// `gettimeofday(2)`.
+
+@link_name("qoz_time_unix")
+external let unix(): i64
+
+@link_name("qoz_time_unix_micros")
+external let unix_micros(): i64

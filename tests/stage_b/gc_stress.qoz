@@ -1,0 +1,26 @@
+// expect: 42
+// GC stress test. Allocate 100000 short-lived records inside a loop
+// to force repeated garbage collection cycles. The expected return
+// value comes from a long-lived record that must survive every GC
+// pass.
+
+import std/mem
+import std/vec
+
+type Cell = { v: i64 }
+
+let make_cell(v: i64): *Cell = {
+    let c = mem.alloc(size_of(Cell)) as *Cell
+    c.v = v
+    c
+}
+
+let main(): i64 = {
+    let live = make_cell(42)
+    var i: i64 = 0
+    while i < 100000 {
+        let _ = make_cell(i)
+        i += 1
+    }
+    live.v
+}
