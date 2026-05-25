@@ -279,6 +279,13 @@ void *qoz_realloc(void *ptr, int64_t size) {
  * containing string fields works without an explicit `import
  * std/strings`. User-level `==` and `hash` on `string` go through the
  * std/strings @operator dispatch, which calls into here as well. */
+int64_t qoz_string_byte_at(qoz_string s, int64_t i) {
+    if (i < 0 || i >= s.len) {
+        qoz_panic((qoz_string){"string index out of bounds", 26, NULL});
+    }
+    return (int64_t)(unsigned char)s.data[i];
+}
+
 bool qoz_string_eq(qoz_string a, qoz_string b) {
     if (a.len != b.len) return false;
     if (a.len == 0) return true;

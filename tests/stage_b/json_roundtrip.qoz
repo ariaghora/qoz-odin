@@ -1,0 +1,40 @@
+// expect: 7
+// Round-trip a JSON document through parse and encode, then read
+// back a known integer field to confirm the value survived.
+
+import encoding/json
+import fmt
+
+let extract_answer(v: Json): i64 = {
+    match json.as_obj(v) {
+    | None    -> -2
+    | Some(o) -> field_as_int(&o, "answer")
+    }
+}
+
+let field_as_int(o: *Map<string, Json>, key: string): i64 = {
+    match map.get(o, key) {
+    | None    -> -3
+    | Some(j) -> {
+        match json.as_num(j) {
+        | None    -> -4
+        | Some(n) -> n as i64
+        }
+    }
+    }
+}
+
+let json_to_i64(r: Result<Json, string>): i64 = {
+    match r {
+    | Err(_) -> -1
+    | Ok(v)  -> {
+        let _ = json.encode(v)
+        extract_answer(v)
+    }
+    }
+}
+
+let main(): i64 = {
+    let text = "{\"name\": \"qoz\", \"answer\": 7, \"items\": [1, 2, 3], \"flag\": true, \"nope\": null}"
+    json_to_i64(json.parse_text(text))
+}

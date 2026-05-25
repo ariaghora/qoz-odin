@@ -1,0 +1,415 @@
+// JSON encode and decode.
+//
+// `Json` is a tagged union over the six JSON value kinds. The
+// `parse` entry point returns `Result<Json, string>` so syntax
+// errors are recoverable; `encode` walks a `Json` and produces a
+// string.
+
+import strings
+import vec
+import map
+import mem
+import result
+
+type Json =
+    | Null
+    | Bool(bool)
+    | Num(f64)
+    | Str(string)
+    | Arr(Vec<Json>)
+    | Obj(Map<string, Json>)
+
+// The byte-buffer bridges that std/strings already uses for slice
+// construction. Re-declared here so the JSON parser can allocate
+// its own scratch buffer for parsing string literals.
+@link_name("qoz_string_alias")
+external let string_alias(buf: *void, n: i64): string
+
+@link_name("qoz_bytes_copy")
+external let bytes_copy(dst: *void, src: *void, n: i64)
+
+// ---- Parser ----
+
+type Parser = {
+    src: string,
+    pos: i64,
+}
+
+let make_parser(s: string): Parser = Parser { src: s, pos: 0 }
+
+let at_end(p: *Parser): bool = p.pos >= len(p.src)
+
+let cur(p: *Parser): i64 = {
+    if at_end(p) { return -1 }
+    strings.byte_at(p.src, p.pos)
+}
+
+let advance(p: *Parser) = { p.pos += 1 }
+
+let skip_ws(p: *Parser) = {
+    while !at_end(p) {
+        let c = cur(p)
+        if c == 32 || c == 9 || c == 10 || c == 13 {
+            advance(p)
+        } else {
+            return
+        }
+    }
+}
+
+let parse_text(text: string): Result<Json, string> = {
+    var p = make_parser(text)
+    skip_ws(&p)
+    let v = parse_value(&p)
+    match v {
+    | Ok(_) -> {
+        skip_ws(&p)
+        if !at_end(&p) {
+            return Err("unexpected trailing content after JSON value")
+        }
+        v
+    }
+    | Err(_) -> v
+    }
+}
+
+let parse_value(p: *Parser): Result<Json, string> = {
+    skip_ws(p)
+    if at_end(p) { return Err("unexpected end of input") }
+    let c = cur(p)
+    if c == 123 { return parse_object(p) }  // '{'
+    if c == 91  { return parse_array(p) }   // '['
+    if c == 34  { return parse_string_value(p) }  // '"'
+    if c == 116 { return parse_true(p) }    // 't'
+    if c == 102 { return parse_false(p) }   // 'f'
+    if c == 110 { return parse_null(p) }    // 'n'
+    if c == 45 || (c >= 48 && c <= 57) { return parse_number(p) }
+    Err(error_at(p, "unexpected character"))
+}
+
+let parse_null(p: *Parser): Result<Json, string> = {
+    if match_keyword(p, "null") { Ok(Null) }
+    else { Err(error_at(p, "expected `null`")) }
+}
+
+let parse_true(p: *Parser): Result<Json, string> = {
+    if match_keyword(p, "true") { Ok(Bool(true)) }
+    else { Err(error_at(p, "expected `true`")) }
+}
+
+let parse_false(p: *Parser): Result<Json, string> = {
+    if match_keyword(p, "false") { Ok(Bool(false)) }
+    else { Err(error_at(p, "expected `false`")) }
+}
+
+let match_keyword(p: *Parser, kw: string): bool = {
+    let n = len(kw)
+    if p.pos + n > len(p.src) { return false }
+    var i: i64 = 0
+    while i < n {
+        if strings.byte_at(p.src, p.pos + i) != strings.byte_at(kw, i) { return false }
+        i += 1
+    }
+    p.pos += n
+    true
+}
+
+let parse_number(p: *Parser): Result<Json, string> = {
+    let start = p.pos
+    if cur(p) == 45 { advance(p) }
+    if at_end(p) { return Err(error_at(p, "expected digit after `-`")) }
+    if cur(p) == 48 {
+        advance(p)
+    } else if cur(p) >= 49 && cur(p) <= 57 {
+        while !at_end(p) && cur(p) >= 48 && cur(p) <= 57 { advance(p) }
+    } else {
+        return Err(error_at(p, "expected digit"))
+    }
+    if !at_end(p) && cur(p) == 46 {
+        advance(p)
+        if at_end(p) || cur(p) < 48 || cur(p) > 57 {
+            return Err(error_at(p, "expected digit after `.`"))
+        }
+        while !at_end(p) && cur(p) >= 48 && cur(p) <= 57 { advance(p) }
+    }
+    if !at_end(p) && (cur(p) == 101 || cur(p) == 69) {
+        advance(p)
+        if !at_end(p) && (cur(p) == 43 || cur(p) == 45) { advance(p) }
+        if at_end(p) || cur(p) < 48 || cur(p) > 57 {
+            return Err(error_at(p, "expected digit in exponent"))
+        }
+        while !at_end(p) && cur(p) >= 48 && cur(p) <= 57 { advance(p) }
+    }
+    let lit = strings.slice(p.src, start, p.pos)
+    Ok(Num(strings.parse_f64(lit)))
+}
+
+let parse_string_value(p: *Parser): Result<Json, string> = {
+    let s = parse_string_raw(p)
+    match s {
+    | Ok(text) -> Ok(Str(text))
+    | Err(m)   -> Err(m)
+    }
+}
+
+let parse_string_raw(p: *Parser): Result<string, string> = {
+    if cur(p) != 34 { return Err(error_at(p, "expected `\"`")) }
+    advance(p)
+    let cap: i64 = 64
+    let buf = mem.alloc(cap) as *u8
+    var i: i64 = 0
+    var bcap: i64 = cap
+    while !at_end(p) {
+        let c = cur(p)
+        if c == 34 {
+            advance(p)
+            let out = string_alias(buf as *void, i)
+            return Ok(out)
+        }
+        if c == 92 {
+            advance(p)
+            if at_end(p) { return Err("unterminated escape in string") }
+            let e = cur(p)
+            advance(p)
+            let mapped = if e == 34 { 34 }
+                else if e == 92 { 92 }
+                else if e == 47 { 47 }
+                else if e == 98 { 8 }
+                else if e == 102 { 12 }
+                else if e == 110 { 10 }
+                else if e == 114 { 13 }
+                else if e == 116 { 9 }
+                else if e == 117 { -1 }
+                else { -2 }
+            if mapped == -2 { return Err("invalid escape character") }
+            if mapped == -1 {
+                let code_or_err = parse_hex4(p)
+                match code_or_err {
+                | Err(m) -> return Err(m)
+                | Ok(code) -> {
+                    if i + 4 > bcap { bcap = grow_to(&buf, bcap, i + 4) }
+                    i = utf8_encode(buf, i, code)
+                }
+                }
+            } else {
+                if i + 1 > bcap { bcap = grow_to(&buf, bcap, i + 1) }
+                buf[i] = mapped as u8
+                i += 1
+            }
+        } else {
+            if i + 1 > bcap { bcap = grow_to(&buf, bcap, i + 1) }
+            buf[i] = c as u8
+            i += 1
+            advance(p)
+        }
+    }
+    Err("unterminated string")
+}
+
+let parse_hex4(p: *Parser): Result<i64, string> = {
+    if p.pos + 4 > len(p.src) { return Err("expected 4 hex digits after `\\u`") }
+    var v: i64 = 0
+    var k: i64 = 0
+    while k < 4 {
+        let c = strings.byte_at(p.src, p.pos + k)
+        let d =
+            if c >= 48 && c <= 57 { c - 48 }
+            else if c >= 65 && c <= 70 { c - 55 }
+            else if c >= 97 && c <= 102 { c - 87 }
+            else { -1 }
+        if d < 0 { return Err("non-hex digit after `\\u`") }
+        v = v * 16 + d
+        k += 1
+    }
+    p.pos += 4
+    Ok(v)
+}
+
+let utf8_encode(buf: *u8, i: i64, code: i64): i64 = {
+    if code < 0x80 {
+        buf[i] = code as u8
+        return i + 1
+    }
+    if code < 0x800 {
+        buf[i]     = (0xC0 + (code / 64)) as u8
+        buf[i + 1] = (0x80 + (code % 64)) as u8
+        return i + 2
+    }
+    buf[i]     = (0xE0 + (code / 4096)) as u8
+    buf[i + 1] = (0x80 + ((code / 64) % 64)) as u8
+    buf[i + 2] = (0x80 + (code % 64)) as u8
+    i + 3
+}
+
+let grow_to(buf: **u8, cap: i64, need: i64): i64 = {
+    var new_cap = cap
+    while new_cap < need { new_cap = new_cap * 2 }
+    let old = (buf as *void) as i64
+    let nb = mem.alloc(new_cap) as *u8
+    bytes_copy(nb as *void, ((old) as *void), cap)
+    new_cap
+}
+
+let parse_array(p: *Parser): Result<Json, string> = {
+    advance(p)  // consume '['
+    skip_ws(p)
+    var items: Vec<Json> = vec.make()
+    if !at_end(p) && cur(p) == 93 { advance(p); return Ok(Arr(items)) }
+    var done = false
+    while !done {
+        let v = parse_value(p)
+        match v {
+        | Err(m) -> return Err(m)
+        | Ok(jv) -> vec.push(&items, jv)
+        }
+        skip_ws(p)
+        if at_end(p) { return Err("unterminated array") }
+        let c = cur(p)
+        if c == 44 { advance(p); skip_ws(p) }
+        else if c == 93 { advance(p); done = true }
+        else { return Err(error_at(p, "expected `,` or `]` in array")) }
+    }
+    Ok(Arr(items))
+}
+
+let parse_object(p: *Parser): Result<Json, string> = {
+    advance(p)  // consume '{'
+    skip_ws(p)
+    var fields: Map<string, Json> = map.make()
+    if !at_end(p) && cur(p) == 125 { advance(p); return Ok(Obj(fields)) }
+    var done = false
+    while !done {
+        skip_ws(p)
+        if at_end(p) || cur(p) != 34 { return Err(error_at(p, "expected `\"` for object key")) }
+        let key_r = parse_string_raw(p)
+        match key_r {
+        | Err(m) -> return Err(m)
+        | Ok(key) -> {
+            skip_ws(p)
+            if at_end(p) || cur(p) != 58 { return Err(error_at(p, "expected `:` after object key")) }
+            advance(p)
+            let val = parse_value(p)
+            match val {
+            | Err(m) -> return Err(m)
+            | Ok(jv) -> { fields[key] = jv }
+            }
+        }
+        }
+        skip_ws(p)
+        if at_end(p) { return Err("unterminated object") }
+        let c = cur(p)
+        if c == 44 { advance(p) }
+        else if c == 125 { advance(p); done = true }
+        else { return Err(error_at(p, "expected `,` or `}` in object")) }
+    }
+    Ok(Obj(fields))
+}
+
+let error_at(p: *Parser, msg: string): string = {
+    strings.cat(msg, " at position ")
+}
+
+// ---- Encoder ----
+
+let encode(v: Json): string = {
+    var sb: Strbuf = Strbuf { buf: nil as *u8, len: 0, cap: 0 }
+    strings.sb_init(&sb)
+    encode_into(&sb, v)
+    strings.sb_finish(&sb)
+}
+
+let encode_into(sb: *Strbuf, v: Json) = {
+    match v {
+    | Null    -> strings.sb_append(sb, "null")
+    | Bool(b) -> {
+        if b { strings.sb_append(sb, "true") }
+        else { strings.sb_append(sb, "false") }
+    }
+    | Num(n)  -> strings.sb_append_f64(sb, n)
+    | Str(s)  -> encode_string(sb, s)
+    | Arr(items) -> {
+        strings.sb_append(sb, "[")
+        var i: i64 = 0
+        for el in items {
+            if i > 0 { strings.sb_append(sb, ",") }
+            encode_into(sb, el)
+            i += 1
+        }
+        strings.sb_append(sb, "]")
+    }
+    | Obj(fields) -> {
+        strings.sb_append(sb, "{")
+        let keys = map.sorted_keys(&fields)
+        var i: i64 = 0
+        for k in keys {
+            if i > 0 { strings.sb_append(sb, ",") }
+            encode_string(sb, k)
+            strings.sb_append(sb, ":")
+            match map.get(&fields, k) {
+            | Some(v) -> encode_into(sb, v)
+            | None    -> { }
+            }
+            i += 1
+        }
+        strings.sb_append(sb, "}")
+    }
+    }
+}
+
+let encode_string(sb: *Strbuf, s: string) = {
+    strings.sb_append(sb, "\"")
+    let n = len(s)
+    var i: i64 = 0
+    while i < n {
+        let c = strings.byte_at(s, i)
+        if c == 34 { strings.sb_append(sb, "\\\"") }
+        else if c == 92 { strings.sb_append(sb, "\\\\") }
+        else if c == 8 { strings.sb_append(sb, "\\b") }
+        else if c == 9 { strings.sb_append(sb, "\\t") }
+        else if c == 10 { strings.sb_append(sb, "\\n") }
+        else if c == 12 { strings.sb_append(sb, "\\f") }
+        else if c == 13 { strings.sb_append(sb, "\\r") }
+        else if c < 32 {
+            strings.sb_append(sb, "\\u00")
+            strings.sb_append(sb, hex_byte(c))
+        }
+        else {
+            strings.sb_append(sb, strings.slice(s, i, i + 1))
+        }
+        i += 1
+    }
+    strings.sb_append(sb, "\"")
+}
+
+let hex_byte(c: i64): string = {
+    let hi = (c / 16) % 16
+    let lo = c % 16
+    let digits = "0123456789abcdef"
+    strings.cat(strings.slice(digits, hi, hi + 1), strings.slice(digits, lo, lo + 1))
+}
+
+// ---- Accessor helpers ----
+
+let as_bool(v: Json): Option<bool> = {
+    match v { | Bool(b) -> Some(b) | _ -> None }
+}
+
+let as_num(v: Json): Option<f64> = {
+    match v { | Num(n) -> Some(n) | _ -> None }
+}
+
+let as_str(v: Json): Option<string> = {
+    match v { | Str(s) -> Some(s) | _ -> None }
+}
+
+let as_arr(v: Json): Option<Vec<Json>> = {
+    match v { | Arr(a) -> Some(a) | _ -> None }
+}
+
+let as_obj(v: Json): Option<Map<string, Json>> = {
+    match v { | Obj(o) -> Some(o) | _ -> None }
+}
+
+let is_null(v: Json): bool = {
+    match v { | Null -> true | _ -> false }
+}

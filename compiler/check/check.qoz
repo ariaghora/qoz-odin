@@ -680,6 +680,12 @@ let synth_index(tc: *TyContext, env: *Env, sp: Span, base: Expr, idx: Expr): Ty 
     let it = synth(tc, env, idx)
     if ty.ty_is_error(bt) || ty.ty_is_error(it) { return ty.ty_error_() }
     match bt {
+    | TyString -> {
+        if !ty.ty_is_int(it) {
+            record_error(tc, sp, "string index must be an integer, got {ty.ty_show(it)}")
+        }
+        ty.ty_int_(64, true)
+    }
     | TyPtr(inner) -> {
         if !ty.ty_is_int(it) {
             record_error(tc, sp, "pointer index must be an integer, got {ty.ty_show(it)}")

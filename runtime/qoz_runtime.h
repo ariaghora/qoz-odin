@@ -61,6 +61,12 @@ void qoz_frame_pop(void);
 bool     qoz_string_eq(qoz_string a, qoz_string b);
 uint64_t qoz_string_hash(qoz_string s);
 
+/* Byte access for `s[i]` expressions. The compiler emits a direct
+ * call to this helper so `s[i]` works without importing strings;
+ * returns the byte as i64 (zero-extended). Out-of-range indices
+ * return 0, mirroring the user-level byte_at helper. */
+int64_t  qoz_string_byte_at(qoz_string s, int64_t i);
+
 /* File system. read_file returns a qoz_string with len == -1 on
  * failure. write_file returns true on success. list_qoz_files returns
  * the regular `.qoz` filenames in `dir`, sorted, joined by newline,

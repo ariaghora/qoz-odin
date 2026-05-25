@@ -2594,8 +2594,10 @@ let lvalue_hint(e: *Emitter, lhs: Expr): TypeExpr = {
     }
 }
 
-// EIndex on Vec[i] needs to read the .data buffer; pointer/array index uses
-// plain []. Look at the base's static type to decide.
+// EIndex dispatches on the base's static type:
+//   Vec<T>             -> base.data[i]
+//   string             -> qoz_string_byte_at(base, i) (returns i64)
+//   *T / array         -> base[i]
 let emit_index(e: *Emitter, base: Expr, idx: Expr) = {
     let te = infer_base_typeexpr(e, base)
     match te {
@@ -2608,6 +2610,14 @@ let emit_index(e: *Emitter, base: Expr, idx: Expr) = {
                 push(e, "{op}data[")
                 emit_expr(e, idx)
                 push(e, "]")
+                return
+            }
+            if strings.eq_raw(n, "string") {
+                push(e, "qoz_string_byte_at(")
+                emit_expr(e, base)
+                push(e, ", ")
+                emit_expr(e, idx)
+                push(e, ")")
                 return
             }
         }
