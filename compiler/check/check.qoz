@@ -150,12 +150,12 @@ let report(tc: *TyContext) = {
             strings.cat(strings.cat(i64_to_string_local(e.span.col), ":"), e.message))
         if map.contains(&seen, key) { } else {
             seen[key] = true
-            fmt.println("{e.span.file}:{e.span.line}:{e.span.col}: {e.message}")
+            fmt.println(`{e.span.file}:{e.span.line}:{e.span.col}: {e.message}`)
             let src = src_cache_get(&cache, e.span.file)
             if len(src) > 0 {
                 let line = nth_line(src, e.span.line)
                 if len(line) > 0 {
-                    fmt.println("    {line}")
+                    fmt.println(`    {line}`)
                     fmt.println("    {caret_pad(e.span.col)}")
                 }
             }
@@ -403,7 +403,7 @@ let synth_inner(tc: *TyContext, env: *Env, e: Expr): Ty = {
         let it_ty = synth(tc, env, it)
         if !ty.ty_is_error(it_ty) && !iterable_ty(it_ty, !strings.eq_raw(b2, "")) {
             let kind = if strings.eq_raw(b2, "") { "iterable" } else { "Map-like iterable producing key, value pairs" }
-            record_error(tc, sp, "for loop expects {kind}, got {ty.ty_show(it_ty)}")
+            record_error(tc, sp, `for loop expects {kind}, got {ty.ty_show(it_ty)}`)
         }
         let saved_len = len(env.bindings)
         bind_for_loop(env, b1, b2, it_ty)
@@ -438,7 +438,7 @@ let synth_inner(tc: *TyContext, env: *Env, e: Expr): Ty = {
             let et = synth(tc, env, elems[i])
             if !ty.ty_is_error(elem_ty) && !ty.ty_is_error(et) {
                 if !ty.ty_assignable(elem_ty, et) && !ty.ty_assignable(et, elem_ty) {
-                    record_error(tc, sp, "array literal element {i} has type {ty.ty_show(et)}; earlier elements have type {ty.ty_show(elem_ty)}")
+                    record_error(tc, sp, `array literal element {i} has type {ty.ty_show(et)}; earlier elements have type {ty.ty_show(elem_ty)}`)
                 }
             }
             i += 1
@@ -516,7 +516,7 @@ let check_assign(tc: *TyContext, env: *Env, sp: Span, lhs: Expr, rhs: Expr): Ty 
     if !ty.ty_assignable(lt, rt) {
         let want = ty.ty_show(lt)
         let got  = ty.ty_show(rt)
-        record_error(tc, sp, "cannot assign value of type {got} to lhs of type {want}")
+        record_error(tc, sp, `cannot assign value of type {got} to lhs of type {want}`)
     }
     ty.ty_unit_()
 }
@@ -945,7 +945,7 @@ let check_binding_compat(tc: *TyContext, sp: Span, te: TypeExpr, bound: Ty, vt: 
     if !ty.ty_assignable(bound, vt) {
         let want = ty.ty_show(bound)
         let got  = ty.ty_show(vt)
-        record_error(tc, sp, "binding type {want} cannot accept value of type {got}")
+        record_error(tc, sp, `binding type {want} cannot accept value of type {got}`)
     }
 }
 
@@ -1143,7 +1143,7 @@ let synth_call_with_decl(tc: *TyContext, sp: Span, d: Decl, type_args: Vec<TypeE
                 if !ty.ty_assignable(p_ty, arg_tys[i]) {
                     let want = ty.ty_show(p_ty)
                     let got  = ty.ty_show(arg_tys[i])
-                    record_error(tc, sp, "expected {want}, got {got}")
+                    record_error(tc, sp, `expected {want}, got {got}`)
                 }
                 i += 1
             }

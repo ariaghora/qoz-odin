@@ -18,13 +18,13 @@ let main() = {
 
     let r1_again = Rect { origin: Point { x: 0, y: 0 }, size: Point { x: 10, y: 20 } }
     match map.get(&m, r1_again) {
-    | Some(v) -> fmt.println("r1_again = {v}")
+    | Some(v) -> fmt.println(`r1_again = {v}`)
     | None    -> fmt.println("r1_again missing")
     }
 
     let r3 = Rect { origin: Point { x: 0, y: 0 }, size: Point { x: 11, y: 20 } }
     match map.get(&m, r3) {
-    | Some(v) -> fmt.println("r3 = {v}")
+    | Some(v) -> fmt.println(`r3 = {v}`)
     | None    -> fmt.println("r3 not in map")
     }
 }

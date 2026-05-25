@@ -13,15 +13,15 @@ let three_step(a: i64, b: i64, c: i64): Result<i64, i64> = {
 
 let main() = {
     match three_step(100, 5, 4) {
-    | Ok(v)  -> fmt.println("ok: {v}")
-    | Err(e) -> fmt.println("err: {e}")
+    | Ok(v)  -> fmt.println(`ok: {v}`)
+    | Err(e) -> fmt.println(`err: {e}`)
     }
     match three_step(100, 0, 4) {
-    | Ok(v)  -> fmt.println("ok: {v}")
-    | Err(e) -> fmt.println("err: {e}")
+    | Ok(v)  -> fmt.println(`ok: {v}`)
+    | Err(e) -> fmt.println(`err: {e}`)
     }
     match three_step(100, 5, 0) {
-    | Ok(v)  -> fmt.println("ok: {v}")
-    | Err(e) -> fmt.println("err: {e}")
+    | Ok(v)  -> fmt.println(`ok: {v}`)
+    | Err(e) -> fmt.println(`err: {e}`)
     }
 }

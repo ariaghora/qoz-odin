@@ -41,8 +41,8 @@ let main() = {
     var i: i64 = 0
     while i < v.len {
         let x = uv_get(&v, i)
-        fmt.println("v[ {i} ] = {x}")
+        fmt.println(`v[ {i} ] = {x}`)
         i = i + 1
     }
-    fmt.println("len = {v.len} cap = {v.cap}")
+    fmt.println(`len = {v.len} cap = {v.cap}`)
 }

@@ -5,7 +5,7 @@ import vec
 let main() = {
     let xs: Vec<i32> = [11, 22, 33, 44]
     for x in xs {
-        fmt.println("{x}")
+        fmt.println(`{x}`)
     }
 
     let names: Vec<string> = ["alice", "bob", "carol"]

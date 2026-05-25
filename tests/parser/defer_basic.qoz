@@ -20,5 +20,5 @@ let main() = {
     with_cleanup()
     fmt.println("---")
     let v = value_with_cleanup()
-    fmt.println("got {v}")
+    fmt.println(`got {v}`)
 }

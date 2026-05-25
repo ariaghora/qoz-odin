@@ -674,7 +674,7 @@ let c_escape_bytes(src: string): string = {
 }
 
 let hex_digit(n: i64): string = {
-    if n < 10 { return "{n}" }
+    if n < 10 { return `{n}` }
     strings.slice("abcdef", n - 10, n - 9)
 }
 
@@ -829,7 +829,7 @@ let build_string_lit_or_interp(raw: string, span: Span): Expr = {
 }
 
 let interp_var_name(span: Span): string = {
-    strings.cat("_qoz_sb_", strings.cat("{span.line}", strings.cat("_", "{span.col}")))
+    strings.cat("_qoz_sb_", strings.cat(`{span.line}`, strings.cat("_", `{span.col}`)))
 }
 
 // Split the template back into the original chunks. The template
@@ -941,7 +941,7 @@ let parse_atom(p: *Parser): Expr = {
         expect_punct(p, "(")
         let arg_tok = peek(p)
         if !is_str_lit(arg_tok) {
-            record_error(p, "#{name_tok.text} expects a string literal path")
+            record_error(p, `#{name_tok.text} expects a string literal path`)
             return ENil(span)
         }
         advance(p)
@@ -973,7 +973,10 @@ let parse_atom(p: *Parser): Expr = {
     }
     if is_str_lit(t) {
         advance(p)
-        return build_string_lit_or_interp(t.text, span)
+        if is_interp_str_lit(t) {
+            return build_string_lit_or_interp(t.text, span)
+        }
+        return EString(span, t.text)
     }
     if is_char_lit(t) {
         advance(p)
@@ -1294,12 +1297,12 @@ let parse_block(p: *Parser): Expr = {
                 expect_punct(p, "=")
                 let value = parse_expr(p)
                 let n = len(stmts)
-                let tmp = "_qoz_tup_{n}"
+                let tmp = `_qoz_tup_{n}`
                 vec.push(&stmts, SLet(stmt_span, tmp, TEUnit(stmt_span), value))
                 var bi: i64 = 0
                 for bname in binds {
                     if !strings.eq_raw(bname, "_") {
-                        let field = "_{bi}"
+                        let field = `_{bi}`
                         let fld_expr: Expr = EField(stmt_span, EIdent(stmt_span, tmp), field)
                         vec.push(&stmts, SLet(stmt_span, bname, TEUnit(stmt_span), fld_expr))
                     }

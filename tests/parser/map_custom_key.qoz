@@ -26,21 +26,21 @@ let main() = {
     fmt.println("len = {map.len(&m)}")
 
     match map.get(&m, alice) {
-    | Some(v) -> fmt.println("alice = {v}")
+    | Some(v) -> fmt.println(`alice = {v}`)
     | None    -> fmt.println("alice missing")
     }
     match map.get(&m, bob) {
-    | Some(v) -> fmt.println("bob = {v}")
+    | Some(v) -> fmt.println(`bob = {v}`)
     | None    -> fmt.println("bob missing")
     }
     match map.get(&m, carol) {
-    | Some(v) -> fmt.println("carol = {v}")
+    | Some(v) -> fmt.println(`carol = {v}`)
     | None    -> fmt.println("carol missing")
     }
 
     let alice_again = Person { id: 1, name: "Alice" }
     match map.get(&m, alice_again) {
-    | Some(v) -> fmt.println("alice_again = {v}")
+    | Some(v) -> fmt.println(`alice_again = {v}`)
     | None    -> fmt.println("alice_again missing")
     }
 

@@ -12,5 +12,5 @@ let main() = {
     for k, v in m {
         total = total + v
     }
-    fmt.println("total = {total}")
+    fmt.println(`total = {total}`)
 }

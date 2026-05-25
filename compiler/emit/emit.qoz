@@ -802,7 +802,7 @@ let strip_numeric_underscores(s: string): string = {
                     return s
                 }
             }
-            return "{v}"
+            return `{v}`
         }
     }
     clean
@@ -1033,33 +1033,33 @@ let emit_try(e: *Emitter, sp: Span, value: Expr) = {
         return
     }
     e.closure_counter = e.closure_counter + 1
-    let tmp = strings.cat("_qoz_try_", "{e.closure_counter}")
+    let tmp = strings.cat("_qoz_try_", `{e.closure_counter}`)
 
     // Build "qoz_<inner>* tmp = VALUE; if (tmp->tag == Err) {
     // qoz_gc_shadow_set_top(_g); return MAKE_ERR; }" as prologue,
     // then emit `tmp->payload.Ok.f0` in expression position.
     let start = strings.sb_len(&e.out)
-    push(e, "qoz_{inner_mangle}* {tmp} = ")
+    push(e, `qoz_{inner_mangle}* {tmp} = `)
     emit_expr(e, value)
     let crr = e.current_return_restore
-    push(e, "; if ({tmp}->tag == qoz_{inner_mangle}_Err) {{ {crr}return qoz_make_{outer_mangle}_Err({tmp}->payload.Err.f0); }} ")
+    push(e, `; if ({tmp}->tag == qoz_{inner_mangle}_Err) {{ {crr}return qoz_make_{outer_mangle}_Err({tmp}->payload.Err.f0); }} `)
     hoist_to_prologue(e, start)
 
-    push(e, "{tmp}->payload.Ok.f0")
+    push(e, `{tmp}->payload.Ok.f0`)
 }
 
 let emit_tuple_lit(e: *Emitter, sp: Span, elems: Vec<Expr>) = {
     var elem_tes: Vec<TypeExpr> = vec.make()
     for el in elems { vec.push(&elem_tes, infer_value_te(e, el)) }
     let tname = register_tuple_typedef(e, elem_tes)
-    push(e, "(({tname}){{ ")
+    push(e, `(({tname}){{ `)
     var i: i64 = 0
     for el in elems {
         if i > 0 { push(e, ", ") }
         emit_expr(e, el)
         i += 1
     }
-    push(e, " }})")
+    push(e, " })")
 }
 
 let emit_array_lit_with_hint(e: *Emitter, sp: Span, elems: Vec<Expr>, hint: TypeExpr) = {
@@ -1102,11 +1102,11 @@ let emit_array_lit_using(e: *Emitter, sp: Span, elems: Vec<Expr>, hint: TypeExpr
     let push_mangled = mangle_inst(e, "vec_push", elem_args)
     let vec_c = strings.cat("qoz_", mangle_inst(e, "Vec", elem_args))
     e.closure_counter = e.closure_counter + 1
-    let tmp = strings.cat("_qoz_arr_", "{e.closure_counter}")
+    let tmp = strings.cat("_qoz_arr_", `{e.closure_counter}`)
     let start = strings.sb_len(&e.out)
-    push(e, "{vec_c} {tmp} = qoz_{make_mangled}(); ")
+    push(e, `{vec_c} {tmp} = qoz_{make_mangled}(); `)
     for el in elems {
-        push(e, "qoz_{push_mangled}(&{tmp}, ")
+        push(e, `qoz_{push_mangled}(&{tmp}, `)
         emit_expr(e, el)
         push(e, "); ")
     }
@@ -1122,8 +1122,8 @@ let emit_closure_lifted(e: *Emitter, sp: Span, cps: Vec<ClosureParam>, ret: Type
 
     let counter = e.closure_counter
     e.closure_counter = e.closure_counter + 1
-    let cname = strings.cat("qoz_clo_", "{counter}")
-    let env_struct = strings.cat("qoz_clo_env_", "{counter}")
+    let cname = strings.cat("qoz_clo_", `{counter}`)
+    let env_struct = strings.cat("qoz_clo_env_", `{counter}`)
 
     var capture_tes: Vec<TypeExpr> = vec.make()
     for c in captures {
@@ -1182,21 +1182,21 @@ let emit_closure_lifted(e: *Emitter, sp: Span, cps: Vec<ClosureParam>, ret: Type
     let saved_ret = e.current_ret_te
     let saved_hint = e.match_hint
     let ret_c = c_type_for(e, ret)
-    push(e, "static {ret_c} {cname}(void *_qoz_env")
+    push(e, `static {ret_c} {cname}(void *_qoz_env`)
     for fp in fparams {
         let fp_c = c_type_for(e, fp.ty)
         let fp_n = fp.name
-        push(e, ", {fp_c} {fp_n}")
+        push(e, `, {fp_c} {fp_n}`)
     }
-    push(e, ") {{\n    ")
+    push(e, ") {\n    ")
     e.locals = map.make()
     for fp in fparams { e.locals[fp.name] = fp.ty }
     if len(captures) > 0 {
-        push(e, "struct {env_struct} *_env = (struct {env_struct} *)_qoz_env;\n    ")
+        push(e, `struct {env_struct} *_env = (struct {env_struct} *)_qoz_env;\n    `)
         var ci2: i64 = 0
         for c in captures {
             let c_c = c_type_for(e, capture_tes[ci2])
-            push(e, "{c_c} {c} = _env->{c};\n    ")
+            push(e, `{c_c} {c} = _env->{c};\n    `)
             e.locals[c] = capture_tes[ci2]
             ci2 += 1
         }
@@ -1228,22 +1228,22 @@ let emit_closure_lifted(e: *Emitter, sp: Span, cps: Vec<ClosureParam>, ret: Type
     //   ((qoz_fn_...){ .env = NULL, .fn = cname })
     //  with captures:
     //   ((qoz_fn_...){ .env = ({ struct qoz_clo_env_N *e = qoz_alloc(sizeof *e); e->cap1 = cap1; ...; (void *)e; }), .fn = cname })
-    push(e, "(({clo_type}){{ .env = ")
+    push(e, `(({clo_type}){{ .env = `)
     if len(captures) == 0 {
         push(e, "NULL")
     } else {
         // Hoist the env alloc and field stores into a prologue. The
         // expression position becomes `(void*)_e_<counter>`.
-        let env_local = strings.cat("_qoz_env_", "{counter}")
+        let env_local = strings.cat("_qoz_env_", `{counter}`)
         let start = strings.sb_len(&e.out)
-        push(e, "struct {env_struct} *{env_local} = qoz_alloc(sizeof(struct {env_struct})); ")
+        push(e, `struct {env_struct} *{env_local} = qoz_alloc(sizeof(struct {env_struct})); `)
         for c in captures {
-            push(e, "{env_local}->{c} = {c}; ")
+            push(e, `{env_local}->{c} = {c}; `)
         }
         hoist_to_prologue(e, start)
-        push(e, "(void *){env_local}")
+        push(e, `(void *){env_local}`)
     }
-    push(e, ", .fn = {cname} }})")
+    push(e, `, .fn = {cname} }})`)
 }
 
 let emit_expr(e: *Emitter, ex: Expr) = {
@@ -1255,12 +1255,12 @@ let emit_expr(e: *Emitter, ex: Expr) = {
     | EIdent(_, name)   -> {
         match map.get(&e.variant_of, name) {
         | Some(enum_name) -> {
-            push(e, "qoz_make_{enum_name}_{name}()")
+            push(e, `qoz_make_{enum_name}_{name}()`)
         }
         | None -> push(e, name)
         }
     }
-    | EString(_, text)  -> push(e, "QOZ_STR_LIT({text})")
+    | EString(_, text)  -> push(e, `QOZ_STR_LIT({text})`)
     | EBinary(_, op, lhs, rhs) -> emit_binary(e, op, lhs, rhs)
     | EUnary(_, op, rhs) -> {
         // Operator-overload dispatch: `-pair`, `!pair`, etc. fall back
@@ -1284,7 +1284,7 @@ let emit_expr(e: *Emitter, ex: Expr) = {
                     }
                     let ret_ct = c_type_for(e, ret_te)
                     ensure_unary_byval_dispatch_helper(e, fn_name, ct, ret_ct)
-                    push(e, "_qoz_byval_{fn_name}(")
+                    push(e, `_qoz_byval_{fn_name}(`)
                     emit_expr(e, rhs)
                     push(e, ")")
                     return
@@ -1327,12 +1327,12 @@ let emit_expr(e: *Emitter, ex: Expr) = {
         match tail {
         | EWhile(_, _, _) | EFor(_, _, _, _, _) | EAssign(_, _, _, _) | EDefer(_, _) | EReturn(_, _) -> {
             let start_s = strings.sb_len(&e.out)
-            push(e, "{{\n        ")
+            push(e, "{\n        ")
             for s in stmts { emit_stmt(e, s) }
             let saved = open_statement_scope(e)
             emit_stmt_expr(e, tail)
             close_statement_scope(e, saved)
-            push(e, "\n    }}\n    ")
+            push(e, "\n    }\n    ")
             hoist_to_prologue(e, start_s)
             push(e, "0")
             return
@@ -1348,29 +1348,29 @@ let emit_expr(e: *Emitter, ex: Expr) = {
         let tail_te = infer_value_te(e, tail)
         if is_unit_typeexpr(tail_te) {
             let start_u = strings.sb_len(&e.out)
-            push(e, "{{\n        ")
+            push(e, "{\n        ")
             for s in stmts { emit_stmt(e, s) }
             let saved_tail = open_statement_scope(e)
             emit_stmt_expr(e, tail)
             close_statement_scope(e, saved_tail)
-            push(e, "\n    }}\n    ")
+            push(e, "\n    }\n    ")
             hoist_to_prologue(e, start_u)
             push(e, "0")
             return
         }
         e.closure_counter = e.closure_counter + 1
         let counter = e.closure_counter
-        let tmp_res = strings.cat("_qoz_bv_", "{counter}")
+        let tmp_res = strings.cat("_qoz_bv_", `{counter}`)
         let result_c = c_type_for(e, tail_te)
         let start = strings.sb_len(&e.out)
-        push(e, "{result_c} {tmp_res};\n    {{\n        ")
+        push(e, `{result_c} {tmp_res};\n    {{\n        `)
         for s in stmts { emit_stmt(e, s) }
         let saved_inner = open_statement_scope(e)
-        push(e, "{tmp_res} = ")
+        push(e, `{tmp_res} = `)
         emit_expr(e, tail)
         push(e, ";\n    ")
         close_statement_scope(e, saved_inner)
-        push(e, "}}\n    ")
+        push(e, "}\n    ")
         hoist_to_prologue(e, start)
         push(e, tmp_res)
     }
@@ -1385,7 +1385,7 @@ let emit_expr(e: *Emitter, ex: Expr) = {
     | EIndex(_, base, idx)         -> emit_index(e, base, idx)
     | ECast(_, value, t)           -> {
         let tc = c_type_for(e, t)
-        push(e, "(({tc})")
+        push(e, `(({tc})`)
         emit_expr(e, value)
         push(e, ")")
     }
@@ -1418,7 +1418,7 @@ let emit_expr(e: *Emitter, ex: Expr) = {
     | EWhile(sp, _, _)             -> { let _ = emit_die(sp, "while expression in value position; wrap in a block or use a tail expression") }
     | EFor(sp, _, _, _, _)         -> { let _ = emit_die(sp, "for expression in value position; wrap in a block or use a tail expression") }
     | EDefer(sp, _)                -> { let _ = emit_die(sp, "defer cannot appear in value position; use defer as a statement") }
-    | ESizeOf(_, te)               -> { let tc = c_type_for(e, te); push(e, "(int64_t)sizeof({tc})") }
+    | ESizeOf(_, te)               -> { let tc = c_type_for(e, te); push(e, `(int64_t)sizeof({tc})`) }
     | EArrayLit(sp, elems)         -> {
         // Use the check phase's recorded type for this expression
         // as the hint, so an empty `[]` whose surrounding context
@@ -1493,7 +1493,7 @@ let bare_enum_for_pat(e: *Emitter, pat: Pattern): string = {
 // cannot continue with a meaningful default; every silent fallback to
 // "int64_t" is a bug.
 let emit_die(sp: Span, msg: string): string = {
-    fmt.println("{sp.file}:{sp.line}:{sp.col}: emit error: {msg}")
+    fmt.println(`{sp.file}:{sp.line}:{sp.col}: emit error: {msg}`)
     os.exit(1)
     ""
 }
@@ -2112,11 +2112,11 @@ let emit_stmt_inner(e: *Emitter, s: Stmt) = {
             return
         }
         let ct = infer_value_ctype(e, ty, value)
-        push(e, "{ct} {name} = ")
+        push(e, `{ct} {name} = `)
         emit_value_with_hint(e, value, bind_te)
         push(e, "; ")
         if c_type_is_pointer(ct) {
-            push(e, "qoz_gc_push_root(&{name}); ")
+            push(e, `qoz_gc_push_root(&{name}); `)
         }
         e.locals[name] = bind_te
     }
@@ -2129,11 +2129,11 @@ let emit_stmt_inner(e: *Emitter, s: Stmt) = {
             return
         }
         let ct = infer_value_ctype(e, ty, value)
-        push(e, "{ct} {name} = ")
+        push(e, `{ct} {name} = `)
         emit_value_with_hint(e, value, bind_te)
         push(e, "; ")
         if c_type_is_pointer(ct) {
-            push(e, "qoz_gc_push_root(&{name}); ")
+            push(e, `qoz_gc_push_root(&{name}); `)
         }
         e.locals[name] = bind_te
     }
@@ -2405,7 +2405,7 @@ let emit_field(e: *Emitter, base: Expr, name: string) = {
         if map.contains(&e.enum_decls, enum_name) {
             match map.get(&e.variant_of, name) {
             | Some(_) -> {
-                push(e, "qoz_make_{enum_name}_{name}()")
+                push(e, `qoz_make_{enum_name}_{name}()`)
                 return
             }
             | None -> { }
@@ -2416,7 +2416,7 @@ let emit_field(e: *Emitter, base: Expr, name: string) = {
     }
     let op = field_access_op(e, base)
     emit_expr(e, base)
-    push(e, "{op}{name}")
+    push(e, `{op}{name}`)
 }
 
 // Pick `->` for a pointer-typed base, `.` for a value-typed base. The
@@ -2545,7 +2545,7 @@ let emit_assign(e: *Emitter, lhs: Expr, rhs: Expr) = {
                 register_map_helper(e, "map_set", args)
                 let k_m = mangle_type(e, args[0])
                 let v_m = mangle_type(e, args[1])
-                push(e, "qoz_map_set__{k_m}__{v_m}(&")
+                push(e, `qoz_map_set__{k_m}__{v_m}(&`)
                 emit_expr(e, base)
                 push(e, ", ")
                 emit_expr(e, idx)
@@ -2607,7 +2607,7 @@ let emit_index(e: *Emitter, base: Expr, idx: Expr) = {
             if strings.eq_raw(n, "Vec") {
                 let op = field_access_op(e, base)
                 emit_expr(e, base)
-                push(e, "{op}data[")
+                push(e, `{op}data[`)
                 emit_expr(e, idx)
                 push(e, "]")
                 return
@@ -2639,7 +2639,7 @@ let emit_hash_builtin(e: *Emitter, arg: Expr) = {
     }
     let record_name = record_struct_name_of_ctype(e, ct)
     if !strings.eq_raw(record_name, "") {
-        push(e, "qoz_hash_{record_name}(")
+        push(e, `qoz_hash_{record_name}(`)
         emit_expr(e, arg)
         push(e, ")")
         return
@@ -2674,7 +2674,7 @@ let emit_call(e: *Emitter, callee: Expr, type_args: Vec<TypeExpr>, args: Vec<Exp
     if !strings.eq_raw(qualified, "") {
         if len(type_args) > 0 && map.contains(&e.generic_fn_decls, qualified) {
             let mi = mangle_inst(e, qualified, type_args)
-            push(e, "qoz_{mi}(")
+            push(e, `qoz_{mi}(`)
             var i: i64 = 0
             for a in args {
                 if i > 0 { push(e, ", ") }
@@ -2688,7 +2688,7 @@ let emit_call(e: *Emitter, callee: Expr, type_args: Vec<TypeExpr>, args: Vec<Exp
             | Some(sym) -> sym
             | None      -> user_fn_c_name(qualified)
         }
-        push(e, "{dispatch_name}(")
+        push(e, `{dispatch_name}(`)
         var hints: Vec<TypeExpr> = vec.make()
         match map.get(&e.fn_params, qualified) {
         | Some(pts) -> hints = pts
@@ -2732,7 +2732,7 @@ let emit_call(e: *Emitter, callee: Expr, type_args: Vec<TypeExpr>, args: Vec<Exp
     if !strings.eq_raw(variant_name, "") {
         match map.get(&e.variant_of, variant_name) {
         | Some(enum_name) -> {
-            push(e, "qoz_make_{enum_name}_{variant_name}(")
+            push(e, `qoz_make_{enum_name}_{variant_name}(`)
             var i: i64 = 0
             for a in args {
                 if i > 0 { push(e, ", ") }
@@ -2751,7 +2751,7 @@ let emit_call(e: *Emitter, callee: Expr, type_args: Vec<TypeExpr>, args: Vec<Exp
         | EIdent(_, name) -> {
             if map.contains(&e.generic_fn_decls, name) {
                 let mi = mangle_inst(e, name, type_args)
-                push(e, "qoz_{mi}(")
+                push(e, `qoz_{mi}(`)
                 var i: i64 = 0
                 for a in args {
                     if i > 0 { push(e, ", ") }
@@ -2773,7 +2773,7 @@ let emit_call(e: *Emitter, callee: Expr, type_args: Vec<TypeExpr>, args: Vec<Exp
     | EIdent(_, name) -> {
         match map.get(&e.externs, name) {
         | Some(sym) -> {
-            push(e, "{sym}(")
+            push(e, `{sym}(`)
             var hints: Vec<TypeExpr> = vec.make()
             match map.get(&e.fn_params, name) {
             | Some(pts) -> hints = pts
@@ -3035,7 +3035,7 @@ let emit_binary(e: *Emitter, op: BinaryOp, lhs: Expr, rhs: Expr) = {
                 // a `let` taking `*T` parameters. Call the by-value
                 // forwarder so each argument lands in a stable local of
                 // the helper whose address can be passed through.
-                push(e, "_qoz_byval_{fn_name}(")
+                push(e, `_qoz_byval_{fn_name}(`)
                 emit_expr(e, lhs)
                 push(e, ", ")
                 emit_expr(e, rhs)
@@ -3048,7 +3048,7 @@ let emit_binary(e: *Emitter, op: BinaryOp, lhs: Expr, rhs: Expr) = {
     if !strings.eq_raw(record_name, "") {
         match op {
         | BOpEq -> {
-            push(e, "qoz_eq_{record_name}(")
+            push(e, `qoz_eq_{record_name}(`)
             emit_expr(e, lhs)
             push(e, ", ")
             emit_expr(e, rhs)
@@ -3056,7 +3056,7 @@ let emit_binary(e: *Emitter, op: BinaryOp, lhs: Expr, rhs: Expr) = {
             return
         }
         | BOpNe -> {
-            push(e, "!qoz_eq_{record_name}(")
+            push(e, `!qoz_eq_{record_name}(`)
             emit_expr(e, lhs)
             push(e, ", ")
             emit_expr(e, rhs)
@@ -3076,7 +3076,7 @@ let emit_binary(e: *Emitter, op: BinaryOp, lhs: Expr, rhs: Expr) = {
     let needs_paren_child = is_logical_op(op)
     emit_binary_child(e, lhs, p, needs_paren_child)
     let bop = binary_c_op(op)
-    push(e, " {bop} ")
+    push(e, ` {bop} `)
     emit_binary_child(e, rhs, p + 1, needs_paren_child)
 }
 
@@ -3238,13 +3238,13 @@ let emit_fn_body_block(e: *Emitter, body: Expr, ret_hint: TypeExpr) = {
             close_statement_scope(e, saved)
         } else {
             e.closure_counter = e.closure_counter + 1
-            let tmp = strings.cat("_qoz_ret_", "{e.closure_counter}")
+            let tmp = strings.cat("_qoz_ret_", `{e.closure_counter}`)
             let rt = c_type_for(e, ret_hint)
-            push(e, "{rt} {tmp} = ")
+            push(e, `{rt} {tmp} = `)
             emit_value_with_hint(e, effective_tail, ret_hint)
             push(e, ";\n    ")
             emit_defers_reverse(e, defers)
-            push(e, "\n    return {tmp};\n")
+            push(e, `\n    return {tmp};\n`)
         }
     }
     | _ -> { }
@@ -3275,7 +3275,7 @@ let user_fn_c_name(name: string): string = {
 let emit_fn(e: *Emitter, name: string, params: Vec<FnParam>, ret: TypeExpr, body: Expr) = {
     let ret_c = c_type_for(e, ret)
     let c_name = user_fn_c_name(name)
-    push(e, "{ret_c} {c_name}")
+    push(e, `{ret_c} {c_name}`)
     if len(params) == 0 {
         push(e, "(void)")
     } else {
@@ -3285,12 +3285,12 @@ let emit_fn(e: *Emitter, name: string, params: Vec<FnParam>, ret: TypeExpr, body
             if i > 0 { push(e, ", ") }
             let pc = c_type_for(e, p.ty)
             let pn = p.name
-            push(e, "{pc} {pn}")
+            push(e, `{pc} {pn}`)
             i += 1
         }
         push(e, ")")
     }
-    push(e, " {{\n    int64_t _qoz_shadow_guard = qoz_gc_shadow_top();\n    ")
+    push(e, " {\n    int64_t _qoz_shadow_guard = qoz_gc_shadow_top();\n    ")
     // Push this function's name onto the runtime frame tracker so
     // qoz_panic produces a Qoz-level backtrace. The pop runs through
     // the return-restore path on every exit.
@@ -3310,7 +3310,7 @@ let emit_fn(e: *Emitter, name: string, params: Vec<FnParam>, ret: TypeExpr, body
         e.locals[p.name] = p.ty
         if c_type_is_pointer(c_type_for(e, p.ty)) {
             let pn = p.name
-            push(e, "qoz_gc_push_root(&{pn});\n    ")
+            push(e, `qoz_gc_push_root(&{pn});\n    `)
         }
     }
     e.current_ret_te = ret
@@ -3322,9 +3322,9 @@ let emit_fn(e: *Emitter, name: string, params: Vec<FnParam>, ret: TypeExpr, body
         let crr = e.current_return_restore
         if is_unit_typeexpr(ret) {
             emit_expr(e, body)
-            push(e, ";\n    {crr}return;\n")
+            push(e, `;\n    {crr}return;\n`)
         } else {
-            push(e, "{crr}return ")
+            push(e, `{crr}return `)
             emit_value_with_hint(e, body, ret)
             push(e, ";\n")
         }
@@ -3333,7 +3333,7 @@ let emit_fn(e: *Emitter, name: string, params: Vec<FnParam>, ret: TypeExpr, body
     e.current_return_restore = saved_ret
     e.match_counter = saved_match_counter
     e.locals = map.make()
-    push(e, "}}\n\n")
+    push(e, "}\n\n")
 }
 
 let c_type_is_pointer(ct: string): bool = {
@@ -3642,56 +3642,56 @@ let emit_program(f: File, expr_types: Map<i64, TypeExpr>): string = {
 }
 
 let emit_enum(e: *Emitter, name: string, variants: Vec<VariantDecl>) = {
-    push(e, "typedef enum {{\n")
+    push(e, "typedef enum {\n")
     var i: i64 = 0
     for v in variants {
         let vn = v.name
-        push(e, "    qoz_{name}_{vn},\n")
+        push(e, `    qoz_{name}_{vn},\n`)
         i += 1
     }
-    push(e, "}} qoz_{name}_tag;\n\n")
+    push(e, `}} qoz_{name}_tag;\n\n`)
     for v in variants {
         if variant_has_positional(v) {
             let vn = v.name
-            push(e, "typedef struct {{\n")
+            push(e, "typedef struct {\n")
             var k: i64 = 0
             for pt in v.pos {
                 let pc = c_type_for(e, pt)
                 let ks = int_to_string(k)
-                push(e, "    {pc} f{ks};\n")
+                push(e, `    {pc} f{ks};\n`)
                 k += 1
             }
-            push(e, "}} qoz_{name}_{vn}_payload;\n\n")
+            push(e, `}} qoz_{name}_{vn}_payload;\n\n`)
         }
     }
-    push(e, "struct qoz_{name} {{\n    qoz_{name}_tag tag;\n")
+    push(e, `struct qoz_{name} {{\n    qoz_{name}_tag tag;\n`)
     var any_payload = false
     for v in variants {
         if variant_has_positional(v) { any_payload = true }
     }
     if any_payload {
-        push(e, "    union {{\n")
+        push(e, "    union {\n")
         for v in variants {
             if variant_has_positional(v) {
                 let vn = v.name
-                push(e, "        qoz_{name}_{vn}_payload {vn};\n")
+                push(e, `        qoz_{name}_{vn}_payload {vn};\n`)
             }
         }
-        push(e, "    }} payload;\n")
+        push(e, "    } payload;\n")
     }
-    push(e, "}};\n\n")
+    push(e, "};\n\n")
     emit_adt_desc(e, name, variants)
 }
 
 let variant_has_positional(v: VariantDecl): bool = len(v.pos) > 0
 
-let int_to_string(n: i64): string = "{n}"
+let int_to_string(n: i64): string = `{n}`
 
 let emit_variant_ctor(e: *Emitter, enum_name: string, v: VariantDecl) = {
     let vn = v.name
-    push(e, "static qoz_{enum_name} *qoz_make_{enum_name}_{vn}")
+    push(e, `static qoz_{enum_name} *qoz_make_{enum_name}_{vn}`)
     if !variant_has_positional(v) {
-        push(e, "(void) {{\n")
+        push(e, "(void) {\n")
     } else {
         push(e, "(")
         var k: i64 = 0
@@ -3699,22 +3699,22 @@ let emit_variant_ctor(e: *Emitter, enum_name: string, v: VariantDecl) = {
             if k > 0 { push(e, ", ") }
             let pc = c_type_for(e, pt)
             let ks = int_to_string(k)
-            push(e, "{pc} f{ks}")
+            push(e, `{pc} f{ks}`)
             k += 1
         }
-        push(e, ") {{\n")
+        push(e, ") {\n")
     }
-    push(e, "    qoz_{enum_name} *p = qoz_gc_alloc(sizeof(qoz_{enum_name}), &qoz_{enum_name}_desc);\n")
-    push(e, "    p->tag = qoz_{enum_name}_{vn};\n")
+    push(e, `    qoz_{enum_name} *p = qoz_gc_alloc(sizeof(qoz_{enum_name}), &qoz_{enum_name}_desc);\n`)
+    push(e, `    p->tag = qoz_{enum_name}_{vn};\n`)
     if variant_has_positional(v) {
         var j: i64 = 0
         for _ in v.pos {
             let js = int_to_string(j)
-            push(e, "    p->payload.{vn}.f{js} = f{js};\n")
+            push(e, `    p->payload.{vn}.f{js} = f{js};\n`)
             j += 1
         }
     }
-    push(e, "    return p;\n}}\n\n")
+    push(e, "    return p;\n}\n\n")
 }
 
 // True when a field of the given TypeExpr is a managed pointer in C.
@@ -3799,20 +3799,20 @@ let emit_record_desc(e: *Emitter, name: string, fields: Vec<StructField>) = {
     }
     let nptrs = len(offsets)
     if nptrs > 0 {
-        push(e, "static const int32_t qoz_{name}_offsets[] = {{ ")
+        push(e, `static const int32_t qoz_{name}_offsets[] = {{ `)
         var i: i64 = 0
         for expr in offsets {
             if i > 0 { push(e, ", ") }
             push(e, expr)
             i += 1
         }
-        push(e, " }};\n")
+        push(e, " };\n")
     }
     if nptrs == 0 {
-        push(e, "static const qoz_type_desc qoz_{name}_desc = {{ QOZ_DESC_LEAF, (int32_t)sizeof(struct qoz_{name}), 0, NULL, 0, 0, 0, NULL, \"{name}\" }};\n\n")
+        push(e, `static const qoz_type_desc qoz_{name}_desc = {{ QOZ_DESC_LEAF, (int32_t)sizeof(struct qoz_{name}), 0, NULL, 0, 0, 0, NULL, \"{name}\" }};\n\n`)
     } else {
         let np = int_to_string(nptrs)
-        push(e, "static const qoz_type_desc qoz_{name}_desc = {{ QOZ_DESC_OFFSETS, (int32_t)sizeof(struct qoz_{name}), {np}, qoz_{name}_offsets, 0, 0, 0, NULL, \"{name}\" }};\n\n")
+        push(e, `static const qoz_type_desc qoz_{name}_desc = {{ QOZ_DESC_OFFSETS, (int32_t)sizeof(struct qoz_{name}), {np}, qoz_{name}_offsets, 0, 0, 0, NULL, \"{name}\" }};\n\n`)
     }
 }
 
@@ -3849,29 +3849,29 @@ let emit_adt_desc(e: *Emitter, name: string, variants: Vec<VariantDecl>) = {
         let voffs = collect_variant_ptr_offsets(e, name, v)
         if len(voffs) > 0 {
             let vn = v.name
-            push(e, "static const int32_t qoz_{name}_{vn}_offsets[] = {{ ")
+            push(e, `static const int32_t qoz_{name}_{vn}_offsets[] = {{ `)
             var j: i64 = 0
             for expr in voffs {
                 if j > 0 { push(e, ", ") }
                 push(e, expr)
                 j += 1
             }
-            push(e, " }};\n")
+            push(e, " };\n")
         }
     }
-    push(e, "static const qoz_variant_desc qoz_{name}_variants[] = {{\n")
+    push(e, `static const qoz_variant_desc qoz_{name}_variants[] = {{\n`)
     for v in variants {
         let voffs = collect_variant_ptr_offsets(e, name, v)
         let nptrs = len(voffs)
         let vn = v.name
         let np = int_to_string(nptrs)
         if nptrs > 0 {
-            push(e, "    {{ qoz_{name}_{vn}, {np}, qoz_{name}_{vn}_offsets }},\n")
+            push(e, `    {{ qoz_{name}_{vn}, {np}, qoz_{name}_{vn}_offsets }},\n`)
         } else {
-            push(e, "    {{ qoz_{name}_{vn}, {np}, NULL }},\n")
+            push(e, `    {{ qoz_{name}_{vn}, {np}, NULL }},\n`)
         }
     }
-    push(e, "}};\n")
+    push(e, "};\n")
     var any_payload2 = false
     for v in variants {
         if variant_has_positional(v) { any_payload2 = true }
@@ -3882,23 +3882,23 @@ let emit_adt_desc(e: *Emitter, name: string, variants: Vec<VariantDecl>) = {
         "0"
     }
     let nvar = int_to_string(len(variants))
-    push(e, "static const qoz_type_desc qoz_{name}_desc = { QOZ_DESC_ADT, (int32_t)sizeof(struct qoz_{name}), 0, NULL, (int32_t)offsetof(struct qoz_{name}, tag), {payload_off_expr}, {nvar}, qoz_{name}_variants, \"{name}\" };\n\n")
+    push(e, `static const qoz_type_desc qoz_{name}_desc = { QOZ_DESC_ADT, (int32_t)sizeof(struct qoz_{name}), 0, NULL, (int32_t)offsetof(struct qoz_{name}, tag), {payload_off_expr}, {nvar}, qoz_{name}_variants, \"{name}\" };\n\n`)
 }
 
 let emit_struct(e: *Emitter, name: string, fields: Vec<StructField>) = {
-    push(e, "struct qoz_{name} {{\n")
+    push(e, `struct qoz_{name} {{\n`)
     for f in fields {
         let ct = c_type_for(e, f.ty)
         let fname = f.name
-        push(e, "    {ct} {fname};\n")
+        push(e, `    {ct} {fname};\n`)
     }
-    push(e, "}};\n\n")
+    push(e, "};\n\n")
     emit_record_eq(e, name, fields)
     emit_record_desc(e, name, fields)
 }
 
 let emit_record_eq(e: *Emitter, name: string, fields: Vec<StructField>) = {
-    push(e, "static bool qoz_eq_{name}(qoz_{name} a, qoz_{name} b) {{\n    return ")
+    push(e, `static bool qoz_eq_{name}(qoz_{name} a, qoz_{name} b) {{\n    return `)
     if len(fields) == 0 {
         push(e, "true")
     } else {
@@ -3909,24 +3909,24 @@ let emit_record_eq(e: *Emitter, name: string, fields: Vec<StructField>) = {
             i += 1
         }
     }
-    push(e, ";\n}}\n\n")
+    push(e, ";\n}\n\n")
     emit_record_hash(e, name, fields)
 }
 
 let emit_record_hash(e: *Emitter, name: string, fields: Vec<StructField>) = {
-    push(e, "static uint64_t qoz_hash_{name}(qoz_{name} v) {{\n    uint64_t h = 0;\n")
+    push(e, `static uint64_t qoz_hash_{name}(qoz_{name} v) {{\n    uint64_t h = 0;\n`)
     for f in fields {
         push(e, "    h = h * 31 + (uint64_t)(")
         emit_field_hash_expr(e, f.ty, f.name)
         push(e, ");\n")
     }
-    push(e, "    return h;\n}}\n\n")
+    push(e, "    return h;\n}\n\n")
 }
 
 let emit_field_hash_expr(e: *Emitter, te: TypeExpr, fname: string) = {
     let ct = c_type_for(e, te)
     if strings.eq_raw(ct, "qoz_string") {
-        push(e, "qoz_string_hash(v.{fname})")
+        push(e, `qoz_string_hash(v.{fname})`)
         return
     }
     match te {
@@ -3936,7 +3936,7 @@ let emit_field_hash_expr(e: *Emitter, te: TypeExpr, fname: string) = {
             if strings.eq_raw(primitive_c_name(n), "") {
                 if !map.contains(&e.is_enum, n) {
                     let mangled = if len(args) > 0 { mangle_inst(e, n, args) } else { n }
-                    push(e, "qoz_hash_{mangled}(v.{fname})")
+                    push(e, `qoz_hash_{mangled}(v.{fname})`)
                     return
                 }
             }
@@ -3944,13 +3944,13 @@ let emit_field_hash_expr(e: *Emitter, te: TypeExpr, fname: string) = {
     }
     | _ -> { }
     }
-    push(e, "v.{fname}")
+    push(e, `v.{fname}`)
 }
 
 let emit_field_eq_expr(e: *Emitter, te: TypeExpr, fname: string) = {
     let ct = c_type_for(e, te)
     if strings.eq_raw(ct, "qoz_string") {
-        push(e, "qoz_string_eq(a.{fname}, b.{fname})")
+        push(e, `qoz_string_eq(a.{fname}, b.{fname})`)
         return
     }
     match te {
@@ -3960,7 +3960,7 @@ let emit_field_eq_expr(e: *Emitter, te: TypeExpr, fname: string) = {
             if strings.eq_raw(primitive_c_name(n), "") {
                 if !map.contains(&e.is_enum, n) {
                     let mangled = if len(args) > 0 { mangle_inst(e, n, args) } else { n }
-                    push(e, "qoz_eq_{mangled}(a.{fname}, b.{fname})")
+                    push(e, `qoz_eq_{mangled}(a.{fname}, b.{fname})`)
                     return
                 }
             }
@@ -3968,13 +3968,13 @@ let emit_field_eq_expr(e: *Emitter, te: TypeExpr, fname: string) = {
     }
     | _ -> { }
     }
-    push(e, "a.{fname} == b.{fname}")
+    push(e, `a.{fname} == b.{fname}`)
 }
 
 let emit_fn_proto(e: *Emitter, name: string, params: Vec<FnParam>, ret: TypeExpr) = {
     let rc = c_type_for(e, ret)
     let c_name = user_fn_c_name(name)
-    push(e, "{rc} {c_name}")
+    push(e, `{rc} {c_name}`)
     if len(params) == 0 {
         push(e, "(void);\n")
         return
@@ -3985,7 +3985,7 @@ let emit_fn_proto(e: *Emitter, name: string, params: Vec<FnParam>, ret: TypeExpr
         if i > 0 { push(e, ", ") }
         let pc = c_type_for(e, p.ty)
         let pn = p.name
-        push(e, "{pc} {pn}")
+        push(e, `{pc} {pn}`)
         i += 1
     }
     push(e, ");\n")
@@ -3993,7 +3993,7 @@ let emit_fn_proto(e: *Emitter, name: string, params: Vec<FnParam>, ret: TypeExpr
 
 let emit_extern_proto(e: *Emitter, symbol: string, params: Vec<FnParam>, ret: TypeExpr) = {
     let rc = c_type_for(e, ret)
-    push(e, "extern {rc} {symbol}")
+    push(e, `extern {rc} {symbol}`)
     if len(params) == 0 {
         push(e, "(void);\n")
         return
@@ -4088,7 +4088,7 @@ let emit_value_with_hint(e: *Emitter, value: Expr, hint: TypeExpr) = {
         if hint_is_cstring(hint) {
             push(e, raw)
         } else {
-            push(e, "QOZ_STR_LIT({raw})")
+            push(e, `QOZ_STR_LIT({raw})`)
         }
         return
     }
@@ -4140,27 +4140,27 @@ let emit_value_with_hint(e: *Emitter, value: Expr, hint: TypeExpr) = {
         // the temp.
         e.closure_counter = e.closure_counter + 1
         let counter = e.closure_counter
-        let tmp_res = strings.cat("_qoz_bv_", "{counter}")
+        let tmp_res = strings.cat("_qoz_bv_", `{counter}`)
         let result_c = c_type_for(e, hint)
         let start = strings.sb_len(&e.out)
-        push(e, "{result_c} {tmp_res};\n    {{\n        ")
+        push(e, `{result_c} {tmp_res};\n    {{\n        `)
         for s in stmts { emit_stmt(e, s) }
         match tail {
         | EWhile(_, _, _) | EFor(_, _, _, _, _) | EAssign(_, _, _, _) -> {
             let saved = open_statement_scope(e)
             emit_stmt_expr(e, tail)
             close_statement_scope(e, saved)
-            push(e, "\n        {tmp_res} = 0;\n    ")
+            push(e, `\n        {tmp_res} = 0;\n    `)
         }
         | _ -> {
             let saved = open_statement_scope(e)
-            push(e, "{tmp_res} = ")
+            push(e, `{tmp_res} = `)
             emit_value_with_hint(e, tail, hint)
             push(e, ";\n    ")
             close_statement_scope(e, saved)
         }
         }
-        push(e, "}}\n    ")
+        push(e, "}\n    ")
         hoist_to_prologue(e, start)
         push(e, tmp_res)
     }
@@ -4198,9 +4198,9 @@ let emit_qualified_variant_with_hint(e: *Emitter, base: Expr, name: string, hint
             let hint_args = hint_args_for_enum(hint, enum_name)
             if len(hint_args) > 0 {
                 let mangled = mangle_inst(e, enum_name, hint_args)
-                push(e, "qoz_make_{mangled}_{name}()")
+                push(e, `qoz_make_{mangled}_{name}()`)
             } else {
-                push(e, "qoz_make_{enum_name}_{name}()")
+                push(e, `qoz_make_{enum_name}_{name}()`)
             }
             true
         }
@@ -4217,10 +4217,10 @@ let emit_ident_with_hint(e: *Emitter, name: string, hint: TypeExpr) = {
         let hint_args = hint_args_for_enum(hint, enum_name)
         if len(hint_args) > 0 {
             let mangled = mangle_inst(e, enum_name, hint_args)
-            push(e, "qoz_make_{mangled}_{name}()")
+            push(e, `qoz_make_{mangled}_{name}()`)
             return
         }
-        push(e, "qoz_make_{enum_name}_{name}()")
+        push(e, `qoz_make_{enum_name}_{name}()`)
     }
     | None -> {
         // Plain top-level function used as a fn-typed value: wrap with an
@@ -4231,7 +4231,7 @@ let emit_ident_with_hint(e: *Emitter, name: string, hint: TypeExpr) = {
                 if !map.contains(&e.locals, name) {
                     let thunk = register_fn_thunk(e, name, fn_ps, fn_ret)
                     let clo_t = c_type_for(e, hint)
-                    push(e, "(({clo_t}){{ .env = NULL, .fn = {thunk} }})")
+                    push(e, `(({clo_t}){{ .env = NULL, .fn = {thunk} }})`)
                     return
                 }
             }
@@ -4322,7 +4322,7 @@ let emit_call_with_hint(e: *Emitter, callee: Expr, type_args: Vec<TypeExpr>, arg
             let hint_args = hint_args_for_enum(hint, enum_name)
             if len(hint_args) > 0 {
                 let mangled = mangle_inst(e, enum_name, hint_args)
-                push(e, "qoz_make_{mangled}_{variant_name}(")
+                push(e, `qoz_make_{mangled}_{variant_name}(`)
                 var i: i64 = 0
                 for a in args {
                     if i > 0 { push(e, ", ") }
@@ -4356,17 +4356,17 @@ let emit_record_lit_with_hint(e: *Emitter, te: TypeExpr, fields: Vec<RecordField
     let effective = pick_type_with_args(te, hint)
     let expanded = expand_record_spread_fields(e, effective, fields)
     let ec = c_type_for(e, effective)
-    push(e, "(({ec}){{ ")
+    push(e, `(({ec}){{ `)
     var i: i64 = 0
     for f in expanded {
         if i > 0 { push(e, ", ") }
         let fn = f.name
-        push(e, ".{fn} = ")
+        push(e, `.{fn} = `)
         let field_hint = field_type_hint(e, effective, f.name)
         emit_value_with_hint(e, f.value, field_hint)
         i += 1
     }
-    push(e, " }})")
+    push(e, " })")
 }
 
 // Replace a `..base` sentinel field with explicit `field: base.field`
@@ -4522,12 +4522,12 @@ let emit_for_loop_one(e: *Emitter, binding: string, binding2: string, iter: Expr
     match iter {
     | EBinary(_, op, lo, hi) -> {
         if is_range_op(op) {
-            push(e, "for (int64_t {binding} = ")
+            push(e, `for (int64_t {binding} = `)
             emit_expr(e, lo)
             let cmp = range_cmp_op(op)
-            push(e, "; {binding} {cmp} ")
+            push(e, `; {binding} {cmp} `)
             emit_expr(e, hi)
-            push(e, "; {binding}++) ")
+            push(e, `; {binding}++) `)
             emit_branch_as_statement(e, body)
             return
         }
@@ -4547,11 +4547,11 @@ let emit_vec_for(e: *Emitter, binding: string, iter: Expr, body: Expr) = {
     e.locals[binding] = elem_te
     let col_ct  = c_type_for(e, infer_base_typeexpr(e, iter))
     let elem_ct = c_type_for(e, elem_te)
-    push(e, "{{ {col_ct} __col = ")
+    push(e, `{{ {col_ct} __col = `)
     emit_expr(e, iter)
-    push(e, "; for (int64_t __i = 0; __i < __col.len; __i++) {{ {elem_ct} {binding} = __col.data[__i]; (void){binding}; ")
+    push(e, `; for (int64_t __i = 0; __i < __col.len; __i++) {{ {elem_ct} {binding} = __col.data[__i]; (void){binding}; `)
     emit_branch_body_inline(e, body)
-    push(e, "}} }}")
+    push(e, "} }")
 }
 
 let vec_element_typeexpr(e: *Emitter, iter: Expr): TypeExpr = {
@@ -4573,11 +4573,11 @@ let emit_map_for(e: *Emitter, binding: string, binding2: string, iter: Expr, bod
     let val_te  = map_val_typeexpr(e, iter_te)
     let key_ct  = c_type_for(e, key_te)
     let val_ct  = c_type_for(e, val_te)
-    push(e, "{{ {col_ct} __col = ")
+    push(e, `{{ {col_ct} __col = `)
     emit_expr(e, iter)
-    push(e, "; for (int64_t __i = 0; __i < __col.cap; __i++) {{ if (!__col.slots[__i].occupied || __col.slots[__i].deleted) continue; {key_ct} {binding} = __col.slots[__i].key; {val_ct} {binding2} = __col.slots[__i].value; (void){binding}; (void){binding2}; ")
+    push(e, `; for (int64_t __i = 0; __i < __col.cap; __i++) {{ if (!__col.slots[__i].occupied || __col.slots[__i].deleted) continue; {key_ct} {binding} = __col.slots[__i].key; {val_ct} {binding2} = __col.slots[__i].value; (void){binding}; (void){binding2}; `)
     emit_branch_body_inline(e, body)
-    push(e, "}} }}")
+    push(e, "} }")
 }
 
 let map_key_typeexpr(e: *Emitter, te: TypeExpr): TypeExpr = {
@@ -4681,8 +4681,8 @@ let emit_match_as_expr(e: *Emitter, span: Span, scrut: Expr, arms: Vec<MatchArm>
     }
     let enum_name: string = enum_lookup_name(e, scrut, bare_enum)
     e.match_counter = e.match_counter + 1
-    let scrut_tmp = "_qoz_ms_{e.match_counter}"
-    let res_tmp   = "_qoz_mv_{e.match_counter}"
+    let scrut_tmp = `_qoz_ms_{e.match_counter}`
+    let res_tmp   = `_qoz_mv_{e.match_counter}`
     let res_ctype = match_result_ctype_with_hint(e, enum_name, arms)
     let is_void = strings.eq_raw(res_ctype, "void")
 
@@ -4691,18 +4691,18 @@ let emit_match_as_expr(e: *Emitter, span: Span, scrut: Expr, arms: Vec<MatchArm>
     // statement, and the expression position resolves to `res_tmp`
     // (or 0 for void-yielding matches).
     let start = strings.sb_len(&e.out)
-    push(e, "qoz_{enum_name}* {scrut_tmp} = ")
+    push(e, `qoz_{enum_name}* {scrut_tmp} = `)
     emit_expr(e, scrut)
     push(e, "; ")
     if !is_void {
         let dv = default_value_for(res_ctype)
-        push(e, "{res_ctype} {res_tmp} = {dv}; ")
+        push(e, `{res_ctype} {res_tmp} = {dv}; `)
     }
-    push(e, "switch ({scrut_tmp}->tag) {{ ")
+    push(e, `switch ({scrut_tmp}->tag) {{ `)
     for arm in arms {
         emit_match_arm_with_kind(e, enum_name, scrut_tmp, res_tmp, arm, is_void)
     }
-    push(e, "}} ")
+    push(e, "} ")
     hoist_to_prologue(e, start)
     if is_void {
         push(e, "0")
@@ -4719,24 +4719,24 @@ let emit_match_as_if_chain(e: *Emitter, span: Span, scrut: Expr, arms: Vec<Match
     let scrut_ctype = infer_expr_ctype(e, scrut)
     let scrut_te = infer_value_te(e, scrut)
     e.match_counter = e.match_counter + 1
-    let scrut_tmp = "_qoz_ms_{e.match_counter}"
-    let res_tmp   = "_qoz_mv_{e.match_counter}"
-    let mflag     = "_qoz_mm_{e.match_counter}"
+    let scrut_tmp = `_qoz_ms_{e.match_counter}`
+    let res_tmp   = `_qoz_mv_{e.match_counter}`
+    let mflag     = `_qoz_mm_{e.match_counter}`
     let res_ctype = match_result_ctype_with_hint(e, enum_name, arms)
     let is_void = strings.eq_raw(res_ctype, "void")
     let start = strings.sb_len(&e.out)
     if is_enum_match {
-        push(e, "qoz_{enum_name}* {scrut_tmp} = ")
+        push(e, `qoz_{enum_name}* {scrut_tmp} = `)
     } else {
-        push(e, "{scrut_ctype} {scrut_tmp} = ")
+        push(e, `{scrut_ctype} {scrut_tmp} = `)
     }
     emit_expr(e, scrut)
     push(e, "; ")
     if !is_void {
         let dv = default_value_for(res_ctype)
-        push(e, "{res_ctype} {res_tmp} = {dv}; ")
+        push(e, `{res_ctype} {res_tmp} = {dv}; `)
     }
-    push(e, "bool {mflag} = false; ")
+    push(e, `bool {mflag} = false; `)
     for arm in arms {
         emit_arm_in_chain_with_te(e, enum_name, scrut_tmp, scrut_te, res_tmp, mflag, arm, is_void)
     }
@@ -4754,34 +4754,34 @@ let emit_arm_in_chain_with_te(e: *Emitter, enum_name: string, scrut_tmp: string,
     push(e, "if (!")
     push(e, mflag)
     match arm.pat {
-    | PatWild(_) -> push(e, ") {{ ")
+    | PatWild(_) -> push(e, ") { ")
     | PatBind(_, name) -> {
         if is_enum_match {
             if let Some(_) = map.get(&e.variant_of, name) {
-                push(e, " && {scrut_tmp}->tag == qoz_{enum_name}_{name}) {{ ")
+                push(e, ` && {scrut_tmp}->tag == qoz_{enum_name}_{name}) {{ `)
             } else {
                 // Catch-all bind on an enum scrutinee: name is bound
                 // to the enum pointer so the arm body can inspect or
                 // forward the entire value.
-                push(e, ") {{ qoz_{enum_name}* {name} = {scrut_tmp}; (void){name}; ")
+                push(e, `) {{ qoz_{enum_name}* {name} = {scrut_tmp}; (void){name}; `)
                 e.locals[name] = scrut_te
             }
         } else {
             let sc = c_type_for(e, scrut_te)
-            push(e, ") {{ {sc} {name} = {scrut_tmp}; (void){name}; ")
+            push(e, `) {{ {sc} {name} = {scrut_tmp}; (void){name}; `)
             e.locals[name] = scrut_te
         }
     }
     | PatLitInt(_, text) -> {
         let tn = strip_numeric_underscores(text)
-        push(e, " && {scrut_tmp} == {tn}) {{ ")
+        push(e, ` && {scrut_tmp} == {tn}) {{ `)
     }
     | PatLitBool(_, b) -> {
-        if b { push(e, " && {scrut_tmp} == true) {{ ") }
-        else { push(e, " && {scrut_tmp} == false) {{ ") }
+        if b { push(e, ` && {scrut_tmp} == true) {{ `) }
+        else { push(e, ` && {scrut_tmp} == false) {{ `) }
     }
     | PatLitString(_, text) -> {
-        push(e, " && qoz_string_eq({scrut_tmp}, QOZ_STR_LIT({text}))) {{ ")
+        push(e, ` && qoz_string_eq({scrut_tmp}, QOZ_STR_LIT({text}))) {{ `)
     }
     | PatVariant(psp, path, sub_pats) -> {
         if len(path) == 0 {
@@ -4789,7 +4789,7 @@ let emit_arm_in_chain_with_te(e: *Emitter, enum_name: string, scrut_tmp: string,
         }
         if len(path) > 0 {
             let vname = path[len(path) - 1]
-            push(e, " && {scrut_tmp}->tag == qoz_{enum_name}_{vname}")
+            push(e, ` && {scrut_tmp}->tag == qoz_{enum_name}_{vname}`)
             // Literal sub-patterns extend the if condition with an
             // equality check against the payload field. Wildcard and
             // bind sub-patterns require no extra condition and are
@@ -4802,27 +4802,27 @@ let emit_arm_in_chain_with_te(e: *Emitter, enum_name: string, scrut_tmp: string,
                 match sp {
                 | PatLitInt(_, text) -> {
                     let tn = strip_numeric_underscores(text)
-                    push(e, " && {scrut_tmp}->payload.{vname}.f{is} == {tn}")
+                    push(e, ` && {scrut_tmp}->payload.{vname}.f{is} == {tn}`)
                 }
                 | PatLitBool(_, b) -> {
-                    if b { push(e, " && {scrut_tmp}->payload.{vname}.f{is} == true") }
-                    else { push(e, " && {scrut_tmp}->payload.{vname}.f{is} == false") }
+                    if b { push(e, ` && {scrut_tmp}->payload.{vname}.f{is} == true`) }
+                    else { push(e, ` && {scrut_tmp}->payload.{vname}.f{is} == false`) }
                 }
                 | PatLitString(_, text) -> {
-                    push(e, " && qoz_string_eq({scrut_tmp}->payload.{vname}.f{is}, QOZ_STR_LIT({text}))")
+                    push(e, ` && qoz_string_eq({scrut_tmp}->payload.{vname}.f{is}, QOZ_STR_LIT({text}))`)
                 }
                 | _ -> { }
                 }
                 i += 1
             }
-            push(e, ") {{ ")
+            push(e, ") { ")
             var j: i64 = 0
             for sp in sub_pats {
                 match sp {
                 | PatBind(_, bname) -> {
                     let pc = variant_payload_ctype(e, enum_name, vname, j)
                     let js = int_to_string(j)
-                    push(e, "{pc} {bname} = {scrut_tmp}->payload.{vname}.f{js}; ")
+                    push(e, `{pc} {bname} = {scrut_tmp}->payload.{vname}.f{js}; `)
                     e.locals[bname] = variant_payload_typeexpr(e, enum_name, vname, j)
                 }
                 | _ -> { }
@@ -4833,7 +4833,7 @@ let emit_arm_in_chain_with_te(e: *Emitter, enum_name: string, scrut_tmp: string,
             // close-paren emission, so the body's first character has
             // a separator.
         } else {
-            push(e, ") {{ ")
+            push(e, ") { ")
         }
     }
     | PatTuple(psp, _) -> {
@@ -4883,24 +4883,24 @@ let emit_match_arm_with_kind(e: *Emitter, enum_name: string, scrut_tmp: string, 
     let body_hint = match_body_hint(e, enum_name, arm.body)
     match arm.pat {
     | PatWild(_) -> {
-        push(e, "default: {{ ")
+        push(e, "default: { ")
         emit_arm_body_kind(e, is_void, res_tmp, arm.body, body_hint)
-        push(e, " break; }} ")
+        push(e, " break; } ")
     }
     | PatBind(_, name) -> {
         match map.get(&e.variant_of, name) {
         | Some(_) -> {
-            push(e, "case qoz_{enum_name}_{name}: {{ ")
+            push(e, `case qoz_{enum_name}_{name}: {{ `)
             if arm.has_guard {
                 push(e, "if (")
                 emit_expr(e, arm.guard)
-                push(e, ") {{ ")
+                push(e, ") { ")
                 emit_arm_body_kind(e, is_void, res_tmp, arm.body, body_hint)
-                push(e, "}} ")
+                push(e, "} ")
             } else {
                 emit_arm_body_kind(e, is_void, res_tmp, arm.body, body_hint)
             }
-            push(e, " break; }} ")
+            push(e, " break; } ")
         }
         | None -> {
             // Catch-all bind on a switch-style enum match. Bind
@@ -4908,7 +4908,7 @@ let emit_match_arm_with_kind(e: *Emitter, enum_name: string, scrut_tmp: string, 
             // value rather than a placeholder zero. Register the
             // binding's TypeExpr so the inner code can call match,
             // field access, and the like on it.
-            push(e, "default: {{ qoz_{enum_name}* {name} = {scrut_tmp}; (void){name}; ")
+            push(e, `default: {{ qoz_{enum_name}* {name} = {scrut_tmp}; (void){name}; `)
             let sp = Span { file: "", line: 0, col: 0 }
             var segs: Vec<string> = vec.make()
             vec.push(&segs, enum_name)
@@ -4916,27 +4916,27 @@ let emit_match_arm_with_kind(e: *Emitter, enum_name: string, scrut_tmp: string, 
             if arm.has_guard {
                 push(e, "if (")
                 emit_expr(e, arm.guard)
-                push(e, ") {{ ")
+                push(e, ") { ")
                 emit_arm_body_kind(e, is_void, res_tmp, arm.body, body_hint)
-                push(e, "}} ")
+                push(e, "} ")
             } else {
                 emit_arm_body_kind(e, is_void, res_tmp, arm.body, body_hint)
             }
-            push(e, " break; }} ")
+            push(e, " break; } ")
         }
         }
     }
     | PatVariant(_, path, sub_pats) -> {
         if len(path) > 0 {
             let vname = path[len(path) - 1]
-            push(e, "case qoz_{enum_name}_{vname}: {{ ")
+            push(e, `case qoz_{enum_name}_{vname}: {{ `)
             var i: i64 = 0
             for sp in sub_pats {
                 match sp {
                 | PatBind(_, bname) -> {
                     let pc = variant_payload_ctype(e, enum_name, vname, i)
                     let is = int_to_string(i)
-                    push(e, "{pc} {bname} = {scrut_tmp}->payload.{vname}.f{is}; ")
+                    push(e, `{pc} {bname} = {scrut_tmp}->payload.{vname}.f{is}; `)
                     e.locals[bname] = variant_payload_typeexpr(e, enum_name, vname, i)
                 }
                 | _ -> { }
@@ -4946,13 +4946,13 @@ let emit_match_arm_with_kind(e: *Emitter, enum_name: string, scrut_tmp: string, 
             if arm.has_guard {
                 push(e, "if (")
                 emit_expr(e, arm.guard)
-                push(e, ") {{ ")
+                push(e, ") { ")
                 emit_arm_body_kind(e, is_void, res_tmp, arm.body, body_hint)
-                push(e, "}} ")
+                push(e, "} ")
             } else {
                 emit_arm_body_kind(e, is_void, res_tmp, arm.body, body_hint)
             }
-            push(e, " break; }} ")
+            push(e, " break; } ")
         }
     }
     | _ -> { }
@@ -5154,7 +5154,7 @@ let match_body_hint(e: *Emitter, enum_name: string, body: Expr): TypeExpr = {
 
 let emit_main(e: *Emitter, ret: TypeExpr, body: Expr) = {
     let kind = main_return_kind(ret)
-    push(e, "int main(int argc, char **argv) {{\n    qoz_set_argv(argc, argv);\n    int qoz_stack_anchor;\n    qoz_init(&qoz_stack_anchor);\n    qoz_frame_push(\"main\");\n    ")
+    push(e, "int main(int argc, char **argv) {\n    qoz_set_argv(argc, argv);\n    int qoz_stack_anchor;\n    qoz_init(&qoz_stack_anchor);\n    qoz_frame_push(\"main\");\n    ")
     match body {
     | EBlock(_, stmts, tail) -> {
         for s in stmts {
@@ -5179,7 +5179,7 @@ let main_return_kind(ret: TypeExpr): MainRetKind = {
     | TEUnit(_)                  -> MainRetUnit
     | TENamed(sp, path, _) -> {
         if len(path) != 1 {
-            fmt.println("{sp.file}:{sp.line}:{sp.col}: main return type must be a primitive integer or unit")
+            fmt.println(`{sp.file}:{sp.line}:{sp.col}: main return type must be a primitive integer or unit`)
             return MainRetInt("int64_t")
         }
         let n = path[0]

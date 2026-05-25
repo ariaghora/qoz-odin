@@ -250,7 +250,7 @@ let load_all(entry: string, qoz_root: string): Loaded = {
 let process_one(cur: Pending, queue: *Vec<Pending>, visited: *Map<string, bool>, aggregated_decls: *Vec<Decl>, sources: *Vec<string>, qoz_root: string) = {
     let src = fs.read_file(cur.path)
     if len(src) < 0 {
-        fmt.println("could not read {cur.path}")
+        fmt.println(`could not read {cur.path}`)
         os.exit(1)
     }
     vec.push(sources, src)
@@ -343,7 +343,7 @@ let cmd_build(path: string, qoz_root: string): string = {
     let out_path = strings.cat(path, ".c")
     let ok = fs.write_file(out_path, c_source)
     if !ok {
-        fmt.println("could not write {out_path}")
+        fmt.println(`could not write {out_path}`)
         os.exit(1)
     }
     out_path
@@ -505,7 +505,7 @@ let main() = {
             os.exit(1)
         }
         let out = cmd_build(args[2], qoz_root)
-        fmt.println("wrote {out}")
+        fmt.println(`wrote {out}`)
         os.exit(0)
     } else { if strings.eq_raw(first, "build") {
         if len(args) < 3 {
@@ -539,7 +539,7 @@ let main() = {
         // bootstrap/stage1.c was built against; preserved so existing
         // build scripts keep working.
         let out = cmd_build(first, qoz_root)
-        fmt.println("wrote {out}")
+        fmt.println(`wrote {out}`)
         os.exit(0)
     } } } }
 }

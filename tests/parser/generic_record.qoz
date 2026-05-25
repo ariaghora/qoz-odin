@@ -6,8 +6,8 @@ type Pair<A, B> = { fst: A, snd: B }
 let main() = {
     let p = Pair { fst: 7, snd: "hello" }
     let q = Pair { fst: 1.5, snd: 99 }
-    fmt.println("p.fst = {p.fst}")
-    fmt.println("p.snd = {p.snd}")
-    fmt.println("q.fst = {q.fst}")
-    fmt.println("q.snd = {q.snd}")
+    fmt.println(`p.fst = {p.fst}`)
+    fmt.println(`p.snd = {p.snd}`)
+    fmt.println(`q.fst = {q.fst}`)
+    fmt.println(`q.snd = {q.snd}`)
 }

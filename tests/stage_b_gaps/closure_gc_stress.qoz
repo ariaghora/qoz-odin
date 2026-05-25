@@ -13,11 +13,11 @@ let main(): i64 = {
     var bag: Vec<string> = vec.make()
     var i: i64 = 0
     while i < 64 {
-        let pre = "p{i}_"
+        let pre = `p{i}_`
         let f = make_appender(pre)
         var j: i64 = 0
         while j < 32 {
-            let s: string = f("{j}")
+            let s: string = f(`{j}`)
             vec.push(&bag, s)
             j = j + 1
         }

@@ -104,7 +104,7 @@ let main(): i64 = {
     let pixel00 = viewport_upper_left + pixel00_offset
 
     fmt.println("P3")
-    fmt.println("{image_width} {image_height}")
+    fmt.println(`{image_width} {image_height}`)
     fmt.println("255")
 
     var j: i64 = 0
@@ -121,7 +121,7 @@ let main(): i64 = {
             let ir = to_byte(color.x)
             let ig = to_byte(color.y)
             let ib = to_byte(color.z)
-            fmt.println("{ir} {ig} {ib}")
+            fmt.println(`{ir} {ig} {ib}`)
             i = i + 1
         }
         j = j + 1

@@ -10,9 +10,9 @@ import fmt
 let main(): i64 = {
     let name = "world"
     let count: i64 = 7
-    fmt.println("hi {name}, count={count}")
-    fmt.println("braces: {{ {count} }}")
-    let s = "value is {count}"
+    fmt.println(`hi {name}, count={count}`)
+    fmt.println(`braces: {{ {count} }}`)
+    let s = `value is {count}`
     fmt.println(s)
     0
 }

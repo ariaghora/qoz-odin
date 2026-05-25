@@ -6,7 +6,7 @@ type Point = { x: i32, y: i32 }
 let main() = {
     var p = Point { x: 3, y: 4 }
     let pp: *Point = &p
-    fmt.println("p.x = {p.x}")
-    fmt.println("pp.x = {pp.x}")
-    fmt.println("pp.y = {pp.y}")
+    fmt.println(`p.x = {p.x}`)
+    fmt.println(`pp.x = {pp.x}`)
+    fmt.println(`pp.y = {pp.y}`)
 }

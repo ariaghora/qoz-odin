@@ -20,10 +20,10 @@ type Outer = {
 }
 
 let make_outer(i: i64): *Outer = {
-    let label = "label-{i}"
-    let a     = "a-{i}"
-    let b     = "b-{i}"
-    let note  = "note-{i}"
+    let label = `label-{i}`
+    let a     = `a-{i}`
+    let b     = `b-{i}`
+    let note  = `note-{i}`
     let o = mem.alloc(size_of(Outer)) as *Outer
     o.label = label
     o.inner = Inner { a: a, b: b }

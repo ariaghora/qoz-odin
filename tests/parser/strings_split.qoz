@@ -12,11 +12,11 @@ let main() = {
     }
 
     let hp = strings.has_prefix("hello world", "hello")
-    fmt.println("has_prefix(hello world, hello) = {hp}")
+    fmt.println(`has_prefix(hello world, hello) = {hp}`)
     let hs = strings.has_suffix("hello world", "world")
-    fmt.println("has_suffix(hello world, world) = {hs}")
+    fmt.println(`has_suffix(hello world, world) = {hs}`)
     let pi1 = strings.parse_int("42")
-    fmt.println("parse_int(42) = {pi1}")
+    fmt.println(`parse_int(42) = {pi1}`)
     let pi2 = strings.parse_int("-7")
-    fmt.println("parse_int(-7) = {pi2}")
+    fmt.println(`parse_int(-7) = {pi2}`)
 }

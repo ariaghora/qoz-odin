@@ -9,11 +9,11 @@ let main() = {
     let a: Option<i32> = Option.None
     let b: Option<i32> = Option.Some(7)
     match a {
-    | Option.Some(v) -> fmt.println("a: {v}")
+    | Option.Some(v) -> fmt.println(`a: {v}`)
     | Option.None    -> fmt.println("a: nothing")
     }
     match b {
-    | Option.Some(v) -> fmt.println("b: {v}")
+    | Option.Some(v) -> fmt.println(`b: {v}`)
     | Option.None    -> fmt.println("b: nothing")
     }
 }

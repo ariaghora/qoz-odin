@@ -16,10 +16,10 @@ let main() = {
     let p = Pair { x: 1, y: 2 }
     let q = Pair { x: 10, y: 20 }
     let r = p + q
-    fmt.println("r.x = {r.x} r.y = {r.y}")
+    fmt.println(`r.x = {r.x} r.y = {r.y}`)
 
     let s = -p
-    fmt.println("s.x = {s.x} s.y = {s.y}")
+    fmt.println(`s.x = {s.x} s.y = {s.y}`)
 
     if p == p {
         fmt.println("p == p")

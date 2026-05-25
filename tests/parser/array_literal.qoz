@@ -7,7 +7,7 @@ let main() = {
     fmt.println("len = {len(xs)}")
     var i: i64 = 0
     while i < len(xs) {
-        fmt.println("xs[ {i} ] = {xs[i]}")
+        fmt.println(`xs[ {i} ] = {xs[i]}`)
         i = i + 1
     }
 

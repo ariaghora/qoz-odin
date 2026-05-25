@@ -28,5 +28,5 @@ let main() = {
     | Square(_) -> 2
     | Origin    -> 3
     }
-    fmt.println("total: {total}")
+    fmt.println(`total: {total}`)
 }

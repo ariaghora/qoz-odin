@@ -3,7 +3,7 @@
 // Print a string to stdout followed by a newline. Formatting of values
 // is handled by string interpolation at the call site:
 //
-//     fmt.println("counter = {count}")
+//     fmt.println(`counter = {count}`)
 //
 // produces the same output as a printf-style call. The interpolation
 // expands at parse time to a Strbuf that builds the final string, so

@@ -6,6 +6,6 @@ let main(): i64 = {
     let x = match o {
     | Some(v) -> v
     }
-    fmt.println("got {x}")
+    fmt.println(`got {x}`)
     0
 }

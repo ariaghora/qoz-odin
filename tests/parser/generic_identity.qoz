@@ -6,7 +6,7 @@ let identity<T>(x: T): T = x
 let main() = {
     fmt.println("int: {identity(42)}")
     let s = identity("hello")
-    fmt.println("str: {s}")
+    fmt.println(`str: {s}`)
     let a = identity(7)
-    fmt.println("a: {a}")
+    fmt.println(`a: {a}`)
 }

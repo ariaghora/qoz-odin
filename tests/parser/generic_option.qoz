@@ -8,13 +8,13 @@ type Option<T> =
 let main() = {
     let opt_int = Option.Some(42)
     match opt_int {
-    | Option.Some(v) -> fmt.println("int: {v}")
+    | Option.Some(v) -> fmt.println(`int: {v}`)
     | Option.None    -> fmt.println("nothing")
     }
 
     let opt_str = Option.Some("hello")
     match opt_str {
-    | Option.Some(s) -> fmt.println("str: {s}")
+    | Option.Some(s) -> fmt.println(`str: {s}`)
     | Option.None    -> fmt.println("nothing")
     }
 }

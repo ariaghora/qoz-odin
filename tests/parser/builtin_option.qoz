@@ -5,11 +5,11 @@ let main() = {
     let a: Option<i32> = Some(7)
     let b: Option<i32> = None
     match a {
-    | Some(v) -> fmt.println("a: {v}")
+    | Some(v) -> fmt.println(`a: {v}`)
     | None    -> fmt.println("a: nothing")
     }
     match b {
-    | Some(v) -> fmt.println("b: {v}")
+    | Some(v) -> fmt.println(`b: {v}`)
     | None    -> fmt.println("b: nothing")
     }
 }

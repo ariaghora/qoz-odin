@@ -3,21 +3,21 @@ import fmt
 
 let main() = {
     let w = "world"
-    fmt.println("hello, {w}!")
+    fmt.println(`hello, {w}!`)
 
     let a = 2
     let b = 3
     let c = 5
-    fmt.println("{a} + {b} = {c}")
+    fmt.println(`{a} + {b} = {c}`)
 
     let p = 3.14
-    fmt.println("pi is approximately {p}")
+    fmt.println(`pi is approximately {p}`)
 
     let r = true
-    fmt.println("ready={r}")
+    fmt.println(`ready={r}`)
 
     fmt.println("no substitutions here")
 
     let one = "just one"
-    fmt.println("{one}")
+    fmt.println(`{one}`)
 }

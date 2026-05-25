@@ -12,13 +12,13 @@ let main() = {
     fmt.println("len = {map.len(&m)}")
 
     match map.get(&m, "two") {
-    | Some(v) -> fmt.println("two = {v}")
+    | Some(v) -> fmt.println(`two = {v}`)
     | None    -> fmt.println("two missing")
     }
 
     m["two"] = 22
     match map.get(&m, "two") {
-    | Some(v) -> fmt.println("two after overwrite = {v}")
+    | Some(v) -> fmt.println(`two after overwrite = {v}`)
     | None    -> fmt.println("two missing after overwrite")
     }
     fmt.println("len after overwrite = {map.len(&m)}")

@@ -11,7 +11,7 @@ let main() = {
 
     var i: i64 = 0
     while i < vec.len(&v) {
-        fmt.println("v[ {i} ] = {v[i]}")
+        fmt.println(`v[ {i} ] = {v[i]}`)
         i = i + 1
     }
 }

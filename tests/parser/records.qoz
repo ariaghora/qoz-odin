@@ -6,8 +6,8 @@ type Point = { x: f64, y: f64 }
 let main() = {
     let p = Point { x: 1.0, y: 2.0 }
     let q = Point { x: 10.0, ..p }
-    fmt.println("p.x = {p.x}")
-    fmt.println("p.y = {p.y}")
-    fmt.println("q.x = {q.x}")
-    fmt.println("q.y = {q.y}")
+    fmt.println(`p.x = {p.x}`)
+    fmt.println(`p.y = {p.y}`)
+    fmt.println(`q.x = {q.x}`)
+    fmt.println(`q.y = {q.y}`)
 }

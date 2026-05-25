@@ -12,8 +12,8 @@ let main() = {
 
     var i: i64 = 0
     while i < vec.len(&v) {
-        fmt.println("v[ {i} ] = {vec.get(&v, i)}")
+        fmt.println(`v[ {i} ] = {vec.get(&v, i)}`)
         i = i + 1
     }
-    fmt.println("len = {vec.len(&v)} cap = {v.cap}")
+    fmt.println(`len = {vec.len(&v)} cap = {v.cap}`)
 }
