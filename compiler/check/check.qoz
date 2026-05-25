@@ -35,23 +35,15 @@ type TyContext = {
     // through an explicit import and must be reached as
     // `<pkg>.<TypeName>` from outside its own package.
     type_homes:    Map<string, string>,
-    // Owning package of every fn/extern. Used to set current_pkg
-    // when the check phase enters a fn body so resolve_named can
-    // permit bare access to types declared in the same package.
+    // Owning package of every fn / extern, keyed by the renamed
+    // C-style name. validate_signatures reads this when caching the
+    // resolved param and return tys; emit reads it through the same
+    // map.
     fn_homes:      Map<string, string>,
-    // Package the type checker is currently resolving inside. Empty
-    // string is the user's entry context (and the prelude); a
-    // non-empty value means the resolver is walking a fn body that
-    // lives inside an imported package and may reach its sibling
-    // types by bare name.
-    current_pkg:   string,
     // Resolved parameter and return types of every declared fn /
-    // extern, keyed by the renamed C-style name. Populated once in
-    // validate_signatures with the right current_pkg for each
-    // declaration. synth_call_with_decl reads from these caches
-    // instead of re-resolving the TypeExprs, so the cross-package
-    // enforcement does not need current_pkg to propagate into
-    // synth-driven resolves.
+    // extern. Populated once in validate_signatures and read by
+    // synth_call_with_decl so call-site type-checking does not walk
+    // the callee's TypeExprs again.
     fn_param_tys:  Map<string, Vec<ty.Ty>>,
     fn_ret_ty:     Map<string, ty.Ty>,
     // Maps each source file path to the package the file belongs
@@ -82,7 +74,6 @@ let make_ctx(): check.TyContext = TyContext {
     variant_homes: map.make(),
     type_homes:  map.make(),
     fn_homes:    map.make(),
-    current_pkg: "",
     fn_param_tys: map.make(),
     fn_ret_ty:    map.make(),
     file_pkgs:    map.make(),
@@ -318,13 +309,24 @@ let resolve_named(tc: *check.TyContext, span: ast.Span, path: Vec<string>, args:
         // span. The file's pkg was recorded once at load time, so
         // this answer is correct no matter which synth or generic-
         // instantiation context the resolve happens to fire from.
-        let use_site_pkg = match map.get(&tc.file_pkgs, span.file) {
-        | Some(p) -> p
-        | None    -> tc.current_pkg
-        }
-        if !strings.eq_raw(home, "") && !strings.eq_raw(home, use_site_pkg) {
-            record_error(tc, span, `type '{name}' is from package '{home}'; use '{home}.{name}'`)
-            return ty.ty_error_()
+        if !strings.eq_raw(home, "") {
+            // Every parser-emitted TypeExpr carries the file it came
+            // from; every loaded file is in file_pkgs. A miss here
+            // means a TypeExpr reached resolve_named without going
+            // through the loader (a compiler bug), which is reported
+            // as such so the silent-allow fallback never re-emerges.
+            match map.get(&tc.file_pkgs, span.file) {
+            | Some(use_site_pkg) -> {
+                if !strings.eq_raw(home, use_site_pkg) {
+                    record_error(tc, span, `type '{name}' is from package '{home}'; use '{home}.{name}'`)
+                    return ty.ty_error_()
+                }
+            }
+            | None -> {
+                record_error(tc, span, `internal: no package recorded for file '{span.file}' resolving type '{name}'`)
+                return ty.ty_error_()
+            }
+            }
         }
     }
     | None -> { }
@@ -1343,11 +1345,8 @@ let synth_call_with_decl(tc: *check.TyContext, sp: ast.Span, d: ast.Decl, type_a
             record_error(tc, sp, `function expects {len(params)} argument(s), got {len(arg_tys)}`)
         }
         // Look up the callee's resolved param and return types from
-        // the cache populated by validate_signatures. The cache
-        // contains values resolved with the callee's own pkg in
-        // scope, so synth-driven calls do not need to flip
-        // current_pkg and the qualified-access rule does not fire
-        // from synthesised re-resolutions.
+        // the cache populated by validate_signatures. Skips a walk
+        // of the callee's TypeExprs on every call site.
         let param_tys: Vec<ty.Ty> = match map.get(&tc.fn_param_tys, fn_name) {
         | Some(ts) -> ts
         | None     -> vec.make()
@@ -1977,11 +1976,6 @@ let infer_calls_decl(tc: *check.TyContext, d: ast.Decl): ast.Decl = {
     match d {
     | DFn(sp, name, tparams, params, ret, body, attr) -> {
         set_type_params(tc, tparams)
-        let saved_pkg = tc.current_pkg
-        tc.current_pkg = match map.get(&tc.fn_homes, name) {
-        | Some(p) -> p
-        | None    -> ""
-        }
         var env = env_make()
         for pp in params {
             env_define(&env, pp.name, resolve_type(tc, pp.ty))
@@ -1989,7 +1983,6 @@ let infer_calls_decl(tc: *check.TyContext, d: ast.Decl): ast.Decl = {
         let ret_ty = resolve_type(tc, ret)
         let new_body = infer_calls_expr(tc, &env, body, ret_ty)
         clear_type_params(tc)
-        tc.current_pkg = saved_pkg
         DFn(sp, name, tparams, params, ret, new_body, attr)
     }
     | DConst(sp, name, t, val) -> {
@@ -2675,11 +2668,6 @@ let check_fn_bodies(tc: *check.TyContext, f: ast.File) = {
         match d {
         | DFn(sp, name, tparams, params, ret, body, _) -> {
             set_type_params(tc, tparams)
-            let saved_pkg = tc.current_pkg
-            tc.current_pkg = match map.get(&tc.fn_homes, name) {
-            | Some(p) -> p
-            | None    -> ""
-            }
             var env = env_make()
             for pp in params {
                 env_define(&env, pp.name, resolve_type(tc, pp.ty))
@@ -2689,7 +2677,6 @@ let check_fn_bodies(tc: *check.TyContext, f: ast.File) = {
             tc.current_ret_ty = declared_ret
             let body_ty = synth(tc, &env, body)
             tc.current_ret_ty = saved_ret
-            tc.current_pkg = saved_pkg
             // Body-tail-type check. Only enforced when the body has
             // no explicit `return` anywhere. The presence of `return`
             // indicates the user controls exit paths; the tail may
@@ -2738,11 +2725,6 @@ let validate_signatures(tc: *check.TyContext, f: ast.File) = {
         match d {
         | DFn(_, name, tparams, params, ret, _, _) -> {
             set_type_params(tc, tparams)
-            let saved_pkg = tc.current_pkg
-            tc.current_pkg = match map.get(&tc.fn_homes, name) {
-            | Some(p) -> p
-            | None    -> ""
-            }
             var p_tys: Vec<ty.Ty> = vec.make()
             for pp in params {
                 vec.push(&p_tys, resolve_type(tc, pp.ty))
@@ -2751,14 +2733,8 @@ let validate_signatures(tc: *check.TyContext, f: ast.File) = {
             map.set(&tc.fn_param_tys, name, p_tys)
             map.set(&tc.fn_ret_ty, name, r_ty)
             clear_type_params(tc)
-            tc.current_pkg = saved_pkg
         }
         | DExternal(_, name, _, params, ret) -> {
-            let saved_pkg = tc.current_pkg
-            tc.current_pkg = match map.get(&tc.fn_homes, name) {
-            | Some(p) -> p
-            | None    -> ""
-            }
             var p_tys: Vec<ty.Ty> = vec.make()
             for pp in params {
                 vec.push(&p_tys, resolve_type(tc, pp.ty))
@@ -2766,28 +2742,16 @@ let validate_signatures(tc: *check.TyContext, f: ast.File) = {
             let r_ty = resolve_type(tc, ret)
             map.set(&tc.fn_param_tys, name, p_tys)
             map.set(&tc.fn_ret_ty, name, r_ty)
-            tc.current_pkg = saved_pkg
         }
         | DStruct(_, name, tparams, fields) -> {
             set_type_params(tc, tparams)
-            let saved_pkg = tc.current_pkg
-            tc.current_pkg = match map.get(&tc.type_homes, name) {
-            | Some(p) -> p
-            | None    -> ""
-            }
             for fld in fields {
                 let _ = resolve_type(tc, fld.ty)
             }
             clear_type_params(tc)
-            tc.current_pkg = saved_pkg
         }
         | DEnum(_, name, tparams, variants) -> {
             set_type_params(tc, tparams)
-            let saved_pkg = tc.current_pkg
-            tc.current_pkg = match map.get(&tc.type_homes, name) {
-            | Some(p) -> p
-            | None    -> ""
-            }
             for v in variants {
                 for pp in v.pos {
                     let _ = resolve_type(tc, pp)
@@ -2797,18 +2761,11 @@ let validate_signatures(tc: *check.TyContext, f: ast.File) = {
                 }
             }
             clear_type_params(tc)
-            tc.current_pkg = saved_pkg
         }
         | DTypeAlias(_, name, tparams, target) -> {
             set_type_params(tc, tparams)
-            let saved_pkg = tc.current_pkg
-            tc.current_pkg = match map.get(&tc.type_homes, name) {
-            | Some(p) -> p
-            | None    -> ""
-            }
             let _ = resolve_type(tc, target)
             clear_type_params(tc)
-            tc.current_pkg = saved_pkg
         }
         | DConst(_, _, ty, _) -> {
             let _ = resolve_type(tc, ty)
