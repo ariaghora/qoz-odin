@@ -25,14 +25,32 @@ type Token = {
     col:  i64,
 }
 
-type Lexer = {
-    src:    string,
-    pos:    i64,
-    line:   i64,
-    col:    i64,
+type CommentKind =
+    | CommentLine
+    | CommentDoc
+    | CommentBlock
+
+type Comment = {
+    kind: tokenize.CommentKind,
+    text: string,
+    line: i64,
+    col:  i64,
 }
 
-let make_lexer(src: string): Lexer = Lexer { src: src, pos: 0, line: 1, col: 1 }
+type TokenizeResult = {
+    tokens:   Vec<tokenize.Token>,
+    comments: Vec<tokenize.Comment>,
+}
+
+type Lexer = {
+    src:      string,
+    pos:      i64,
+    line:     i64,
+    col:      i64,
+    comments: Vec<tokenize.Comment>,
+}
+
+let make_lexer(src: string): Lexer = Lexer { src: src, pos: 0, line: 1, col: 1, comments: vec.make() }
 
 // Variant that starts the line / column counter at user-supplied
 // values. Used by the parser when re-tokenising an interpolation
@@ -40,7 +58,7 @@ let make_lexer(src: string): Lexer = Lexer { src: src, pos: 0, line: 1, col: 1 }
 // and the inner tokens carry spans that resolve to that position so
 // diagnostics anchor at the call site rather than the start of the
 // substring.
-let make_lexer_at(src: string, line: i64, col: i64): Lexer = Lexer { src: src, pos: 0, line: line, col: col }
+let make_lexer_at(src: string, line: i64, col: i64): Lexer = Lexer { src: src, pos: 0, line: line, col: col, comments: vec.make() }
 
 let run_at(src: string, start_line: i64, start_col: i64): Vec<tokenize.Token> = {
     var raw: Vec<tokenize.Token> = vec.make()
@@ -125,12 +143,22 @@ let skip_whitespace_and_comments(l: *Lexer) = {
             changed = true
         }
         if l.pos + 1 < len(l.src) && lex_at(l) == 47 && strings.byte_at(l.src, l.pos + 1) == 47 {
+            let start = l.pos
+            let cline = l.line
+            let ccol  = l.col
+            let is_doc = l.pos + 2 < len(l.src) && strings.byte_at(l.src, l.pos + 2) == 47
             while l.pos < len(l.src) && lex_at(l) != 10 {
                 lex_advance(l)
             }
+            let text = strings.slice(l.src, start, l.pos)
+            let kind = if is_doc { CommentDoc } else { CommentLine }
+            vec.push(&l.comments, Comment { kind: kind, text: text, line: cline, col: ccol })
             changed = true
         }
         if l.pos + 1 < len(l.src) && lex_at(l) == 47 && strings.byte_at(l.src, l.pos + 1) == 42 {
+            let start = l.pos
+            let cline = l.line
+            let ccol  = l.col
             lex_advance(l); lex_advance(l)
             var depth: i64 = 1
             while depth > 0 && l.pos < len(l.src) {
@@ -143,6 +171,8 @@ let skip_whitespace_and_comments(l: *Lexer) = {
                 }
             }
             if depth > 0 { lex_die(l, "unterminated /* block comment */ at end of file") }
+            let text = strings.slice(l.src, start, l.pos)
+            vec.push(&l.comments, Comment { kind: CommentBlock, text: text, line: cline, col: ccol })
             changed = true
         }
     }
@@ -423,13 +453,23 @@ let is_line_continuation(t: tokenize.Token): bool = {
     }
 }
 
-let run(src: string): Vec<tokenize.Token> = {
-    var raw: Vec<tokenize.Token> = vec.make()
+// Variant that returns both the post-ASI token stream and the
+// comment list captured by the lexer. The formatter consumes the
+// comment list; every other caller uses the bare `run` wrapper.
+let run_with_comments(src: string): tokenize.TokenizeResult = {
     var l = make_lexer(src)
+    let toks = run_lexer_pass(&l)
+    TokenizeResult { tokens: toks, comments: l.comments }
+}
+
+let run(src: string): Vec<tokenize.Token> = run_with_comments(src).tokens
+
+let run_lexer_pass(l: *Lexer): Vec<tokenize.Token> = {
+    var raw: Vec<tokenize.Token> = vec.make()
     let kw = build_keywords()
     var running = true
     while running {
-        let t = lex_one(&l, &kw)
+        let t = lex_one(l, &kw)
         match t.kind {
         | TokEOF -> running = false
         | _      -> vec.push(&raw, t)

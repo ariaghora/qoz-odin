@@ -1815,6 +1815,7 @@ typedef struct qoz_Vec__qoz_ast_TypeExpr qoz_Vec__qoz_ast_TypeExpr;
 typedef struct qoz_Vec__qoz_ast_FnParam qoz_Vec__qoz_ast_FnParam;
 typedef struct qoz_Vec__qoz_ast_ClosureParam qoz_Vec__qoz_ast_ClosureParam;
 typedef struct qoz_Vec__qoz_tokenize_Token qoz_Vec__qoz_tokenize_Token;
+typedef struct qoz_Vec__qoz_tokenize_Comment qoz_Vec__qoz_tokenize_Comment;
 typedef struct qoz_Vec__qoz_ast_Pattern qoz_Vec__qoz_ast_Pattern;
 typedef struct qoz_Vec__qoz_ast_CompileIfArm qoz_Vec__qoz_ast_CompileIfArm;
 typedef struct qoz_Map__qoz_string__qoz_ast_Decl qoz_Map__qoz_string__qoz_ast_Decl;
@@ -1864,6 +1865,9 @@ typedef struct qoz_strings_Strbuf qoz_strings_Strbuf;
 typedef struct qoz_os_ProcessResult qoz_os_ProcessResult;
 typedef struct qoz_tokenize_TokenKind qoz_tokenize_TokenKind;
 typedef struct qoz_tokenize_Token qoz_tokenize_Token;
+typedef struct qoz_tokenize_CommentKind qoz_tokenize_CommentKind;
+typedef struct qoz_tokenize_Comment qoz_tokenize_Comment;
+typedef struct qoz_tokenize_TokenizeResult qoz_tokenize_TokenizeResult;
 typedef struct qoz_tokenize_Lexer qoz_tokenize_Lexer;
 typedef struct qoz_ast_Span qoz_ast_Span;
 typedef struct qoz_ast_UnaryOp qoz_ast_UnaryOp;
@@ -2226,15 +2230,100 @@ static uint64_t qoz_hash_tokenize_Token(qoz_tokenize_Token v) {
 static const int32_t qoz_tokenize_Token_offsets[] = { (int32_t)offsetof(struct qoz_tokenize_Token, kind), (int32_t)(offsetof(struct qoz_tokenize_Token, text) + offsetof(qoz_string, data)), (int32_t)(offsetof(struct qoz_tokenize_Token, text) + offsetof(qoz_string, root)) };
 static const qoz_type_desc qoz_tokenize_Token_desc = { QOZ_DESC_OFFSETS, (int32_t)sizeof(struct qoz_tokenize_Token), 3, qoz_tokenize_Token_offsets, 0, 0, 0, NULL, "tokenize_Token" };
 
+struct qoz_tokenize_Comment {
+    qoz_tokenize_CommentKind* kind;
+    qoz_string text;
+    int64_t line;
+    int64_t col;
+};
+
+static bool qoz_eq_tokenize_Comment(qoz_tokenize_Comment a, qoz_tokenize_Comment b) {
+    return a.kind == b.kind && qoz_string_eq(a.text, b.text) && a.line == b.line && a.col == b.col;
+}
+
+static uint64_t qoz_hash_tokenize_Comment(qoz_tokenize_Comment v) {
+    uint64_t h = 0;
+    h = h * 31 + (uint64_t)(v.kind);
+    h = h * 31 + (uint64_t)(qoz_string_hash(v.text));
+    h = h * 31 + (uint64_t)(v.line);
+    h = h * 31 + (uint64_t)(v.col);
+    return h;
+}
+
+static const int32_t qoz_tokenize_Comment_offsets[] = { (int32_t)offsetof(struct qoz_tokenize_Comment, kind), (int32_t)(offsetof(struct qoz_tokenize_Comment, text) + offsetof(qoz_string, data)), (int32_t)(offsetof(struct qoz_tokenize_Comment, text) + offsetof(qoz_string, root)) };
+static const qoz_type_desc qoz_tokenize_Comment_desc = { QOZ_DESC_OFFSETS, (int32_t)sizeof(struct qoz_tokenize_Comment), 3, qoz_tokenize_Comment_offsets, 0, 0, 0, NULL, "tokenize_Comment" };
+
+struct qoz_Vec__qoz_tokenize_Token {
+    qoz_tokenize_Token* data;
+    int64_t len;
+    int64_t cap;
+};
+
+static bool qoz_eq_Vec__qoz_tokenize_Token(qoz_Vec__qoz_tokenize_Token a, qoz_Vec__qoz_tokenize_Token b) {
+    return a.data == b.data && a.len == b.len && a.cap == b.cap;
+}
+
+static uint64_t qoz_hash_Vec__qoz_tokenize_Token(qoz_Vec__qoz_tokenize_Token v) {
+    uint64_t h = 0;
+    h = h * 31 + (uint64_t)(v.data);
+    h = h * 31 + (uint64_t)(v.len);
+    h = h * 31 + (uint64_t)(v.cap);
+    return h;
+}
+
+static const int32_t qoz_Vec__qoz_tokenize_Token_offsets[] = { (int32_t)offsetof(struct qoz_Vec__qoz_tokenize_Token, data) };
+static const qoz_type_desc qoz_Vec__qoz_tokenize_Token_desc = { QOZ_DESC_OFFSETS, (int32_t)sizeof(struct qoz_Vec__qoz_tokenize_Token), 1, qoz_Vec__qoz_tokenize_Token_offsets, 0, 0, 0, NULL, "Vec__qoz_tokenize_Token" };
+
+struct qoz_Vec__qoz_tokenize_Comment {
+    qoz_tokenize_Comment* data;
+    int64_t len;
+    int64_t cap;
+};
+
+static bool qoz_eq_Vec__qoz_tokenize_Comment(qoz_Vec__qoz_tokenize_Comment a, qoz_Vec__qoz_tokenize_Comment b) {
+    return a.data == b.data && a.len == b.len && a.cap == b.cap;
+}
+
+static uint64_t qoz_hash_Vec__qoz_tokenize_Comment(qoz_Vec__qoz_tokenize_Comment v) {
+    uint64_t h = 0;
+    h = h * 31 + (uint64_t)(v.data);
+    h = h * 31 + (uint64_t)(v.len);
+    h = h * 31 + (uint64_t)(v.cap);
+    return h;
+}
+
+static const int32_t qoz_Vec__qoz_tokenize_Comment_offsets[] = { (int32_t)offsetof(struct qoz_Vec__qoz_tokenize_Comment, data) };
+static const qoz_type_desc qoz_Vec__qoz_tokenize_Comment_desc = { QOZ_DESC_OFFSETS, (int32_t)sizeof(struct qoz_Vec__qoz_tokenize_Comment), 1, qoz_Vec__qoz_tokenize_Comment_offsets, 0, 0, 0, NULL, "Vec__qoz_tokenize_Comment" };
+
+struct qoz_tokenize_TokenizeResult {
+    qoz_Vec__qoz_tokenize_Token tokens;
+    qoz_Vec__qoz_tokenize_Comment comments;
+};
+
+static bool qoz_eq_tokenize_TokenizeResult(qoz_tokenize_TokenizeResult a, qoz_tokenize_TokenizeResult b) {
+    return qoz_eq_Vec__qoz_tokenize_Token(a.tokens, b.tokens) && qoz_eq_Vec__qoz_tokenize_Comment(a.comments, b.comments);
+}
+
+static uint64_t qoz_hash_tokenize_TokenizeResult(qoz_tokenize_TokenizeResult v) {
+    uint64_t h = 0;
+    h = h * 31 + (uint64_t)(qoz_hash_Vec__qoz_tokenize_Token(v.tokens));
+    h = h * 31 + (uint64_t)(qoz_hash_Vec__qoz_tokenize_Comment(v.comments));
+    return h;
+}
+
+static const int32_t qoz_tokenize_TokenizeResult_offsets[] = { (int32_t)offsetof(struct qoz_tokenize_TokenizeResult, tokens), (int32_t)offsetof(struct qoz_tokenize_TokenizeResult, comments) };
+static const qoz_type_desc qoz_tokenize_TokenizeResult_desc = { QOZ_DESC_OFFSETS, (int32_t)sizeof(struct qoz_tokenize_TokenizeResult), 2, qoz_tokenize_TokenizeResult_offsets, 0, 0, 0, NULL, "tokenize_TokenizeResult" };
+
 struct qoz_tokenize_Lexer {
     qoz_string src;
     int64_t pos;
     int64_t line;
     int64_t col;
+    qoz_Vec__qoz_tokenize_Comment comments;
 };
 
 static bool qoz_eq_tokenize_Lexer(qoz_tokenize_Lexer a, qoz_tokenize_Lexer b) {
-    return qoz_string_eq(a.src, b.src) && a.pos == b.pos && a.line == b.line && a.col == b.col;
+    return qoz_string_eq(a.src, b.src) && a.pos == b.pos && a.line == b.line && a.col == b.col && qoz_eq_Vec__qoz_tokenize_Comment(a.comments, b.comments);
 }
 
 static uint64_t qoz_hash_tokenize_Lexer(qoz_tokenize_Lexer v) {
@@ -2243,11 +2332,12 @@ static uint64_t qoz_hash_tokenize_Lexer(qoz_tokenize_Lexer v) {
     h = h * 31 + (uint64_t)(v.pos);
     h = h * 31 + (uint64_t)(v.line);
     h = h * 31 + (uint64_t)(v.col);
+    h = h * 31 + (uint64_t)(qoz_hash_Vec__qoz_tokenize_Comment(v.comments));
     return h;
 }
 
-static const int32_t qoz_tokenize_Lexer_offsets[] = { (int32_t)(offsetof(struct qoz_tokenize_Lexer, src) + offsetof(qoz_string, data)), (int32_t)(offsetof(struct qoz_tokenize_Lexer, src) + offsetof(qoz_string, root)) };
-static const qoz_type_desc qoz_tokenize_Lexer_desc = { QOZ_DESC_OFFSETS, (int32_t)sizeof(struct qoz_tokenize_Lexer), 2, qoz_tokenize_Lexer_offsets, 0, 0, 0, NULL, "tokenize_Lexer" };
+static const int32_t qoz_tokenize_Lexer_offsets[] = { (int32_t)(offsetof(struct qoz_tokenize_Lexer, src) + offsetof(qoz_string, data)), (int32_t)(offsetof(struct qoz_tokenize_Lexer, src) + offsetof(qoz_string, root)), (int32_t)offsetof(struct qoz_tokenize_Lexer, comments) };
+static const qoz_type_desc qoz_tokenize_Lexer_desc = { QOZ_DESC_OFFSETS, (int32_t)sizeof(struct qoz_tokenize_Lexer), 3, qoz_tokenize_Lexer_offsets, 0, 0, 0, NULL, "tokenize_Lexer" };
 
 struct qoz_ast_Span {
     qoz_string file;
@@ -2477,27 +2567,6 @@ static uint64_t qoz_hash_ast_CompileIfArm(qoz_ast_CompileIfArm v) {
 
 static const int32_t qoz_ast_CompileIfArm_offsets[] = { (int32_t)offsetof(struct qoz_ast_CompileIfArm, cond), (int32_t)offsetof(struct qoz_ast_CompileIfArm, decls) };
 static const qoz_type_desc qoz_ast_CompileIfArm_desc = { QOZ_DESC_OFFSETS, (int32_t)sizeof(struct qoz_ast_CompileIfArm), 2, qoz_ast_CompileIfArm_offsets, 0, 0, 0, NULL, "ast_CompileIfArm" };
-
-struct qoz_Vec__qoz_tokenize_Token {
-    qoz_tokenize_Token* data;
-    int64_t len;
-    int64_t cap;
-};
-
-static bool qoz_eq_Vec__qoz_tokenize_Token(qoz_Vec__qoz_tokenize_Token a, qoz_Vec__qoz_tokenize_Token b) {
-    return a.data == b.data && a.len == b.len && a.cap == b.cap;
-}
-
-static uint64_t qoz_hash_Vec__qoz_tokenize_Token(qoz_Vec__qoz_tokenize_Token v) {
-    uint64_t h = 0;
-    h = h * 31 + (uint64_t)(v.data);
-    h = h * 31 + (uint64_t)(v.len);
-    h = h * 31 + (uint64_t)(v.cap);
-    return h;
-}
-
-static const int32_t qoz_Vec__qoz_tokenize_Token_offsets[] = { (int32_t)offsetof(struct qoz_Vec__qoz_tokenize_Token, data) };
-static const qoz_type_desc qoz_Vec__qoz_tokenize_Token_desc = { QOZ_DESC_OFFSETS, (int32_t)sizeof(struct qoz_Vec__qoz_tokenize_Token), 1, qoz_Vec__qoz_tokenize_Token_offsets, 0, 0, 0, NULL, "Vec__qoz_tokenize_Token" };
 
 struct qoz_parse_Parser {
     qoz_Vec__qoz_tokenize_Token tokens;
@@ -3727,6 +3796,23 @@ static const qoz_variant_desc qoz_tokenize_TokenKind_variants[] = {
     { qoz_tokenize_TokenKind_TokEOF, 0, NULL },
 };
 static const qoz_type_desc qoz_tokenize_TokenKind_desc = { QOZ_DESC_ADT, (int32_t)sizeof(struct qoz_tokenize_TokenKind), 0, NULL, (int32_t)offsetof(struct qoz_tokenize_TokenKind, tag), 0, 9, qoz_tokenize_TokenKind_variants, "tokenize_TokenKind" };
+
+typedef enum {
+    qoz_tokenize_CommentKind_CommentLine,
+    qoz_tokenize_CommentKind_CommentDoc,
+    qoz_tokenize_CommentKind_CommentBlock,
+} qoz_tokenize_CommentKind_tag;
+
+struct qoz_tokenize_CommentKind {
+    qoz_tokenize_CommentKind_tag tag;
+};
+
+static const qoz_variant_desc qoz_tokenize_CommentKind_variants[] = {
+    { qoz_tokenize_CommentKind_CommentLine, 0, NULL },
+    { qoz_tokenize_CommentKind_CommentDoc, 0, NULL },
+    { qoz_tokenize_CommentKind_CommentBlock, 0, NULL },
+};
+static const qoz_type_desc qoz_tokenize_CommentKind_desc = { QOZ_DESC_ADT, (int32_t)sizeof(struct qoz_tokenize_CommentKind), 0, NULL, (int32_t)offsetof(struct qoz_tokenize_CommentKind, tag), 0, 3, qoz_tokenize_CommentKind_variants, "tokenize_CommentKind" };
 
 typedef enum {
     qoz_ast_UnaryOp_UOpNeg,
@@ -5139,6 +5225,24 @@ static qoz_tokenize_TokenKind *qoz_make_tokenize_TokenKind_TokEOF(void) {
     return p;
 }
 
+static qoz_tokenize_CommentKind *qoz_make_tokenize_CommentKind_CommentLine(void) {
+    qoz_tokenize_CommentKind *p = qoz_gc_alloc(sizeof(qoz_tokenize_CommentKind), &qoz_tokenize_CommentKind_desc);
+    p->tag = qoz_tokenize_CommentKind_CommentLine;
+    return p;
+}
+
+static qoz_tokenize_CommentKind *qoz_make_tokenize_CommentKind_CommentDoc(void) {
+    qoz_tokenize_CommentKind *p = qoz_gc_alloc(sizeof(qoz_tokenize_CommentKind), &qoz_tokenize_CommentKind_desc);
+    p->tag = qoz_tokenize_CommentKind_CommentDoc;
+    return p;
+}
+
+static qoz_tokenize_CommentKind *qoz_make_tokenize_CommentKind_CommentBlock(void) {
+    qoz_tokenize_CommentKind *p = qoz_gc_alloc(sizeof(qoz_tokenize_CommentKind), &qoz_tokenize_CommentKind_desc);
+    p->tag = qoz_tokenize_CommentKind_CommentBlock;
+    return p;
+}
+
 static qoz_ast_UnaryOp *qoz_make_ast_UnaryOp_UOpNeg(void) {
     qoz_ast_UnaryOp *p = qoz_gc_alloc(sizeof(qoz_ast_UnaryOp), &qoz_ast_UnaryOp_desc);
     p->tag = qoz_ast_UnaryOp_UOpNeg;
@@ -6105,7 +6209,9 @@ qoz_Map__qoz_string__bool qoz_tokenize_build_keywords(void);
 qoz_tokenize_Token qoz_tokenize_lex_one(qoz_tokenize_Lexer* l, qoz_Map__qoz_string__bool* kw);
 bool qoz_tokenize_is_stmt_ender(qoz_tokenize_Token t);
 bool qoz_tokenize_is_line_continuation(qoz_tokenize_Token t);
+qoz_tokenize_TokenizeResult qoz_tokenize_run_with_comments(qoz_string src);
 qoz_Vec__qoz_tokenize_Token qoz_tokenize_run(qoz_string src);
+qoz_Vec__qoz_tokenize_Token qoz_tokenize_run_lexer_pass(qoz_tokenize_Lexer* l);
 qoz_ast_Span qoz_ast_make_span(qoz_string file, int64_t line, int64_t col);
 qoz_ast_Span qoz_ast_span_of_expr(qoz_ast_Expr* e);
 qoz_parse_Parser qoz_parse_make_parser(qoz_Vec__qoz_tokenize_Token tokens, qoz_string file);
@@ -6610,8 +6716,10 @@ void qoz_vec_push__qoz_ast_ClosureParam(qoz_Vec__qoz_ast_ClosureParam* v, qoz_as
 qoz_Option__qoz_Vec__qoz_string* qoz_map_get__qoz_string__qoz_Vec__qoz_string(qoz_Map__qoz_string__qoz_Vec__qoz_string* m, qoz_string key);
 void qoz_map_set__qoz_string__qoz_Vec__qoz_string(qoz_Map__qoz_string__qoz_Vec__qoz_string* m, qoz_string key, qoz_Vec__qoz_string value);
 qoz_Option__qoz_ast_Decl* qoz_map_get__qoz_string__qoz_ast_Decl(qoz_Map__qoz_string__qoz_ast_Decl* m, qoz_string key);
+qoz_Vec__qoz_tokenize_Comment qoz_vec_make__qoz_tokenize_Comment(void);
 qoz_Vec__qoz_tokenize_Token qoz_vec_make__qoz_tokenize_Token(void);
 void qoz_vec_push__qoz_tokenize_Token(qoz_Vec__qoz_tokenize_Token* v, qoz_tokenize_Token x);
+void qoz_vec_push__qoz_tokenize_Comment(qoz_Vec__qoz_tokenize_Comment* v, qoz_tokenize_Comment x);
 qoz_Option__bool* qoz_map_get__qoz_string__bool(qoz_Map__qoz_string__bool* m, qoz_string key);
 qoz_Vec__qoz_ast_Pattern qoz_vec_make__qoz_ast_Pattern(void);
 void qoz_vec_push__qoz_ast_Pattern(qoz_Vec__qoz_ast_Pattern* v, qoz_ast_Pattern* x);
@@ -6677,6 +6785,7 @@ int64_t qoz_map_probe__qoz_string__qoz_Vec__qoz_string(qoz_Map__qoz_string__qoz_
 void qoz_map_insert__qoz_string__qoz_Vec__qoz_string(qoz_Map__qoz_string__qoz_Vec__qoz_string* m, qoz_string key, qoz_Vec__qoz_string value);
 int64_t qoz_map_probe__qoz_string__qoz_ast_Decl(qoz_Map__qoz_string__qoz_ast_Decl* m, qoz_string key);
 void qoz_vec_grow__qoz_tokenize_Token(qoz_Vec__qoz_tokenize_Token* v);
+void qoz_vec_grow__qoz_tokenize_Comment(qoz_Vec__qoz_tokenize_Comment* v);
 void qoz_vec_grow__qoz_ast_Pattern(qoz_Vec__qoz_ast_Pattern* v);
 void qoz_vec_grow__qoz_ast_CompileIfArm(qoz_Vec__qoz_ast_CompileIfArm* v);
 void qoz_vec_grow__qoz_check_TypeError(qoz_Vec__qoz_check_TypeError* v);
@@ -7578,13 +7687,13 @@ qoz_os_ProcessResult qoz_os_process_exec_input(qoz_Vec__qoz_string argv, qoz_str
 qoz_tokenize_Lexer qoz_tokenize_make_lexer(qoz_string src) {
     int64_t _qoz_shadow_guard = qoz_gc_shadow_top();
     qoz_frame_push("tokenize_make_lexer");
-    qoz_frame_pop(); qoz_gc_shadow_set_top(_qoz_shadow_guard); return ((qoz_tokenize_Lexer){ .src = src, .pos = 0, .line = 1, .col = 1 });
+    qoz_frame_pop(); qoz_gc_shadow_set_top(_qoz_shadow_guard); return ((qoz_tokenize_Lexer){ .src = src, .pos = 0, .line = 1, .col = 1, .comments = qoz_vec_make__qoz_tokenize_Comment() });
 }
 
 qoz_tokenize_Lexer qoz_tokenize_make_lexer_at(qoz_string src, int64_t line, int64_t col) {
     int64_t _qoz_shadow_guard = qoz_gc_shadow_top();
     qoz_frame_push("tokenize_make_lexer_at");
-    qoz_frame_pop(); qoz_gc_shadow_set_top(_qoz_shadow_guard); return ((qoz_tokenize_Lexer){ .src = src, .pos = 0, .line = line, .col = col });
+    qoz_frame_pop(); qoz_gc_shadow_set_top(_qoz_shadow_guard); return ((qoz_tokenize_Lexer){ .src = src, .pos = 0, .line = line, .col = col, .comments = qoz_vec_make__qoz_tokenize_Comment() });
 }
 
 qoz_Vec__qoz_tokenize_Token qoz_tokenize_run_at(qoz_string src, int64_t start_line, int64_t start_col) {
@@ -7599,7 +7708,7 @@ void qoz_tokenize_lex_die(qoz_tokenize_Lexer* l, qoz_string msg) {
     qoz_gc_push_root(&l);
     qoz_string _qoz_bv_49;
     {
-        void* _qoz_sb_88_17 = qoz_interp_init(); qoz_gc_push_root(&_qoz_sb_88_17); qoz_interp_push_str(_qoz_sb_88_17, QOZ_STR_LIT("tokenize error at line ")); qoz_interp_push_i64(_qoz_sb_88_17, l->line); qoz_interp_push_str(_qoz_sb_88_17, QOZ_STR_LIT(" col ")); qoz_interp_push_i64(_qoz_sb_88_17, l->col); qoz_interp_push_str(_qoz_sb_88_17, QOZ_STR_LIT(": ")); qoz_interp_push_str(_qoz_sb_88_17, msg); _qoz_bv_49 = qoz_interp_finish(_qoz_sb_88_17);
+        void* _qoz_sb_106_17 = qoz_interp_init(); qoz_gc_push_root(&_qoz_sb_106_17); qoz_interp_push_str(_qoz_sb_106_17, QOZ_STR_LIT("tokenize error at line ")); qoz_interp_push_i64(_qoz_sb_106_17, l->line); qoz_interp_push_str(_qoz_sb_106_17, QOZ_STR_LIT(" col ")); qoz_interp_push_i64(_qoz_sb_106_17, l->col); qoz_interp_push_str(_qoz_sb_106_17, QOZ_STR_LIT(": ")); qoz_interp_push_str(_qoz_sb_106_17, msg); _qoz_bv_49 = qoz_interp_finish(_qoz_sb_106_17);
     }
     qoz_fmt_println(_qoz_bv_49); qoz_os_exit(1); 
     return;
@@ -7672,7 +7781,7 @@ void qoz_tokenize_skip_whitespace_and_comments(qoz_tokenize_Lexer* l) {
     int64_t _qoz_shadow_guard = qoz_gc_shadow_top();
     qoz_frame_push("tokenize_skip_whitespace_and_comments");
     qoz_gc_push_root(&l);
-    bool changed = true; while (changed) { changed = false; while ((l->pos < (l->src).len) && qoz_tokenize_is_space(qoz_tokenize_lex_at(l))) { qoz_tokenize_lex_advance(l); changed = true; } if (((l->pos + 1 < (l->src).len) && (qoz_tokenize_lex_at(l) == 47)) && (qoz_strings_byte_at(l->src, l->pos + 1) == 47)) { while ((l->pos < (l->src).len) && (qoz_tokenize_lex_at(l) != 10)) { qoz_tokenize_lex_advance(l); } changed = true; } if (((l->pos + 1 < (l->src).len) && (qoz_tokenize_lex_at(l) == 47)) && (qoz_strings_byte_at(l->src, l->pos + 1) == 42)) { qoz_tokenize_lex_advance(l); qoz_tokenize_lex_advance(l); int64_t depth = 1; while ((depth > 0) && (l->pos < (l->src).len)) { if (((l->pos + 1 < (l->src).len) && (qoz_tokenize_lex_at(l) == 47)) && (qoz_strings_byte_at(l->src, l->pos + 1) == 42)) { qoz_tokenize_lex_advance(l); qoz_tokenize_lex_advance(l); depth = depth + 1; }  else if (((l->pos + 1 < (l->src).len) && (qoz_tokenize_lex_at(l) == 42)) && (qoz_strings_byte_at(l->src, l->pos + 1) == 47)) { qoz_tokenize_lex_advance(l); qoz_tokenize_lex_advance(l); depth = depth - 1; }  else { qoz_tokenize_lex_advance(l); } } if (depth > 0) { qoz_tokenize_lex_die(l, QOZ_STR_LIT("unterminated /* block comment */ at end of file")); } changed = true; } } 
+    bool changed = true; while (changed) { changed = false; while ((l->pos < (l->src).len) && qoz_tokenize_is_space(qoz_tokenize_lex_at(l))) { qoz_tokenize_lex_advance(l); changed = true; } if (((l->pos + 1 < (l->src).len) && (qoz_tokenize_lex_at(l) == 47)) && (qoz_strings_byte_at(l->src, l->pos + 1) == 47)) { int64_t start = l->pos; int64_t cline = l->line; int64_t ccol = l->col; bool is_doc = (l->pos + 2 < (l->src).len) && (qoz_strings_byte_at(l->src, l->pos + 2) == 47); while ((l->pos < (l->src).len) && (qoz_tokenize_lex_at(l) != 10)) { qoz_tokenize_lex_advance(l); } qoz_string text = qoz_strings_slice(l->src, start, l->pos); qoz_tokenize_CommentKind* kind = ((is_doc) ? qoz_make_tokenize_CommentKind_CommentDoc() : qoz_make_tokenize_CommentKind_CommentLine()); qoz_gc_push_root(&kind); qoz_vec_push__qoz_tokenize_Comment(&l->comments, ((qoz_tokenize_Comment){ .kind = kind, .text = text, .line = cline, .col = ccol })); changed = true; } if (((l->pos + 1 < (l->src).len) && (qoz_tokenize_lex_at(l) == 47)) && (qoz_strings_byte_at(l->src, l->pos + 1) == 42)) { int64_t start = l->pos; int64_t cline = l->line; int64_t ccol = l->col; qoz_tokenize_lex_advance(l); qoz_tokenize_lex_advance(l); int64_t depth = 1; while ((depth > 0) && (l->pos < (l->src).len)) { if (((l->pos + 1 < (l->src).len) && (qoz_tokenize_lex_at(l) == 47)) && (qoz_strings_byte_at(l->src, l->pos + 1) == 42)) { qoz_tokenize_lex_advance(l); qoz_tokenize_lex_advance(l); depth = depth + 1; }  else if (((l->pos + 1 < (l->src).len) && (qoz_tokenize_lex_at(l) == 42)) && (qoz_strings_byte_at(l->src, l->pos + 1) == 47)) { qoz_tokenize_lex_advance(l); qoz_tokenize_lex_advance(l); depth = depth - 1; }  else { qoz_tokenize_lex_advance(l); } } if (depth > 0) { qoz_tokenize_lex_die(l, QOZ_STR_LIT("unterminated /* block comment */ at end of file")); } qoz_string text = qoz_strings_slice(l->src, start, l->pos); qoz_vec_push__qoz_tokenize_Comment(&l->comments, ((qoz_tokenize_Comment){ .kind = qoz_make_tokenize_CommentKind_CommentBlock(), .text = text, .line = cline, .col = ccol })); changed = true; } } 
     return;
 }
 
@@ -7725,10 +7834,23 @@ bool qoz_tokenize_is_line_continuation(qoz_tokenize_Token t) {
     _qoz_mv_1 = (_qoz_bv_53);  break; } default: { _qoz_mv_1 = (false);  break; } } qoz_frame_pop(); qoz_gc_shadow_set_top(_qoz_shadow_guard); return _qoz_mv_1;
 }
 
+qoz_tokenize_TokenizeResult qoz_tokenize_run_with_comments(qoz_string src) {
+    int64_t _qoz_shadow_guard = qoz_gc_shadow_top();
+    qoz_frame_push("tokenize_run_with_comments");
+    qoz_tokenize_Lexer l = qoz_tokenize_make_lexer(src); qoz_Vec__qoz_tokenize_Token toks = qoz_tokenize_run_lexer_pass(&l); qoz_frame_pop(); qoz_gc_shadow_set_top(_qoz_shadow_guard); return ((qoz_tokenize_TokenizeResult){ .tokens = toks, .comments = l.comments });
+}
+
 qoz_Vec__qoz_tokenize_Token qoz_tokenize_run(qoz_string src) {
     int64_t _qoz_shadow_guard = qoz_gc_shadow_top();
     qoz_frame_push("tokenize_run");
-    qoz_Vec__qoz_tokenize_Token raw = qoz_vec_make__qoz_tokenize_Token(); qoz_tokenize_Lexer l = qoz_tokenize_make_lexer(src); qoz_Map__qoz_string__bool kw = qoz_tokenize_build_keywords(); bool running = true; while (running) { qoz_tokenize_Token t = qoz_tokenize_lex_one(&l, &kw); qoz_tokenize_TokenKind* _qoz_ms_1 = t.kind; switch (_qoz_ms_1->tag) { case qoz_tokenize_TokenKind_TokEOF: { running = false;  break; } default: { qoz_vec_push__qoz_tokenize_Token(&raw, t);  break; } } 0; } qoz_Vec__qoz_tokenize_Token out = qoz_vec_make__qoz_tokenize_Token(); int64_t paren_depth = 0; int64_t i = 0; while (i < (raw.len)) { qoz_tokenize_Token cur = raw.data[i]; if ((i > 0) && (paren_depth == 0)) { qoz_tokenize_Token prev = raw.data[i - 1]; if (((cur.line > prev.line) && qoz_tokenize_is_stmt_ender(prev)) && !qoz_tokenize_is_line_continuation(cur)) { qoz_vec_push__qoz_tokenize_Token(&out, ((qoz_tokenize_Token){ .kind = qoz_make_tokenize_TokenKind_TokPunct(), .text = QOZ_STR_LIT(";"), .line = prev.line, .col = prev.col })); } } qoz_vec_push__qoz_tokenize_Token(&out, cur); qoz_tokenize_TokenKind* _qoz_ms_2 = cur.kind; switch (_qoz_ms_2->tag) { case qoz_tokenize_TokenKind_TokPunct: { { if (qoz_strings_eq_raw(cur.text, QOZ_STR_LIT("("))) { paren_depth = paren_depth + 1; }  else if (qoz_strings_eq_raw(cur.text, QOZ_STR_LIT("["))) { paren_depth = paren_depth + 1; }  else if (qoz_strings_eq_raw(cur.text, QOZ_STR_LIT(")"))) { paren_depth = paren_depth - 1; }  else if (qoz_strings_eq_raw(cur.text, QOZ_STR_LIT("]"))) { paren_depth = paren_depth - 1; } }  break; } default: { { }  break; } } 0; i = i + 1; } qoz_frame_pop(); qoz_gc_shadow_set_top(_qoz_shadow_guard); return out;
+    qoz_frame_pop(); qoz_gc_shadow_set_top(_qoz_shadow_guard); return qoz_tokenize_run_with_comments(src).tokens;
+}
+
+qoz_Vec__qoz_tokenize_Token qoz_tokenize_run_lexer_pass(qoz_tokenize_Lexer* l) {
+    int64_t _qoz_shadow_guard = qoz_gc_shadow_top();
+    qoz_frame_push("tokenize_run_lexer_pass");
+    qoz_gc_push_root(&l);
+    qoz_Vec__qoz_tokenize_Token raw = qoz_vec_make__qoz_tokenize_Token(); qoz_Map__qoz_string__bool kw = qoz_tokenize_build_keywords(); bool running = true; while (running) { qoz_tokenize_Token t = qoz_tokenize_lex_one(l, &kw); qoz_tokenize_TokenKind* _qoz_ms_1 = t.kind; switch (_qoz_ms_1->tag) { case qoz_tokenize_TokenKind_TokEOF: { running = false;  break; } default: { qoz_vec_push__qoz_tokenize_Token(&raw, t);  break; } } 0; } qoz_Vec__qoz_tokenize_Token out = qoz_vec_make__qoz_tokenize_Token(); int64_t paren_depth = 0; int64_t i = 0; while (i < (raw.len)) { qoz_tokenize_Token cur = raw.data[i]; if ((i > 0) && (paren_depth == 0)) { qoz_tokenize_Token prev = raw.data[i - 1]; if (((cur.line > prev.line) && qoz_tokenize_is_stmt_ender(prev)) && !qoz_tokenize_is_line_continuation(cur)) { qoz_vec_push__qoz_tokenize_Token(&out, ((qoz_tokenize_Token){ .kind = qoz_make_tokenize_TokenKind_TokPunct(), .text = QOZ_STR_LIT(";"), .line = prev.line, .col = prev.col })); } } qoz_vec_push__qoz_tokenize_Token(&out, cur); qoz_tokenize_TokenKind* _qoz_ms_2 = cur.kind; switch (_qoz_ms_2->tag) { case qoz_tokenize_TokenKind_TokPunct: { { if (qoz_strings_eq_raw(cur.text, QOZ_STR_LIT("("))) { paren_depth = paren_depth + 1; }  else if (qoz_strings_eq_raw(cur.text, QOZ_STR_LIT("["))) { paren_depth = paren_depth + 1; }  else if (qoz_strings_eq_raw(cur.text, QOZ_STR_LIT(")"))) { paren_depth = paren_depth - 1; }  else if (qoz_strings_eq_raw(cur.text, QOZ_STR_LIT("]"))) { paren_depth = paren_depth - 1; } }  break; } default: { { }  break; } } 0; i = i + 1; } qoz_frame_pop(); qoz_gc_shadow_set_top(_qoz_shadow_guard); return out;
 }
 
 qoz_ast_Span qoz_ast_make_span(qoz_string file, int64_t line, int64_t col) {
@@ -13561,6 +13683,12 @@ qoz_Option__qoz_ast_Decl* qoz_map_get__qoz_string__qoz_ast_Decl(qoz_Map__qoz_str
     if (m->cap == 0) { return qoz_make_Option__qoz_ast_Decl_None();} int64_t idx = qoz_map_probe__qoz_string__qoz_ast_Decl(m, key); if (m->slots[idx].occupied) { if (!m->slots[idx].deleted) { return qoz_make_Option__qoz_ast_Decl_Some(m->slots[idx].value);} } qoz_frame_pop(); qoz_gc_shadow_set_top(_qoz_shadow_guard); return qoz_make_Option__qoz_ast_Decl_None();
 }
 
+qoz_Vec__qoz_tokenize_Comment qoz_vec_make__qoz_tokenize_Comment(void) {
+    int64_t _qoz_shadow_guard = qoz_gc_shadow_top();
+    qoz_frame_push("qoz_vec_make__qoz_tokenize_Comment");
+    qoz_frame_pop(); qoz_gc_shadow_set_top(_qoz_shadow_guard); return ((qoz_Vec__qoz_tokenize_Comment){ .data = NULL, .len = 0, .cap = 0 });
+}
+
 qoz_Vec__qoz_tokenize_Token qoz_vec_make__qoz_tokenize_Token(void) {
     int64_t _qoz_shadow_guard = qoz_gc_shadow_top();
     qoz_frame_push("qoz_vec_make__qoz_tokenize_Token");
@@ -13572,6 +13700,14 @@ void qoz_vec_push__qoz_tokenize_Token(qoz_Vec__qoz_tokenize_Token* v, qoz_tokeni
     qoz_frame_push("qoz_vec_push__qoz_tokenize_Token");
     qoz_gc_push_root(&v);
     if (v->len == v->cap) { qoz_vec_grow__qoz_tokenize_Token(v); } v->data[v->len] = x; v->len = v->len + 1; 
+    return;
+}
+
+void qoz_vec_push__qoz_tokenize_Comment(qoz_Vec__qoz_tokenize_Comment* v, qoz_tokenize_Comment x) {
+    int64_t _qoz_shadow_guard = qoz_gc_shadow_top();
+    qoz_frame_push("qoz_vec_push__qoz_tokenize_Comment");
+    qoz_gc_push_root(&v);
+    if (v->len == v->cap) { qoz_vec_grow__qoz_tokenize_Comment(v); } v->data[v->len] = x; v->len = v->len + 1; 
     return;
 }
 
@@ -14058,6 +14194,14 @@ void qoz_vec_grow__qoz_tokenize_Token(qoz_Vec__qoz_tokenize_Token* v) {
     qoz_frame_push("qoz_vec_grow__qoz_tokenize_Token");
     qoz_gc_push_root(&v);
     int64_t new_cap = ((v->cap == 0) ? 8 : v->cap * 2); qoz_tokenize_Token* new_data = ((qoz_tokenize_Token*)qoz_realloc(((void*)v->data), new_cap * (int64_t)sizeof(qoz_tokenize_Token))); qoz_gc_push_root(&new_data); v->data = new_data; v->cap = new_cap; 
+    return;
+}
+
+void qoz_vec_grow__qoz_tokenize_Comment(qoz_Vec__qoz_tokenize_Comment* v) {
+    int64_t _qoz_shadow_guard = qoz_gc_shadow_top();
+    qoz_frame_push("qoz_vec_grow__qoz_tokenize_Comment");
+    qoz_gc_push_root(&v);
+    int64_t new_cap = ((v->cap == 0) ? 8 : v->cap * 2); qoz_tokenize_Comment* new_data = ((qoz_tokenize_Comment*)qoz_realloc(((void*)v->data), new_cap * (int64_t)sizeof(qoz_tokenize_Comment))); qoz_gc_push_root(&new_data); v->data = new_data; v->cap = new_cap; 
     return;
 }
 
