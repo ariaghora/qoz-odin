@@ -942,11 +942,20 @@ let c_enum_has_variant(d: ast.Decl, variant: string): bool = {
 
 // When `base.name` reads a C-enum variant, return the enum type.
 // `Some(t)` indicates the field resolved; `None` lets the caller
-// fall through to ordinary struct/record field resolution.
+// fall through to ordinary struct/record field resolution. The
+// base is either a bare identifier (the enum's renamed name in
+// the same package) or `pkg.EnumShort`, where the qualify pass
+// has renamed the registered enum to `<pkg>_<EnumShort>`.
 let c_enum_variant_ref(tc: *check.TyContext, base: ast.Expr, name: string): Option<ty.Ty> = {
     let base_name = match base {
     | EIdent(_, n) -> n
-    | _            -> ""
+    | EField(_, inner, enum_short) -> {
+        match inner {
+        | EIdent(_, pkg) -> strings.cat(strings.cat(pkg, "_"), enum_short)
+        | _              -> ""
+        }
+    }
+    | _ -> ""
     }
     if strings.eq_raw(base_name, "") { return None }
     if let Some(home) = c_enum_home_short(tc, base_name) {

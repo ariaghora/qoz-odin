@@ -2102,16 +2102,24 @@ let infer_value_te(e: *Emitter, v: ast.Expr): ast.TypeExpr = {
     }
     | EField(sp, base, name) -> {
         // `EnumName.Variant` for a C-style enum lifts to the enum's
-        // own TypeExpr, not a field access on a value. Detect this
-        // before infer_base_typeexpr tries to look up the enum name
-        // as a local and dies.
-        match base {
-        | EIdent(_, enum_name) -> {
-            if map.contains(&e.c_enum_decls, enum_name) {
-                return single_named_te(sp, enum_name)
+        // own TypeExpr. The base is either the renamed enum name
+        // or the qualified form `pkg.EnumShort`. Detect both before
+        // infer_base_typeexpr tries to look up the enum name as a
+        // local and dies.
+        let enum_lookup = match base {
+        | EIdent(_, enum_name) -> enum_name
+        | EField(_, inner, enum_short) -> {
+            match inner {
+            | EIdent(_, pkg) -> strings.cat(strings.cat(pkg, "_"), enum_short)
+            | _              -> ""
             }
         }
-        | _ -> { }
+        | _ -> ""
+        }
+        if !strings.eq_raw(enum_lookup, "") {
+            if map.contains(&e.c_enum_decls, enum_lookup) {
+                return single_named_te(sp, enum_lookup)
+            }
         }
         field_typeexpr_for(e, infer_base_typeexpr(e, base), name, sp)
     }
@@ -2859,10 +2867,21 @@ let emit_field(e: *Emitter, base: ast.Expr, name: string) = {
     }
     // `EnumName.Variant` for a C-style enum: emit the variant's
     // integer literal cast to the underlying type so the value
-    // carries the right C type at call sites.
-    match base {
-    | EIdent(_, enum_name) -> {
-        match map.get(&e.c_enum_decls, enum_name) {
+    // carries the right C type at call sites. The base is either
+    // the renamed enum name (`pkg_EnumShort`) or the package-
+    // qualified form `pkg.EnumShort`.
+    let enum_lookup = match base {
+    | EIdent(_, enum_name) -> enum_name
+    | EField(_, inner, enum_short) -> {
+        match inner {
+        | EIdent(_, pkg) -> strings.cat(strings.cat(pkg, "_"), enum_short)
+        | _              -> ""
+        }
+    }
+    | _ -> ""
+    }
+    if !strings.eq_raw(enum_lookup, "") {
+        match map.get(&e.c_enum_decls, enum_lookup) {
         | Some(d) -> {
             match d {
             | DCEnum(_, _, underlying, variants) -> {
@@ -2876,13 +2895,12 @@ let emit_field(e: *Emitter, base: ast.Expr, name: string) = {
                     i += 1
                 }
             }
+            // Only DCEnum is stored in c_enum_decls.
             | _ -> { }
             }
         }
         | None -> { }
         }
-    }
-    | _ -> { }
     }
     // `pkg.NAME` reading a top-level constant. The const is emitted
     // as a zero-arg function so its initializer can be any
