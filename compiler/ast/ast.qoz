@@ -153,6 +153,11 @@ type Attribute = {
     has_arg:    bool,
 }
 
+type CompileIfArm = {
+    cond:  ast.Expr,
+    decls: Vec<ast.Decl>,
+}
+
 type Decl =
     | DImport(ast.Span, Vec<string>, string)
     | DFn(ast.Span, string, Vec<string>, Vec<ast.FnParam>, ast.TypeExpr, ast.Expr, string)
@@ -162,6 +167,7 @@ type Decl =
     | DConst(ast.Span, string, ast.TypeExpr, ast.Expr)
     | DExternal(ast.Span, string, string, Vec<ast.FnParam>, ast.TypeExpr)
     | DLink(ast.Span, ast.LinkKind, string)
+    | DCompileIf(ast.Span, Vec<ast.CompileIfArm>, Vec<ast.Decl>)
 
 type File = {
     path:  string,

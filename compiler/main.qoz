@@ -11,6 +11,23 @@ import compiler/parse
 import compiler/check
 import compiler/emit
 
+@link_name("qoz_target_os")
+external let target_os_raw(): string
+
+@link_name("qoz_target_arch")
+external let target_arch_raw(): string
+
+@link_name("qoz_target_pointer_size")
+external let target_pointer_size_raw(): i64
+
+type CompileCtx = {
+    target_os:           string,
+    target_arch:         string,
+    target_pointer_size: i64,
+    debug:               bool,
+    qoz_root:            string,
+}
+
 let decl_kind_name(d: ast.Decl): string = {
     match d {
     | DImport(_, _, _)                 -> "import"
@@ -21,6 +38,7 @@ let decl_kind_name(d: ast.Decl): string = {
     | DConst(_, _, _, _)               -> "const"
     | DExternal(_, _, _, _, _)         -> "external"
     | DLink(_, _, _)                   -> "link"
+    | DCompileIf(_, _, _)              -> "compile_if"
     }
 }
 
@@ -34,6 +52,7 @@ let decl_name(d: ast.Decl): string = {
     | DConst(_, n, _, _)                -> n
     | DExternal(_, n, _, _, _)          -> n
     | DLink(_, _, n)                    -> n
+    | DCompileIf(_, _, _)               -> "<compile_if>"
     }
 }
 
@@ -240,14 +259,15 @@ type Loaded = {
 let load_all(entry: string, qoz_root: string): Loaded = {
     var entries: Vec<string> = vec.make()
     vec.push(&entries, entry)
-    load_all_entries(entries, entry, qoz_root)
+    let ctx = make_compile_ctx(qoz_root)
+    load_all_entries(entries, entry, qoz_root, ctx)
 }
 
 // Load every file reachable from one or more entry files. The first
 // argument lists the source paths that seed the compilation unit; the
 // second is the path used to identify the resulting `File` (its
 // `path` field is read by downstream phases for diagnostic anchoring).
-let load_all_entries(entries: Vec<string>, primary: string, qoz_root: string): Loaded = {
+let load_all_entries(entries: Vec<string>, primary: string, qoz_root: string, ctx: main.CompileCtx): Loaded = {
     var queue: Vec<Pending> = vec.make()
     var visited: Map<string, bool> = map.make()
     var aggregated_decls: Vec<ast.Decl> = vec.make()
@@ -289,13 +309,13 @@ let load_all_entries(entries: Vec<string>, primary: string, qoz_root: string): L
         qi += 1
         if !map.contains(&visited, cur.path) {
             visited[cur.path] = true
-            process_one(cur, &queue, &visited, &aggregated_decls, &sources, &type_homes, &fn_homes, &file_pkgs, &dir_local_fns, qoz_root)
+            process_one(cur, &queue, &visited, &aggregated_decls, &sources, &type_homes, &fn_homes, &file_pkgs, &dir_local_fns, qoz_root, ctx)
         }
     }
     Loaded { file: ast.File { path: primary, decls: aggregated_decls }, sources: sources, type_homes: type_homes, fn_homes: fn_homes, file_pkgs: file_pkgs }
 }
 
-let process_one(cur: Pending, queue: *Vec<Pending>, visited: *Map<string, bool>, aggregated_decls: *Vec<ast.Decl>, sources: *Vec<string>, type_homes: *Map<string, string>, fn_homes: *Map<string, string>, file_pkgs: *Map<string, string>, dir_local_fns: *Map<string, Map<string, bool>>, qoz_root: string) = {
+let process_one(cur: Pending, queue: *Vec<Pending>, visited: *Map<string, bool>, aggregated_decls: *Vec<ast.Decl>, sources: *Vec<string>, type_homes: *Map<string, string>, fn_homes: *Map<string, string>, file_pkgs: *Map<string, string>, dir_local_fns: *Map<string, Map<string, bool>>, qoz_root: string, ctx: main.CompileCtx) = {
     let src = fs.read_file(cur.path)
     if len(src) < 0 {
         fmt.println(`could not read {cur.path}`)
@@ -316,7 +336,9 @@ let process_one(cur: Pending, queue: *Vec<Pending>, visited: *Map<string, bool>,
         }
         os.exit(1)
     }
-    let file = parsed.file
+    let raw_file = parsed.file
+    let expanded_decls = expand_compile_ifs(raw_file.decls, ctx)
+    let file = ast.File { path: raw_file.path, decls: expanded_decls }
     let pkg_dir = dir_of_path(cur.path)
     let local_fns = sibling_fn_names(pkg_dir, dir_local_fns)
     for d in file.decls {
@@ -399,6 +421,119 @@ let sibling_fn_names(pkg_dir: string, cache: *Map<string, Map<string, bool>>): M
     }
     map.set(cache, pkg_dir, local_fns)
     local_fns
+}
+
+// Compile-time value: only strings, ints, and booleans are
+// observable inside #if conditions.
+type CV =
+    | CVString(string)
+    | CVInt(i64)
+    | CVBool(bool)
+    | CVError(string)
+
+let cv_str_eq(a: main.CV, b: main.CV): bool = {
+    match a {
+    | CVString(sa) -> {
+        match b { | CVString(sb) -> strings.eq_raw(sa, sb) | _ -> false }
+    }
+    | CVInt(ia) -> {
+        match b { | CVInt(ib) -> ia == ib | _ -> false }
+    }
+    | CVBool(ba) -> {
+        match b { | CVBool(bb) -> ba == bb | _ -> false }
+    }
+    | _ -> false
+    }
+}
+
+let cv_truthy(v: main.CV): bool = {
+    match v { | CVBool(b) -> b | _ -> false }
+}
+
+let eval_const(e: ast.Expr, ctx: main.CompileCtx): main.CV = {
+    match e {
+    | EBool(_, b)   -> CVBool(b)
+    | EInt(_, text) -> CVInt(strings.parse_int(text))
+    | EString(_, raw) -> {
+        let n = len(raw)
+        if n >= 2 && strings.byte_at(raw, 0) == 34 && strings.byte_at(raw, n - 1) == 34 {
+            CVString(strings.slice(raw, 1, n - 1))
+        } else {
+            CVString(raw)
+        }
+    }
+    | EIdent(_, name) -> {
+        if strings.eq_raw(name, "target_os")           { return CVString(ctx.target_os) }
+        if strings.eq_raw(name, "target_arch")         { return CVString(ctx.target_arch) }
+        if strings.eq_raw(name, "target_pointer_size") { return CVInt(ctx.target_pointer_size) }
+        if strings.eq_raw(name, "debug")               { return CVBool(ctx.debug) }
+        if strings.eq_raw(name, "qoz_root")            { return CVString(ctx.qoz_root) }
+        CVError(strings.cat("unknown compile-time constant: ", name))
+    }
+    | EBinary(_, op, l, r) -> {
+        let lv = eval_const(l, ctx)
+        let rv = eval_const(r, ctx)
+        match op {
+        | BOpEq -> CVBool(cv_str_eq(lv, rv))
+        | BOpNe -> CVBool(!cv_str_eq(lv, rv))
+        | BOpAnd -> CVBool(cv_truthy(lv) && cv_truthy(rv))
+        | BOpOr  -> CVBool(cv_truthy(lv) || cv_truthy(rv))
+        | _ -> CVError("only ==, !=, &&, || are allowed in #if conditions")
+        }
+    }
+    | EUnary(_, op, x) -> {
+        let v = eval_const(x, ctx)
+        match op {
+        | UOpNot -> CVBool(!cv_truthy(v))
+        | _ -> CVError("only `!` is allowed as a unary operator in #if conditions")
+        }
+    }
+    | _ -> CVError("expression not permitted in #if condition")
+    }
+}
+
+// Walk a decl list, replacing every DCompileIf with the decls of
+// the first arm whose condition is true (or the else branch if
+// none match). Recurses so nested #if blocks expand cleanly.
+let expand_compile_ifs(decls: Vec<ast.Decl>, ctx: main.CompileCtx): Vec<ast.Decl> = {
+    var out: Vec<ast.Decl> = vec.make()
+    for d in decls {
+        match d {
+        | DCompileIf(span, arms, else_decls) -> {
+            var picked: Vec<ast.Decl> = else_decls
+            var chosen = false
+            for arm in arms {
+                if !chosen {
+                    let v = eval_const(arm.cond, ctx)
+                    match v {
+                    | CVError(msg) -> {
+                        fmt.println(`{span.file}:{span.line}:{span.col}: {msg}`)
+                        os.exit(1)
+                    }
+                    | _ -> { }
+                    }
+                    if cv_truthy(v) {
+                        picked = arm.decls
+                        chosen = true
+                    }
+                }
+            }
+            for cd in expand_compile_ifs(picked, ctx) {
+                vec.push(&out, cd)
+            }
+        }
+        | _ -> vec.push(&out, d)
+        }
+    }
+    out
+}
+
+let make_compile_ctx(qoz_root: string): main.CompileCtx = main.CompileCtx {
+    target_os:           target_os_raw(),
+    target_arch:         target_arch_raw(),
+    target_pointer_size: target_pointer_size_raw(),
+    debug:               false,
+    qoz_root:            qoz_root,
 }
 
 let is_error_placeholder(d: ast.Decl): bool = {
@@ -512,7 +647,8 @@ let collect_link_flags(file: ast.File): Vec<string> = {
 
 let cmd_build(path: string, qoz_root: string): main.BuildResult = {
     let paths = resolve_entry_paths(path)
-    let loaded = load_all_entries(paths.entries, paths.primary, qoz_root)
+    let ctx = make_compile_ctx(qoz_root)
+    let loaded = load_all_entries(paths.entries, paths.primary, qoz_root, ctx)
     let file = loaded.file
     let main_count = count_main_decls(file.decls)
     if main_count == 0 {

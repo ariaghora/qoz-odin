@@ -1663,6 +1663,9 @@ let parse_decl(p: *Parser): ast.Decl = {
         return parse_top_let_with_op(p, attr_operator)
     }
     if is_punct(t, "#") {
+        if is_kw(peek_at(p, 1), "if") {
+            return parse_compile_if(p)
+        }
         return parse_link_directive(p)
     }
     err_unexpected(p, "top-level declaration", t)
@@ -1712,8 +1715,61 @@ let parse_top_let_with_op(p: *Parser, operator: string): ast.Decl = {
     | DConst(_, _, _, _) -> d
     | DExternal(_, _, _, _, _) -> d
     | DLink(_, _, _) -> d
+    | DCompileIf(_, _, _) -> d
     | DFn(s, n, tps, ps, ret, body, _) -> DFn(s, n, tps, ps, ret, body, operator)
     }
+}
+
+// Parse a brace-delimited sequence of top-level decls, used as the
+// body of `#if` / `#elif` / `#else` arms.
+let parse_decl_block(p: *Parser): Vec<ast.Decl> = {
+    expect_punct(p, "{")
+    var decls: Vec<ast.Decl> = vec.make()
+    var done = false
+    while !done && !at_eof(p) {
+        while is_punct(peek(p), ";") { advance(p) }
+        if is_punct(peek(p), "}") {
+            done = true
+        } else {
+            let start = p.pos
+            vec.push(&decls, parse_decl(p))
+            if p.pos == start { advance(p) }
+        }
+    }
+    expect_punct(p, "}")
+    decls
+}
+
+// Parse a compile-time conditional chain. The leading `#if` has
+// been peeked but not consumed.
+let parse_compile_if(p: *Parser): ast.Decl = {
+    let hash_tok = peek(p)
+    let span = span_of(p, hash_tok)
+    advance(p)
+    advance(p)
+    let cond = parse_expr(p)
+    let body = parse_decl_block(p)
+    var arms: Vec<ast.CompileIfArm> = vec.make()
+    vec.push(&arms, ast.CompileIfArm { cond: cond, decls: body })
+    var done_arms = false
+    while !done_arms {
+        if is_punct(peek(p), "#") && is_kw(peek_at(p, 1), "elif") {
+            advance(p)
+            advance(p)
+            let c = parse_expr(p)
+            let b = parse_decl_block(p)
+            vec.push(&arms, ast.CompileIfArm { cond: c, decls: b })
+        } else {
+            done_arms = true
+        }
+    }
+    var else_decls: Vec<ast.Decl> = vec.make()
+    if is_punct(peek(p), "#") && is_kw(peek_at(p, 1), "else") {
+        advance(p)
+        advance(p)
+        else_decls = parse_decl_block(p)
+    }
+    DCompileIf(span, arms, else_decls)
 }
 
 let parse_link_directive(p: *Parser): ast.Decl = {

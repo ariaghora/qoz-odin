@@ -117,6 +117,12 @@ void qoz_fs_read_strict_raw(qoz_string path, qoz_string *data_out, qoz_string *e
  * std/time::sleep_ms. */
 void qoz_time_sleep_ms(int64_t ms);
 
+/* Build-target constants. Resolved at runtime build time via
+ * preprocessor ifdefs; backs the loader-time #if directives. */
+qoz_string qoz_target_os(void);
+qoz_string qoz_target_arch(void);
+int64_t    qoz_target_pointer_size(void);
+
 /* Growable byte buffer used by std/strings::Strbuf. The struct layout
  * matches the Qoz-side Strbuf record so a Qoz value can be passed in
  * directly. */

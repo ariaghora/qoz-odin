@@ -1,0 +1,30 @@
+// expect: 0
+// Compile-time conditional resolves at load time. The label and
+// the expected length are chosen by the same `#if` chain so the
+// program returns 0 on every supported host.
+
+#if target_os == "darwin" {
+    let want_len: i64 = 6
+    let want_label = "darwin"
+} #elif target_os == "linux" {
+    let want_len: i64 = 5
+    let want_label = "linux"
+} #elif target_os == "windows" {
+    let want_len: i64 = 7
+    let want_label = "windows"
+} #else {
+    let want_len: i64 = 7
+    let want_label = "unknown"
+}
+
+@link_name("qoz_target_os")
+external let target_os_raw(): string
+
+let main(): i64 = {
+    let os = target_os_raw()
+    if len(os) != want_len { return 1 }
+    if !strings.eq_raw(os, want_label) { return 2 }
+    0
+}
+
+import strings

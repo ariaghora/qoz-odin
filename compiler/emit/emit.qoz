@@ -1598,7 +1598,13 @@ let emit_expr(e: *Emitter, ex: ast.Expr) = {
         | Some(enum_name) -> {
             push(e, `qoz_make_{enum_name}_{name}()`)
         }
-        | None -> push(e, name)
+        | None -> {
+            if map.contains(&e.consts, name) {
+                push(e, `qoz_{name}()`)
+            } else {
+                push(e, name)
+            }
+        }
         }
     }
     | EString(_, text)  -> push(e, `QOZ_STR_LIT({text})`)
@@ -4719,6 +4725,10 @@ let emit_ident_with_hint(e: *Emitter, name: string, hint: ast.TypeExpr) = {
         push(e, `qoz_make_{enum_name}_{name}()`)
     }
     | None -> {
+        if map.contains(&e.consts, name) {
+            push(e, `qoz_{name}()`)
+            return
+        }
         // Plain top-level function used as a fn-typed value: wrap with an
         // adapter thunk so the value matches the {env, fn} closure ABI.
         match hint {

@@ -13,10 +13,24 @@
 
 #link_path("vendor/raylib")
 #link_library("raylib")
-#link_framework("CoreVideo")
-#link_framework("IOKit")
-#link_framework("Cocoa")
-#link_framework("OpenGL")
+
+#if target_os == "darwin" {
+    #link_framework("CoreVideo")
+    #link_framework("IOKit")
+    #link_framework("Cocoa")
+    #link_framework("OpenGL")
+} #elif target_os == "linux" {
+    #link_library("GL")
+    #link_library("m")
+    #link_library("pthread")
+    #link_library("dl")
+    #link_library("rt")
+    #link_library("X11")
+} #elif target_os == "windows" {
+    #link_library("opengl32")
+    #link_library("gdi32")
+    #link_library("winmm")
+}
 
 // Color: 4 unsigned bytes laid out the same way raylib uses them.
 type Color = {

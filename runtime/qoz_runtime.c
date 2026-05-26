@@ -28,6 +28,36 @@ int64_t qoz_time_unix_micros(void) {
     return (int64_t)tv.tv_sec * 1000000 + (int64_t)tv.tv_usec;
 }
 
+qoz_string qoz_target_os(void) {
+#if defined(__APPLE__)
+    return (qoz_string){"darwin", 6, NULL};
+#elif defined(__linux__)
+    return (qoz_string){"linux", 5, NULL};
+#elif defined(_WIN32)
+    return (qoz_string){"windows", 7, NULL};
+#elif defined(__FreeBSD__)
+    return (qoz_string){"freebsd", 7, NULL};
+#else
+    return (qoz_string){"unknown", 7, NULL};
+#endif
+}
+
+qoz_string qoz_target_arch(void) {
+#if defined(__aarch64__) || defined(__arm64__)
+    return (qoz_string){"arm64", 5, NULL};
+#elif defined(__x86_64__) || defined(_M_X64)
+    return (qoz_string){"x86_64", 6, NULL};
+#elif defined(__wasm32__)
+    return (qoz_string){"wasm32", 6, NULL};
+#else
+    return (qoz_string){"unknown", 7, NULL};
+#endif
+}
+
+int64_t qoz_target_pointer_size(void) {
+    return (int64_t)(sizeof(void *) * 8);
+}
+
 void qoz_time_sleep_ms(int64_t ms) {
     if (ms <= 0) return;
     struct timeval tv;

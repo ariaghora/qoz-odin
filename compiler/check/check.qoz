@@ -145,6 +145,10 @@ let register_decl(tc: *check.TyContext, d: ast.Decl) = {
     | DExternal(_, name, _, _, _)     -> { tc.externs[name] = d }
     | DConst(_, name, _, _)           -> { tc.consts[name] = d }
     | DLink(_, _, _)                  -> { }
+    // The loader expands every #if before the check phase runs, so a
+    // DCompileIf here would be a compiler bug. Skip silently rather
+    // than panic to avoid masking other diagnostics in the same pass.
+    | DCompileIf(_, _, _)             -> { }
     }
 }
 
@@ -717,7 +721,14 @@ let synth_field(tc: *check.TyContext, env: *Env, sp: ast.Span, base: ast.Expr, n
             match map.get(&tc.consts, qual) {
             | Some(d) -> {
                 match d {
-                | DConst(_, _, t, _) -> return resolve_type(tc, t)
+                | DConst(_, _, t, val) -> {
+                    let annotated = resolve_type(tc, t)
+                    if ty.ty_is_unit(annotated) {
+                        var inner_env = env_make()
+                        return synth(tc, &inner_env, val)
+                    }
+                    return annotated
+                }
                 | _ -> { }
                 }
             }
@@ -1616,6 +1627,22 @@ let synth_ident(tc: *check.TyContext, env: *Env, span: ast.Span, name: string): 
     }
     match map.get(&tc.variant_of, name) {
     | Some(enum_name) -> return synth_variant_ctor(tc, name)
+    | None -> { }
+    }
+    match map.get(&tc.consts, name) {
+    | Some(decl) -> {
+        match decl {
+        | DConst(_, _, t, val) -> {
+            let annotated = resolve_type(tc, t)
+            if ty.ty_is_unit(annotated) {
+                var inner_env = env_make()
+                return synth(tc, &inner_env, val)
+            }
+            return annotated
+        }
+        | _ -> { }
+        }
+    }
     | None -> { }
     }
     record_error(tc, span, `undefined name '{name}'`)
@@ -2796,6 +2823,7 @@ let check_fn_bodies(tc: *check.TyContext, f: ast.File) = {
         }
         | DExternal(_, _, _, _, _) -> { }
         | DLink(_, _, _) -> { }
+        | DCompileIf(_, _, _) -> { }
         }
     }
 }
@@ -2863,6 +2891,7 @@ let validate_signatures(tc: *check.TyContext, f: ast.File) = {
         }
         | DImport(_, _, _) -> { }
         | DLink(_, _, _) -> { }
+        | DCompileIf(_, _, _) -> { }
         }
     }
 }
