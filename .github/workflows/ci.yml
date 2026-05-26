@@ -14,18 +14,42 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  linux:
-    name: Linux (${{ matrix.cc }})
-    runs-on: [self-hosted, linux]
+  posix:
+    name: ${{ matrix.os }} (${{ matrix.cc }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, macos-latest]
         cc: [gcc, clang]
     steps:
       - uses: actions/checkout@v4
       - name: Build and test
         run: |
           export CC=${{ matrix.cc }}
+          make
+          make test
+
+  windows:
+    name: windows-latest (clang)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-clang
+            mingw-w64-x86_64-gcc
+            make
+            findutils
+      - name: Build and test
+        shell: msys2 {0}
+        run: |
+          export CC=clang
           make
           make test
