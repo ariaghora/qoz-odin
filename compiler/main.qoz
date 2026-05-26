@@ -139,7 +139,12 @@ let rename_with_pkg(d: ast.Decl, pkg: string, local_fns: Map<string, bool>): ast
         DFn(sp, strings.cat(strings.cat(pkg, "_"), n), tp, fp, rt, new_body, attr)
     }
     | DExternal(sp, n, sym, fp, rt) -> DExternal(sp, strings.cat(strings.cat(pkg, "_"), n), sym, fp, rt)
-    | _                                     -> d
+    | DConst(sp, n, t, v) -> {
+        let new_val = rewrite_ident_refs(v, pkg, local_fns)
+        DConst(sp, strings.cat(strings.cat(pkg, "_"), n), t, new_val)
+    }
+    // DImport, DStruct, DEnum, DTypeAlias, DLink: no identifier rename.
+    | _ -> d
     }
 }
 
@@ -381,6 +386,12 @@ let sibling_fn_names(pkg_dir: string, cache: *Map<string, Map<string, bool>>): M
                 match d {
                 | DFn(_, n, _, _, _, _, _) -> local_fns[n] = true
                 | DExternal(_, n, _, _, _) -> local_fns[n] = true
+                | DConst(_, n, _, _)       -> local_fns[n] = true
+                // Other Decl kinds (DImport, DStruct, DEnum,
+                // DTypeAlias, DLink) do not contribute names that
+                // need intra-package renaming. Types flow through
+                // type_homes; link directives have no identifier
+                // surface; imports are loader sentinels.
                 | _ -> { }
                 }
             }

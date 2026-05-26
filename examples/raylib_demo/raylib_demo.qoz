@@ -1,31 +1,29 @@
-// raylib smoke test: opens an 800x600 window and draws a circle the
-// user can move with the arrow keys. Press Escape (or the close
-// box) to quit. The link directives are carried by the binding at
-// vendor/raylib so importing the package is enough.
+// raylib smoke test: opens an 800x600 window and moves a circle
+// with the arrow keys. Press Escape (or the close box) to quit.
 
 import vendor/raylib
 
 let main() = {
-    raylib.init_window(800 as i32, 600 as i32, "Qoz raylib demo")
-    raylib.set_target_fps(60 as i32)
+    raylib.init_window(800, 600, "Qoz raylib demo")
+    defer raylib.close_window()
 
-    var x: i32 = 400 as i32
-    var y: i32 = 300 as i32
-    let speed: i32 = 4 as i32
+    raylib.set_target_fps(60)
+
+    var x: i32 = 400
+    var y: i32 = 300
+    let speed: i32 = 4
 
     while !raylib.window_should_close() {
-        if raylib.is_key_down(raylib.KEY_RIGHT()) { x = x + speed }
-        if raylib.is_key_down(raylib.KEY_LEFT())  { x = x - speed }
-        if raylib.is_key_down(raylib.KEY_DOWN())  { y = y + speed }
-        if raylib.is_key_down(raylib.KEY_UP())    { y = y - speed }
+        if raylib.is_key_down(raylib.KEY_RIGHT) { x = x + speed }
+        if raylib.is_key_down(raylib.KEY_LEFT)  { x = x - speed }
+        if raylib.is_key_down(raylib.KEY_DOWN)  { y = y + speed }
+        if raylib.is_key_down(raylib.KEY_UP)    { y = y - speed }
 
         raylib.begin_drawing()
-        raylib.clear_background(raylib.RAYWHITE())
-        raylib.draw_text("Arrow keys to move. Escape to quit.",
-                         10 as i32, 10 as i32, 20 as i32, raylib.BLACK())
-        raylib.draw_circle(x, y, 24.0 as f32, raylib.RED())
+        raylib.clear_background(raylib.RAYWHITE)
+        raylib.draw_text("Arrow keys to move. Escape to quit.", 10, 10, 20, raylib.BLACK)
+        raylib.draw_circle(x, y, 24.0, raylib.RED)
         raylib.end_drawing()
     }
 
-    raylib.close_window()
 }

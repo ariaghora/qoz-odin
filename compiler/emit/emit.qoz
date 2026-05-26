@@ -35,6 +35,7 @@ type Emitter = {
     generic_decls:     Map<string, ast.Decl>,    // bare name -> declaration with type_params
     generic_fn_decls:  Map<string, ast.Decl>,    // (possibly package-prefixed) name -> generic fn declaration
     packages:          Map<string, bool>,    // known package names (from import resolution)
+    consts:            Map<string, bool>,    // package-prefixed const names
     record_insts:      Vec<Instantiation>,
     record_seen:       Map<string, bool>,    // mangled -> seen
     enum_insts:        Vec<Instantiation>,
@@ -86,6 +87,7 @@ let make_emitter(): Emitter = Emitter {
     generic_decls:    map.make(),
     generic_fn_decls: map.make(),
     packages:         map.make(),
+    consts:           map.make(),
     record_insts:     vec.make(),
     record_seen:      map.make(),
     enum_insts:       vec.make(),
@@ -1100,6 +1102,9 @@ let register_variants(e: *Emitter, file: ast.File) = {
             if !strings.eq_raw(pkg, "") {
                 e.packages[pkg] = true
             }
+        }
+        | DConst(_, name, _, _) -> {
+            e.consts[name] = true
         }
         | _ -> { }
         }
@@ -2797,6 +2802,21 @@ let emit_field(e: *Emitter, base: ast.Expr, name: string) = {
     }
     | _ -> { }
     }
+    // `pkg.NAME` reading a top-level constant. The const is emitted
+    // as a zero-arg function so its initializer can be any
+    // expression; the read is a function call.
+    match base {
+    | EIdent(_, pkg) -> {
+        if map.contains(&e.packages, pkg) {
+            let qual = strings.cat(strings.cat(pkg, "_"), name)
+            if map.contains(&e.consts, qual) {
+                push(e, `qoz_{qual}()`)
+                return
+            }
+        }
+    }
+    | _ -> { }
+    }
     let op = field_access_op(e, base)
     emit_expr(e, base)
     push(e, `{op}{name}`)
@@ -4002,6 +4022,14 @@ let emit_program(f: ast.File, expr_types: Map<i64, ast.TypeExpr>): string = {
         | DExternal(_, _, symbol, params, ret) -> {
             emit_extern_proto(&e, symbol, params, ret)
         }
+        | DConst(_, name, ty, value) -> {
+            let resolved_ty = if is_unit_typeexpr(ty) { infer_value_te(&e, value) } else { ty }
+            var empty: Vec<ast.FnParam> = vec.make()
+            emit_fn_proto(&e, name, empty, resolved_ty)
+        }
+        // Type declarations (DStruct, DEnum, DTypeAlias) contribute
+        // typedefs through walk_decl_for_types; DImport and DLink
+        // have no prototype shape.
         | _ -> { }
         }
     }
@@ -4028,7 +4056,11 @@ let emit_program(f: ast.File, expr_types: Map<i64, ast.TypeExpr>): string = {
         }
     }
     push(&e, "\n")
-    // Function bodies (non-generic only).
+    // Function bodies (non-generic only). Top-level constants emit
+    // as zero-arg functions that return the declared value; the
+    // package-qualified read path (`pkg.NAME`) lowers to a call.
+    // Treating constants as functions sidesteps the C constraint
+    // that global initializers be compile-time constant.
     for d in f.decls {
         match d {
         | DFn(_, name, tparams, params, ret, body, _) -> {
@@ -4038,6 +4070,15 @@ let emit_program(f: ast.File, expr_types: Map<i64, ast.TypeExpr>): string = {
                 emit_fn(&e, name, params, ret, body)
             }
         }
+        | DConst(_, name, ty, value) -> {
+            let resolved_ty = if is_unit_typeexpr(ty) { infer_value_te(&e, value) } else { ty }
+            var empty: Vec<ast.FnParam> = vec.make()
+            emit_fn(&e, name, empty, resolved_ty, value)
+        }
+        // Other Decl kinds (DImport, DStruct, DEnum, DTypeAlias,
+        // DExternal, DLink) emit no body here: types contribute to
+        // typedef blocks elsewhere, externs declare without a body,
+        // imports and link directives have no runtime form.
         | _ -> { }
         }
     }

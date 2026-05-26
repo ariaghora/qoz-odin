@@ -26,17 +26,12 @@ type Color = {
     a: u8,
 }
 
-let rgba(r: i64, g: i64, b: i64, a: i64): raylib.Color =
-    raylib.Color { r: r as u8, g: g as u8, b: b as u8, a: a as u8 }
-
-let rgb(r: i64, g: i64, b: i64): raylib.Color = rgba(r, g, b, 255)
-
-let WHITE(): raylib.Color = rgb(255, 255, 255)
-let BLACK(): raylib.Color = rgb(0, 0, 0)
-let RED():   raylib.Color = rgb(230, 41, 55)
-let GREEN(): raylib.Color = rgb(0, 228, 48)
-let BLUE():  raylib.Color = rgb(0, 121, 241)
-let RAYWHITE(): raylib.Color = rgb(245, 245, 245)
+let WHITE    = Color { r: 255, g: 255, b: 255, a: 255 }
+let BLACK    = Color { r: 0,   g: 0,   b: 0,   a: 255 }
+let RED      = Color { r: 230, g: 41,  b: 55,  a: 255 }
+let GREEN    = Color { r: 0,   g: 228, b: 48,  a: 255 }
+let BLUE     = Color { r: 0,   g: 121, b: 241, a: 255 }
+let RAYWHITE = Color { r: 245, g: 245, b: 245, a: 255 }
 
 // Window and frame loop.
 @link_name("InitWindow")
@@ -58,7 +53,7 @@ external let begin_drawing()
 external let end_drawing()
 
 @link_name("ClearBackground")
-external let clear_background(color: raylib.Color)
+external let clear_background(color: Color)
 
 // Time.
 @link_name("GetFrameTime")
@@ -69,16 +64,16 @@ external let get_time(): f64
 
 // Basic 2D drawing.
 @link_name("DrawText")
-external let draw_text(text: cstring, x: i32, y: i32, font_size: i32, color: raylib.Color)
+external let draw_text(text: cstring, x: i32, y: i32, font_size: i32, color: Color)
 
 @link_name("DrawCircle")
-external let draw_circle(center_x: i32, center_y: i32, radius: f32, color: raylib.Color)
+external let draw_circle(center_x: i32, center_y: i32, radius: f32, color: Color)
 
 @link_name("DrawRectangle")
-external let draw_rectangle(x: i32, y: i32, width: i32, height: i32, color: raylib.Color)
+external let draw_rectangle(x: i32, y: i32, width: i32, height: i32, color: Color)
 
 @link_name("DrawLine")
-external let draw_line(start_x: i32, start_y: i32, end_x: i32, end_y: i32, color: raylib.Color)
+external let draw_line(start_x: i32, start_y: i32, end_x: i32, end_y: i32, color: Color)
 
 // Input.
 @link_name("IsKeyDown")
@@ -94,9 +89,9 @@ external let get_mouse_x(): i32
 external let get_mouse_y(): i32
 
 // Key codes used in the example. Full set in raylib.h KeyboardKey.
-let KEY_RIGHT(): i32 = 262
-let KEY_LEFT():  i32 = 263
-let KEY_DOWN():  i32 = 264
-let KEY_UP():    i32 = 265
-let KEY_SPACE(): i32 = 32
-let KEY_ESCAPE(): i32 = 256
+let KEY_RIGHT:  i32 = 262
+let KEY_LEFT:   i32 = 263
+let KEY_DOWN:   i32 = 264
+let KEY_UP:     i32 = 265
+let KEY_SPACE:  i32 = 32
+let KEY_ESCAPE: i32 = 256

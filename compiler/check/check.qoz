@@ -20,6 +20,10 @@ type TyContext = {
     aliases:      Map<string, ast.Decl>,
     fns:          Map<string, ast.Decl>,
     externs:      Map<string, ast.Decl>,
+    // Top-level constants keyed by the renamed C-style name
+    // (`<pkg>_<name>`). Package-qualified reads (`pkg.NAME`)
+    // resolve here.
+    consts:       Map<string, ast.Decl>,
     packages:     Map<string, bool>,
     // First-home for each variant name. Single-home queries hit this
     // map; ambiguity detection consults variant_homes.
@@ -69,6 +73,7 @@ let make_ctx(): check.TyContext = TyContext {
     aliases:     map.make(),
     fns:         map.make(),
     externs:     map.make(),
+    consts:      map.make(),
     packages:    map.make(),
     variant_of:  map.make(),
     variant_homes: map.make(),
@@ -138,7 +143,7 @@ let register_decl(tc: *check.TyContext, d: ast.Decl) = {
     }
     | DFn(_, name, _, _, _, _, _)     -> { tc.fns[name] = d }
     | DExternal(_, name, _, _, _)     -> { tc.externs[name] = d }
-    | DConst(_, _, _, _)              -> { }
+    | DConst(_, name, _, _)           -> { tc.consts[name] = d }
     | DLink(_, _, _)                  -> { }
     }
 }
@@ -297,10 +302,6 @@ let resolve_type(tc: *check.TyContext, te: ast.TypeExpr): ty.Ty = {
 
 let resolve_named(tc: *check.TyContext, span: ast.Span, path: Vec<string>, args: Vec<ast.TypeExpr>): ty.Ty = {
     if len(path) == 2 {
-        // Qualified type path: `pkg.TypeName`. Verify the qualifier
-        // matches the type's home package, then resolve by the short
-        // name. Prelude / entry types have home == ""; the qualifier
-        // acts as a hint and resolution proceeds as if bare.
         let pkg  = path[0]
         let name = path[1]
         let home = match map.get(&tc.type_homes, name) {
@@ -704,6 +705,27 @@ let synth_unary(tc: *check.TyContext, env: *Env, sp: ast.Span, op: ast.UnaryOp, 
 let synth_field(tc: *check.TyContext, env: *Env, sp: ast.Span, base: ast.Expr, name: string): ty.Ty = {
     if is_qualified_variant_field(tc, base, name) {
         return synth_variant_ctor(tc, name)
+    }
+    // Package-qualified read: `pkg.NAME` where `pkg` is a known
+    // package and `<pkg>_<name>` names a top-level const. Resolve
+    // to the const's declared type so the field expression carries
+    // the right type into the surrounding context.
+    match base {
+    | EIdent(_, base_name) -> {
+        if map.contains(&tc.packages, base_name) {
+            let qual = strings.cat(strings.cat(base_name, "_"), name)
+            match map.get(&tc.consts, qual) {
+            | Some(d) -> {
+                match d {
+                | DConst(_, _, t, _) -> return resolve_type(tc, t)
+                | _ -> { }
+                }
+            }
+            | None -> { }
+            }
+        }
+    }
+    | _ -> { }
     }
     let bt = synth(tc, env, base)
     if ty.ty_is_error(bt) { return ty.ty_error_() }
