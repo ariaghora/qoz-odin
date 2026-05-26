@@ -338,7 +338,28 @@ let load_all_entries(entries: Vec<string>, primary: string, qoz_root: string, ct
             process_one(cur, &queue, &visited, &aggregated_decls, &sources, &type_homes, &fn_homes, &file_pkgs, &dir_local_fns, &load_errors, overrides, qoz_root, ctx)
         }
     }
-    Loaded { file: ast.File { path: primary, decls: aggregated_decls }, sources: sources, type_homes: type_homes, fn_homes: fn_homes, file_pkgs: file_pkgs, errors: load_errors }
+    let qctx = make_qualify_ctx(aggregated_decls, file_pkgs)
+    let qualified_decls = qualify_decls(aggregated_decls, &qctx)
+    let qualified_homes = rebuild_type_homes(qualified_decls, file_pkgs)
+    Loaded { file: ast.File { path: primary, decls: qualified_decls }, sources: sources, type_homes: qualified_homes, fn_homes: fn_homes, file_pkgs: file_pkgs, errors: load_errors }
+}
+
+// Rebuild type_homes from the qualified AST so resolve_named sees
+// the same names that register_decl will use. Without this pass
+// the original short-name entries linger and break composite-key
+// lookups.
+let rebuild_type_homes(decls: Vec<ast.Decl>, file_pkgs: Map<string, string>): Map<string, Vec<string>> = {
+    var out: Map<string, Vec<string>> = map.make()
+    for d in decls {
+        let sp = decl_span(d)
+        let home = match map.get(&file_pkgs, sp.file) {
+        | Some(p) -> p
+        | None    -> ""
+        }
+        let name = type_decl_name(d)
+        if !strings.eq_raw(name, "") { add_type_home(&out, name, home) }
+    }
+    out
 }
 
 let process_one(cur: Pending, queue: *Vec<Pending>, visited: *Map<string, bool>, aggregated_decls: *Vec<ast.Decl>, sources: *Vec<string>, type_homes: *Map<string, Vec<string>>, fn_homes: *Map<string, string>, file_pkgs: *Map<string, string>, dir_local_fns: *Map<string, Map<string, bool>>, load_errors: *Vec<string>, overrides: *Map<string, string>, qoz_root: string, ctx: main.CompileCtx) = {
@@ -420,6 +441,267 @@ let process_one(cur: Pending, queue: *Vec<Pending>, visited: *Map<string, bool>,
             }
             vec.push(aggregated_decls, renamed)
         }
+    }
+}
+
+// --- Type-name qualification ---------------------------------------
+//
+// Two non-prelude packages may legally declare the same short type
+// name. Without qualification their declarations would collide in
+// the emitter's bare-name maps (struct_decls, enum_decls,
+// generic_decls). qualify_decls walks the aggregated AST once and
+// rewrites every non-prelude type declaration and every reference
+// to it so the emitted C name is `pkg_TypeName`. The pass runs
+// after load_all_entries and before check.
+
+type QualifyCtx = {
+    // For each short type name, the set of non-prelude packages
+    // that declare it. Prelude declarations are excluded so prelude
+    // types (Vec, Option, ...) keep their bare name.
+    type_pkgs: Map<string, Map<string, bool>>,
+    file_pkgs: Map<string, string>,
+}
+
+let make_qualify_ctx(decls: Vec<ast.Decl>, file_pkgs: Map<string, string>): main.QualifyCtx = {
+    var type_pkgs: Map<string, Map<string, bool>> = map.make()
+    for d in decls {
+        let sp = decl_span(d)
+        let pkg = match map.get(&file_pkgs, sp.file) {
+        | Some(p) -> p
+        | None    -> ""
+        }
+        if strings.eq_raw(pkg, "") { } else {
+            let name = type_decl_name(d)
+            if !strings.eq_raw(name, "") {
+                var inner: Map<string, bool> = match map.get(&type_pkgs, name) {
+                | Some(m) -> m
+                | None    -> map.make()
+                }
+                map.set(&inner, pkg, true)
+                map.set(&type_pkgs, name, inner)
+            }
+        }
+    }
+    main.QualifyCtx { type_pkgs: type_pkgs, file_pkgs: file_pkgs }
+}
+
+// Return the source span of any declaration. Every Decl variant
+// carries a span as its first payload.
+let decl_span(d: ast.Decl): ast.Span = {
+    match d {
+    | DImport(sp, _, _)          -> sp
+    | DFn(sp, _, _, _, _, _, _)  -> sp
+    | DStruct(sp, _, _, _)       -> sp
+    | DEnum(sp, _, _, _)         -> sp
+    | DTypeAlias(sp, _, _, _)    -> sp
+    | DConst(sp, _, _, _)        -> sp
+    | DExternal(sp, _, _, _, _)  -> sp
+    | DLink(sp, _, _)            -> sp
+    | DCompileIf(sp, _, _)       -> sp
+    }
+}
+
+// Return the declared name of a type-introducing declaration. The
+// empty string for anything else.
+let type_decl_name(d: ast.Decl): string = {
+    match d {
+    | DStruct(_, n, _, _)     -> n
+    | DEnum(_, n, _, _)       -> n
+    | DTypeAlias(_, n, _, _)  -> n
+    | _ -> ""
+    }
+}
+
+let is_local_type(name: string, pkg: string, ctx: *main.QualifyCtx): bool = {
+    if strings.eq_raw(pkg, "") { return false }
+    match map.get(&ctx.type_pkgs, name) {
+    | None    -> false
+    | Some(s) -> map.contains(&s, pkg)
+    }
+}
+
+let qualified_type_name(pkg: string, name: string): string = {
+    strings.cat(strings.cat(pkg, "_"), name)
+}
+
+let qualify_decls(decls: Vec<ast.Decl>, ctx: *main.QualifyCtx): Vec<ast.Decl> = {
+    var out: Vec<ast.Decl> = vec.make()
+    for d in decls {
+        let sp = decl_span(d)
+        let pkg = match map.get(&ctx.file_pkgs, sp.file) {
+        | Some(p) -> p
+        | None    -> ""
+        }
+        vec.push(&out, qualify_decl(d, pkg, ctx))
+    }
+    out
+}
+
+let qualify_decl(d: ast.Decl, pkg: string, ctx: *main.QualifyCtx): ast.Decl = {
+    match d {
+    | DStruct(sp, n, tps, fields) -> {
+        let new_name = if !strings.eq_raw(pkg, "") { qualified_type_name(pkg, n) } else { n }
+        var nf: Vec<ast.StructField> = vec.make()
+        for f in fields {
+            vec.push(&nf, ast.StructField { name: f.name, ty: qualify_te(f.ty, pkg, ctx) })
+        }
+        DStruct(sp, new_name, tps, nf)
+    }
+    | DEnum(sp, n, tps, variants) -> {
+        let new_name = if !strings.eq_raw(pkg, "") { qualified_type_name(pkg, n) } else { n }
+        var nv: Vec<ast.VariantDecl> = vec.make()
+        for v in variants {
+            var np: Vec<ast.TypeExpr> = vec.make()
+            for t in v.pos { vec.push(&np, qualify_te(t, pkg, ctx)) }
+            vec.push(&nv, ast.VariantDecl { name: v.name, pos: np, kind: v.kind })
+        }
+        DEnum(sp, new_name, tps, nv)
+    }
+    | DTypeAlias(sp, n, tps, target) -> {
+        let new_name = if !strings.eq_raw(pkg, "") { qualified_type_name(pkg, n) } else { n }
+        DTypeAlias(sp, new_name, tps, qualify_te(target, pkg, ctx))
+    }
+    | DFn(sp, n, tps, fp, rt, body, attr) -> {
+        var nfp: Vec<ast.FnParam> = vec.make()
+        for p in fp { vec.push(&nfp, ast.FnParam { name: p.name, ty: qualify_te(p.ty, pkg, ctx) }) }
+        DFn(sp, n, tps, nfp, qualify_te(rt, pkg, ctx), qualify_expr(body, pkg, ctx), attr)
+    }
+    | DExternal(sp, n, sym, fp, rt) -> {
+        var nfp: Vec<ast.FnParam> = vec.make()
+        for p in fp { vec.push(&nfp, ast.FnParam { name: p.name, ty: qualify_te(p.ty, pkg, ctx) }) }
+        DExternal(sp, n, sym, nfp, qualify_te(rt, pkg, ctx))
+    }
+    | DConst(sp, n, t, v) -> DConst(sp, n, qualify_te(t, pkg, ctx), qualify_expr(v, pkg, ctx))
+    | _ -> d
+    }
+}
+
+let qualify_te(te: ast.TypeExpr, pkg: string, ctx: *main.QualifyCtx): ast.TypeExpr = {
+    match te {
+    | TENamed(sp, path, args) -> {
+        var new_args: Vec<ast.TypeExpr> = vec.make()
+        for a in args { vec.push(&new_args, qualify_te(a, pkg, ctx)) }
+        if len(path) == 1 {
+            let n = path[0]
+            if is_local_type(n, pkg, ctx) {
+                var np: Vec<string> = vec.make()
+                vec.push(&np, qualified_type_name(pkg, n))
+                return TENamed(sp, np, new_args)
+            }
+            return TENamed(sp, path, new_args)
+        }
+        if len(path) == 2 {
+            let qpkg = path[0]
+            let qname = path[1]
+            if is_local_type(qname, qpkg, ctx) {
+                // Keep the qualifier so resolve_named accepts the
+                // access. Only the last segment is renamed.
+                var np: Vec<string> = vec.make()
+                vec.push(&np, qpkg)
+                vec.push(&np, qualified_type_name(qpkg, qname))
+                return TENamed(sp, np, new_args)
+            }
+            return TENamed(sp, path, new_args)
+        }
+        TENamed(sp, path, new_args)
+    }
+    | TEPtr(sp, inner) -> TEPtr(sp, qualify_te(inner, pkg, ctx))
+    | TETuple(sp, elems) -> {
+        var ne: Vec<ast.TypeExpr> = vec.make()
+        for el in elems { vec.push(&ne, qualify_te(el, pkg, ctx)) }
+        TETuple(sp, ne)
+    }
+    | TEFn(sp, params, ret) -> {
+        var np: Vec<ast.TypeExpr> = vec.make()
+        for p in params { vec.push(&np, qualify_te(p, pkg, ctx)) }
+        TEFn(sp, np, qualify_te(ret, pkg, ctx))
+    }
+    | TEUnit(sp) -> TEUnit(sp)
+    }
+}
+
+let qualify_expr(e: ast.Expr, pkg: string, ctx: *main.QualifyCtx): ast.Expr = {
+    match e {
+    | EInt(_, _)              -> e
+    | EFloat(_, _)            -> e
+    | EString(_, _)           -> e
+    | EChar(_, _)             -> e
+    | EBool(_, _)             -> e
+    | ENil(_)                 -> e
+    | EIdent(sp, name) -> {
+        if is_local_type(name, pkg, ctx) {
+            return EIdent(sp, qualified_type_name(pkg, name))
+        }
+        e
+    }
+    | EPath(_, _) -> e
+    | EUnary(sp, op, rhs)     -> EUnary(sp, op, qualify_expr(rhs, pkg, ctx))
+    | EBinary(sp, op, l, r)   -> EBinary(sp, op, qualify_expr(l, pkg, ctx), qualify_expr(r, pkg, ctx))
+    | EAssign(sp, op, l, r)   -> EAssign(sp, op, qualify_expr(l, pkg, ctx), qualify_expr(r, pkg, ctx))
+    | ECall(sp, callee, ta, args) -> {
+        var na: Vec<ast.Expr> = vec.make()
+        for a in args { vec.push(&na, qualify_expr(a, pkg, ctx)) }
+        var nta: Vec<ast.TypeExpr> = vec.make()
+        for t in ta { vec.push(&nta, qualify_te(t, pkg, ctx)) }
+        ECall(sp, qualify_expr(callee, pkg, ctx), nta, na)
+    }
+    | EField(sp, base, name)  -> EField(sp, qualify_expr(base, pkg, ctx), name)
+    | EIndex(sp, base, idx)   -> EIndex(sp, qualify_expr(base, pkg, ctx), qualify_expr(idx, pkg, ctx))
+    | ECast(sp, value, t)     -> ECast(sp, qualify_expr(value, pkg, ctx), qualify_te(t, pkg, ctx))
+    | ETry(sp, v)             -> ETry(sp, qualify_expr(v, pkg, ctx))
+    | ETuple(sp, elems) -> {
+        var ne: Vec<ast.Expr> = vec.make()
+        for el in elems { vec.push(&ne, qualify_expr(el, pkg, ctx)) }
+        ETuple(sp, ne)
+    }
+    | ERecord(sp, te, fields) -> {
+        var nf: Vec<ast.RecordFieldLit> = vec.make()
+        for f in fields {
+            vec.push(&nf, ast.RecordFieldLit { name: f.name, value: qualify_expr(f.value, pkg, ctx) })
+        }
+        ERecord(sp, qualify_te(te, pkg, ctx), nf)
+    }
+    | EClosure(sp, cps, ret, body) -> {
+        var ncps: Vec<ast.ClosureParam> = vec.make()
+        for c in cps { vec.push(&ncps, ast.ClosureParam { name: c.name, ty: qualify_te(c.ty, pkg, ctx) }) }
+        EClosure(sp, ncps, qualify_te(ret, pkg, ctx), qualify_expr(body, pkg, ctx))
+    }
+    | EBlock(sp, stmts, tail) -> {
+        var ns: Vec<ast.Stmt> = vec.make()
+        for s in stmts { vec.push(&ns, qualify_stmt(s, pkg, ctx)) }
+        EBlock(sp, ns, qualify_expr(tail, pkg, ctx))
+    }
+    | EIf(sp, c, t, f) -> EIf(sp, qualify_expr(c, pkg, ctx), qualify_expr(t, pkg, ctx), qualify_expr(f, pkg, ctx))
+    | EMatch(sp, scrut, arms) -> {
+        var na: Vec<ast.MatchArm> = vec.make()
+        for a in arms {
+            vec.push(&na, ast.MatchArm {
+                pat:       a.pat,
+                body:      qualify_expr(a.body, pkg, ctx),
+                has_guard: a.has_guard,
+                guard:     qualify_expr(a.guard, pkg, ctx),
+            })
+        }
+        EMatch(sp, qualify_expr(scrut, pkg, ctx), na)
+    }
+    | EWhile(sp, c, b) -> EWhile(sp, qualify_expr(c, pkg, ctx), qualify_expr(b, pkg, ctx))
+    | EFor(sp, b1, b2, it, body) -> EFor(sp, b1, b2, qualify_expr(it, pkg, ctx), qualify_expr(body, pkg, ctx))
+    | EReturn(sp, v)          -> EReturn(sp, qualify_expr(v, pkg, ctx))
+    | EDefer(sp, v)           -> EDefer(sp, qualify_expr(v, pkg, ctx))
+    | ESizeOf(sp, t)          -> ESizeOf(sp, qualify_te(t, pkg, ctx))
+    | EArrayLit(sp, elems) -> {
+        var ne: Vec<ast.Expr> = vec.make()
+        for el in elems { vec.push(&ne, qualify_expr(el, pkg, ctx)) }
+        EArrayLit(sp, ne)
+    }
+    }
+}
+
+let qualify_stmt(s: ast.Stmt, pkg: string, ctx: *main.QualifyCtx): ast.Stmt = {
+    match s {
+    | SLet(sp, name, te, val) -> SLet(sp, name, qualify_te(te, pkg, ctx), qualify_expr(val, pkg, ctx))
+    | SVar(sp, name, te, val) -> SVar(sp, name, qualify_te(te, pkg, ctx), qualify_expr(val, pkg, ctx))
+    | SExpr(sp, x)            -> SExpr(sp, qualify_expr(x, pkg, ctx))
     }
 }
 

@@ -28,9 +28,9 @@ external let string_alias(buf: *void, n: i64): string
 @link_name("qoz_bytes_copy")
 external let bytes_copy(dst: *void, src: *void, n: i64)
 
-// ---- Decoder ----
+// ---- Parser ----
 
-type Decoder = {
+type Parser = {
     src: string,
     pos: i64,
     line: i64,
@@ -41,27 +41,27 @@ type Decoder = {
     depth: i64,
 }
 
-let make_decoder(s: string): Decoder = Decoder { src: s, pos: 0, line: 1, col: 1, depth: 0 }
+let make_parser(s: string): Parser = Parser { src: s, pos: 0, line: 1, col: 1, depth: 0 }
 
 // Cap on parse_value recursion. Real-world JSON rarely exceeds a few
 // dozen levels. The cap balances headroom for legitimate input
 // against bounded stack consumption when parsing untrusted bytes.
 let MAX_DEPTH(): i64 = 256
 
-let at_end(p: *Decoder): bool = p.pos >= len(p.src)
+let at_end(p: *Parser): bool = p.pos >= len(p.src)
 
-let cur(p: *Decoder): i64 = {
+let cur(p: *Parser): i64 = {
     if at_end(p) { return -1 }
     strings.byte_at(p.src, p.pos)
 }
 
-let advance(p: *Decoder) = {
+let advance(p: *Parser) = {
     let c = cur(p)
     p.pos += 1
     if c == 10 { p.line += 1; p.col = 1 } else { p.col += 1 }
 }
 
-let skip_ws(p: *Decoder) = {
+let skip_ws(p: *Parser) = {
     while !at_end(p) {
         let c = cur(p)
         if c == 32 || c == 9 || c == 10 || c == 13 {
@@ -73,7 +73,7 @@ let skip_ws(p: *Decoder) = {
 }
 
 let parse_text(text: string): Result<Json, string> = {
-    var p = make_decoder(text)
+    var p = make_parser(text)
     skip_ws(&p)
     let v = parse_value(&p)
     match v {
@@ -88,7 +88,7 @@ let parse_text(text: string): Result<Json, string> = {
     }
 }
 
-let parse_value(p: *Decoder): Result<Json, string> = {
+let parse_value(p: *Parser): Result<Json, string> = {
     skip_ws(p)
     if at_end(p) { return Err("unexpected end of input") }
     let c = cur(p)
@@ -109,22 +109,22 @@ let parse_value(p: *Decoder): Result<Json, string> = {
     Err(error_at(p, "unexpected character"))
 }
 
-let parse_null(p: *Decoder): Result<Json, string> = {
+let parse_null(p: *Parser): Result<Json, string> = {
     if match_keyword(p, "null") { Ok(Null) }
     else { Err(error_at(p, "expected `null`")) }
 }
 
-let parse_true(p: *Decoder): Result<Json, string> = {
+let parse_true(p: *Parser): Result<Json, string> = {
     if match_keyword(p, "true") { Ok(Bool(true)) }
     else { Err(error_at(p, "expected `true`")) }
 }
 
-let parse_false(p: *Decoder): Result<Json, string> = {
+let parse_false(p: *Parser): Result<Json, string> = {
     if match_keyword(p, "false") { Ok(Bool(false)) }
     else { Err(error_at(p, "expected `false`")) }
 }
 
-let match_keyword(p: *Decoder, kw: string): bool = {
+let match_keyword(p: *Parser, kw: string): bool = {
     let n = len(kw)
     if p.pos + n > len(p.src) { return false }
     var i: i64 = 0
@@ -136,7 +136,7 @@ let match_keyword(p: *Decoder, kw: string): bool = {
     true
 }
 
-let parse_number(p: *Decoder): Result<Json, string> = {
+let parse_number(p: *Parser): Result<Json, string> = {
     let start = p.pos
     if cur(p) == 45 { advance(p) }
     if at_end(p) { return Err(error_at(p, "expected digit after `-`")) }
@@ -166,7 +166,7 @@ let parse_number(p: *Decoder): Result<Json, string> = {
     Ok(Num(strings.parse_f64(lit)))
 }
 
-let parse_string_value(p: *Decoder): Result<Json, string> = {
+let parse_string_value(p: *Parser): Result<Json, string> = {
     let s = parse_string_raw(p)
     match s {
     | Ok(text) -> Ok(Str(text))
@@ -174,7 +174,7 @@ let parse_string_value(p: *Decoder): Result<Json, string> = {
     }
 }
 
-let parse_string_raw(p: *Decoder): Result<string, string> = {
+let parse_string_raw(p: *Parser): Result<string, string> = {
     if cur(p) != 34 { return Err(error_at(p, "expected `\"`")) }
     advance(p)
     let cap: i64 = 64
@@ -257,7 +257,7 @@ let parse_string_raw(p: *Decoder): Result<string, string> = {
     Err("unterminated string")
 }
 
-let parse_hex4(p: *Decoder): Result<i64, string> = {
+let parse_hex4(p: *Parser): Result<i64, string> = {
     if p.pos + 4 > len(p.src) { return Err("expected 4 hex digits after `\\u`") }
     var v: i64 = 0
     var k: i64 = 0
@@ -311,7 +311,7 @@ let grow_to(buf: **u8, cap: i64, need: i64): i64 = {
     new_cap
 }
 
-let parse_array(p: *Decoder): Result<Json, string> = {
+let parse_array(p: *Parser): Result<Json, string> = {
     advance(p)  // consume '['
     skip_ws(p)
     var items: Vec<Json> = vec.make()
@@ -333,7 +333,7 @@ let parse_array(p: *Decoder): Result<Json, string> = {
     Ok(Arr(items))
 }
 
-let parse_object(p: *Decoder): Result<Json, string> = {
+let parse_object(p: *Parser): Result<Json, string> = {
     advance(p)  // consume '{'
     skip_ws(p)
     var fields: Map<string, Json> = map.make()
@@ -366,7 +366,7 @@ let parse_object(p: *Decoder): Result<Json, string> = {
     Ok(Obj(fields))
 }
 
-let error_at(p: *Decoder, msg: string): string = {
+let error_at(p: *Parser, msg: string): string = {
     let line_str = strings.i64_to_string(p.line)
     let col_str  = strings.i64_to_string(p.col)
     strings.cat(strings.cat(strings.cat(msg, " at line "), strings.cat(line_str, " col ")), col_str)
@@ -391,7 +391,7 @@ let encode_pretty(v: Json, indent: string): string = {
 // `depth` doubles as the indentation depth and the recursion guard
 // for hand-built Json values. Once it exceeds MAX_DEPTH the encoder
 // emits "null" in place of the nested structure rather than risk a
-// stack overflow. Decoder-produced values can never reach this cap
+// stack overflow. Parser-produced values can never reach this cap
 // because the parser refuses to construct them past MAX_DEPTH.
 let encode_pretty_into(sb: *strings.Strbuf, v: Json, indent: string, depth: i64) = {
     if depth > MAX_DEPTH() {
