@@ -953,6 +953,7 @@ let completion_response(s: *Server, params: json.Json): json.Json = {
     }
     let prefix = identifier_prefix_at(text, lc._0, lc._1)
     var items: Vec<json.Json> = vec.make()
+    expected_variant_completions(&items, uri, text, lc._0, lc._1, prefix)
     let tokens = tokenize.run(text)
     let parsed = parse.run(tokens, "")
     for d in parsed.file.decls {
@@ -1108,6 +1109,37 @@ let qualifier_path_at(text: string, line: i64, col: i64): lsp.QualifierPath = {
         i -= 1
     }
     QualifierPath { segments: ordered, prefix: prefix }
+}
+
+// Type-directed bare-variant suggestions. Shells out to
+// `qoz expected-at --stdin <path> <line> <col>` which runs the
+// real type-checker and prints the qualified C-enum name expected
+// at the cursor, followed by one variant per line. Empty output
+// means no C-enum context, so no items are added.
+let expected_variant_completions(items: *Vec<json.Json>, uri: string, text: string, line: i64, col: i64, prefix: string) = {
+    let path = file_path_of_uri(uri)
+    if strings.eq_raw(path, "") { return }
+    var argv: Vec<string> = vec.make()
+    vec.push(&argv, qoz_binary_path())
+    vec.push(&argv, "expected-at")
+    vec.push(&argv, "--stdin")
+    vec.push(&argv, path)
+    vec.push(&argv, strings.i64_to_string(line + 1))
+    vec.push(&argv, strings.i64_to_string(col + 1))
+    let result = os.process_exec_input(argv, text)
+    if result.exit_code != 0 { return }
+    let lines = strings.split(result.stdout, 10)
+    if len(lines) < 2 { return }
+    let qualified = lines[0]
+    if strings.eq_raw(qualified, "") { return }
+    var i: i64 = 1
+    while i < len(lines) {
+        let v = lines[i]
+        if !strings.eq_raw(v, "") {
+            push_completion_if_match_doc(items, v, prefix, KIND_FIELD(), qualified, "")
+        }
+        i += 1
+    }
 }
 
 let empty_completion_list(): json.Json = {

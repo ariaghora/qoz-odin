@@ -14,6 +14,11 @@ type TypeError = {
     message: string,
 }
 
+type ExpectedHint = {
+    span: ast.Span,
+    ty:   ty.Ty,
+}
+
 type TyContext = {
     enums:        Map<string, ast.Decl>,
     structs:      Map<string, ast.Decl>,
@@ -71,6 +76,13 @@ type TyContext = {
     // Per-expression TypeExpr cache, keyed by the Expr's runtime
     // pointer cast to i64. Populated by synth. Consumed by emit.
     expr_types:   Map<i64, ast.TypeExpr>,
+    // Bidirectional expected-type hints recorded for every
+    // expression visited by infer_calls_expr with a non-error
+    // expected. Stored as a flat list so the LSP can find the
+    // innermost expression at a cursor position with a single
+    // pass. The checker itself does not consume this after the
+    // rewrite pass.
+    expected_hints: Vec<check.ExpectedHint>,
     // Return type of the function currently being checked. Used by
     // EReturn synth and by the tail-type check at end of body.
     // TyError means no surrounding function (top-level expression).
@@ -97,6 +109,7 @@ let make_ctx(): check.TyContext = TyContext {
     errors:      vec.make(),
     type_params: map.make(),
     expr_types:  map.make(),
+    expected_hints: vec.make(),
     current_ret_ty: ty.ty_error_(),
 }
 
@@ -686,6 +699,35 @@ let env_has(env: *Env, name: string): bool = {
 }
 
 // --- Expression synthesis ---
+
+// Find the innermost expected-type hint covering the cursor.
+// Walks expected_hints and returns the hint whose span starts
+// closest to but not after `(line, col)` in `file`. Returns
+// None when no hint precedes the cursor.
+let expected_at_cursor(tc: *check.TyContext, file: string, line: i64, col: i64): Option<ty.Ty> = {
+    var best_line: i64 = -1
+    var best_col: i64 = -1
+    var found = false
+    var result: ty.Ty = ty.ty_error_()
+    for h in tc.expected_hints {
+        let same_file   = strings.eq_raw(h.span.file, file)
+        let before_line = h.span.line < line
+        let same_line   = h.span.line == line
+        let at_or_before_col = h.span.col <= col
+        let in_range = same_file && (before_line || (same_line && at_or_before_col))
+        if in_range {
+            let later_line = h.span.line > best_line
+            let later_col  = h.span.line == best_line && h.span.col > best_col
+            if !found || later_line || later_col {
+                best_line = h.span.line
+                best_col = h.span.col
+                result = h.ty
+                found = true
+            }
+        }
+    }
+    if found { Some(result) } else { None }
+}
 
 let synth(tc: *check.TyContext, env: *Env, e: ast.Expr): ty.Ty = {
     let t = synth_inner(tc, env, e)
@@ -2475,6 +2517,9 @@ let pick_c_enum_home(tc: *check.TyContext, name: string, expected: ty.Ty): Optio
 }
 
 let infer_calls_expr(tc: *check.TyContext, env: *Env, e: ast.Expr, expected: ty.Ty): ast.Expr = {
+    if !ty.ty_is_error(expected) {
+        vec.push(&tc.expected_hints, check.ExpectedHint { span: ast.span_of_expr(e), ty: expected })
+    }
     match e {
     | EInt(_, _)              -> e
     | EFloat(_, _)            -> e

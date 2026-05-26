@@ -1243,6 +1243,65 @@ let cmd_run(path: string, qoz_root: string) = {
 // stdin is read to EOF and replaces the on-disk content for
 // `path` during the load. The LSP relies on this to type-check
 // an unsaved buffer without touching the source tree.
+// Run the check pipeline against `path` and print the qualified
+// name of the C-style enum expected at (line, col), followed by
+// one variant per line. Empty output means no C-enum context.
+// Used by the LSP to drive type-directed completion of bare
+// variant names. Line and col are 1-indexed to match Qoz spans.
+let cmd_expected_at(path: string, qoz_root: string, line: i64, col: i64, from_stdin: bool) = {
+    let paths = resolve_entry_paths(path)
+    let ctx = make_compile_ctx(qoz_root)
+    var overrides: Map<string, string> = map.make()
+    if from_stdin {
+        let buffer = io.read_all_stdin()
+        for ep in paths.entries { map.set(&overrides, ep, buffer) }
+    }
+    let loaded = load_all_entries(paths.entries, paths.primary, qoz_root, ctx, &overrides)
+    let file = loaded.file
+    var tc = check.make_ctx()
+    tc.type_homes = loaded.type_homes
+    tc.fn_homes   = loaded.fn_homes
+    tc.file_pkgs  = loaded.file_pkgs
+    check.register_file(&tc, file)
+    check.validate_signatures(&tc, file)
+    let _inferred = check.infer_calls(&tc, file)
+    let primary = paths.primary
+    match check.expected_at_cursor(&tc, primary, line, col) {
+    | Some(t) -> {
+        if let TyCEnum(home, renamed, _) = t {
+            let short_name = enum_short_name(renamed, home)
+            fmt.println(`{home}.{short_name}`)
+            let key = strings.cat(strings.cat(home, "."), renamed)
+            match map.get(&tc.c_enums, key) {
+            | Some(d) -> {
+                match d {
+                | DCEnum(_, _, _, variants) -> {
+                    for v in variants { fmt.println(v) }
+                }
+                // Only DCEnum populates c_enums.
+                | _ -> { }
+                }
+            }
+            | None -> { }
+            }
+        }
+    }
+    | None -> { }
+    }
+    let _keep_alive = loaded.sources
+    os.exit(0)
+}
+
+// Strip the `<home>_` prefix from a renamed enum identifier so
+// the printed name matches user-facing source syntax.
+let enum_short_name(renamed: string, home: string): string = {
+    let prefix = strings.cat(home, "_")
+    if strings.has_prefix(renamed, prefix) {
+        return strings.slice(renamed, len(prefix), len(renamed))
+    }
+    renamed
+}
+
 let cmd_check(path: string, qoz_root: string, from_stdin: bool) = {
     let paths = resolve_entry_paths(path)
     let ctx = make_compile_ctx(qoz_root)
@@ -1295,6 +1354,26 @@ let main() = {
             os.exit(1)
         }
         cmd_fmt(args[2])
+        os.exit(0)
+    } else { if strings.eq_raw(first, "expected-at") {
+        // `qoz expected-at [--stdin] <path> <line> <col>` prints
+        // the qualified C-enum name expected at the cursor, plus
+        // one variant per line. Used by the LSP for type-directed
+        // bare-variant completion.
+        var from_stdin = false
+        var idx: i64 = 2
+        if len(args) > 2 && strings.eq_raw(args[2], "--stdin") {
+            from_stdin = true
+            idx = 3
+        }
+        if len(args) < idx + 3 {
+            fmt.println("usage: qoz expected-at [--stdin] <path> <line> <col>")
+            os.exit(1)
+        }
+        let target = args[idx]
+        let line = strings.parse_int(args[idx + 1])
+        let col = strings.parse_int(args[idx + 2])
+        cmd_expected_at(target, qoz_root, line, col, from_stdin)
         os.exit(0)
     } else { if strings.eq_raw(first, "check") {
         // `qoz check <path>` reads <path> from disk.
@@ -1354,5 +1433,5 @@ let main() = {
         let built = cmd_build(first, qoz_root)
         fmt.println(`wrote {built.c_path}`)
         os.exit(0)
-    } } } } }
+    } } } } } }
 }
