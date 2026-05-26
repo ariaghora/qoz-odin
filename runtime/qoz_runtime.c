@@ -782,9 +782,9 @@ void qoz_process_exec_input(qoz_string *argv, int64_t n,
     close(err_pipe[1]);
 
     /* Write input then close so the child sees EOF. A short write is
-     * unusual on a pipe but possible if the kernel buffer fills; the
-     * loop handles it. EPIPE means the child exited early and we
-     * stop writing rather than crash on SIGPIPE. */
+     * unusual on a pipe but possible if the kernel buffer fills, so
+     * the loop handles it. EPIPE means the child exited early and
+     * we stop writing rather than crash on SIGPIPE. */
     signal(SIGPIPE, SIG_IGN);
     int64_t written = 0;
     while (written < in_len) {

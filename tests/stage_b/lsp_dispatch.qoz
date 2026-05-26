@@ -1,7 +1,7 @@
 // expect: 0
 // Drive the LSP dispatcher with hand-built JSON requests and assert
 // the buffer store and response envelopes behave as expected. No
-// stdio is exercised; the test calls dispatch() directly.
+// stdio is exercised, because the test calls dispatch() directly.
 
 import editor_support/lsp
 import encoding/json

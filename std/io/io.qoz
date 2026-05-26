@@ -64,7 +64,7 @@ let read_line(): Option<string> = {
 }
 
 // Read exactly `n` bytes from stdin. Returns the bytes that were
-// actually read; a shorter result means EOF arrived early.
+// actually read. A shorter result means EOF arrived early.
 let read_bytes(n: i64): string = {
     if n <= 0 { return string_alias(nil as *void, 0) }
     let fp = stdin_handle()

@@ -56,8 +56,8 @@ let ends_header_block(headers: string): bool = {
 
 // Parse a Content-Length value out of an accumulated headers blob.
 // Returns the byte count, or -1 on failure. The header name match
-// is ASCII case-insensitive; surrounding whitespace on the value is
-// trimmed.
+// is ASCII case-insensitive. Surrounding whitespace on the value
+// is trimmed.
 let parse_content_length(headers: string): i64 = {
     let lines = strings.split(headers, 10)
     var found: i64 = 0 - 1
@@ -230,13 +230,12 @@ let initialize_result(): json.Json = {
 // --- Diagnostics ---------------------------------------------------
 
 // Compute diagnostics for a buffer. Writes the buffer text to a
-// dot-prefixed temp file alongside the real source, then shells
-// out to `qoz check <temp>`. The compiler treats the temp file as
-// the entry. Imports resolve from disk so cross-package type
-// errors surface. The temp file is removed after the check
-// returns. Diagnostics arrive on stdout as
-// `file:line:col: message`, one per line; the temp path is
-// rewritten back to the original URI.
+// temp file under /tmp, then shells out to `qoz check <temp>`.
+// The compiler treats the temp file as the entry. Imports resolve
+// from disk so cross-package type errors surface. The temp file
+// is removed after the check returns. Diagnostics arrive on
+// stdout as `file:line:col: message`, one per line. Each line is
+// rewritten back to the original URI before the editor sees it.
 let check_buffer(uri: string, text: string): Vec<lsp.Diagnostic> = {
     var diags: Vec<lsp.Diagnostic> = vec.make()
     let path = file_path_of_uri(uri)
@@ -299,7 +298,7 @@ let remove_quiet(path: string) = {
 
 // Translate a single `file:line:col: message` line into a
 // Diagnostic. Lines that do not match the format are skipped. Only
-// diagnostics whose file matches `expected_path` are kept;
+// diagnostics whose file matches `expected_path` are kept, because
 // diagnostics anchored at other files have nowhere to publish.
 let parse_diagnostic_line(line: string, expected_path: string): Option<lsp.Diagnostic> = {
     if !strings.has_prefix(line, strings.cat(expected_path, ":")) { return None }
@@ -335,8 +334,8 @@ let file_path_of_uri(uri: string): string = {
     uri
 }
 
-// Path to the qoz binary. The LSP_QOZ_PATH env var overrides;
-// otherwise it falls back to whichever `qoz` is on PATH.
+// Path to the qoz binary. The LSP_QOZ_PATH env var wins when set.
+// Otherwise the lookup falls back to whichever `qoz` is on PATH.
 let qoz_binary_path(): string = {
     let p = os.getenv("LSP_QOZ_PATH")
     if len(p) > 0 { p } else { "qoz" }
@@ -471,8 +470,8 @@ let find_definition(text: string, name: string): Option<ast.Span> = {
 }
 
 // Build a LSP Location JSON value pointing at `span` inside `uri`.
-// The parser reports 1-indexed lines and cols; the LSP spec uses
-// 0-indexed.
+// The parser reports 1-indexed lines and cols. The LSP spec is
+// 0-indexed, so each coordinate is decremented before emission.
 let location_of(uri: string, span: ast.Span, name_len: i64): json.Json = {
     let l = if span.line > 0 { span.line - 1 } else { 0 }
     let c = if span.col  > 0 { span.col  - 1 } else { 0 }
