@@ -748,7 +748,8 @@ let hover_response(s: *Server, params: json.Json): json.Json = {
             if len(src) < 0 { return Null }
             let line_text = nth_line_of(src, hit.span.line)
             if strings.eq_raw(line_text, "") { return Null }
-            return hover_markdown(line_text)
+            let doc = doc_comment_above(src, hit.span.line)
+            return hover_markdown(doc, line_text)
         }
         }
     }
@@ -759,18 +760,70 @@ let hover_response(s: *Server, params: json.Json): json.Json = {
     | Some(sp) -> {
         let line_text = nth_line_of(text, sp.line)
         if strings.eq_raw(line_text, "") { return Null }
-        hover_markdown(line_text)
+        let doc = doc_comment_above(text, sp.line)
+        hover_markdown(doc, line_text)
     }
     }
 }
 
-let hover_markdown(line_text: string): json.Json = {
+// Render hover markdown. When `doc` is non-empty it appears above
+// the signature block separated by a horizontal rule so the
+// documentation reads as prose without crowding the code.
+let hover_markdown(doc: string, line_text: string): json.Json = {
+    var value: string = ""
+    if !strings.eq_raw(doc, "") {
+        value = strings.cat(doc, "\n\n---\n\n")
+    }
+    value = strings.cat(value, strings.cat(strings.cat("```qoz\n", line_text), "\n```"))
     var contents: Map<string, json.Json> = map.make()
     contents["kind"]  = Str("markdown")
-    contents["value"] = Str(strings.cat(strings.cat("```qoz\n", line_text), "\n```"))
+    contents["value"] = Str(value)
     var m: Map<string, json.Json> = map.make()
     m["contents"] = Obj(contents)
     Obj(m)
+}
+
+// Collect the block of `///` doc comments immediately above the
+// declaration at `decl_line` (1-indexed). Lines are returned in
+// source order with the `///` prefix and one optional leading
+// space stripped. Empty when no `///` comment precedes the
+// declaration.
+let doc_comment_above(text: string, decl_line: i64): string = {
+    if decl_line <= 1 { return "" }
+    var collected: Vec<string> = vec.make()
+    var i: i64 = decl_line - 1
+    while i >= 1 {
+        let line_text = nth_line_of(text, i)
+        let trimmed = strip_leading_whitespace(line_text)
+        if !strings.has_prefix(trimmed, "///") { i = 0 } else {
+            var rest = strings.slice(trimmed, 3, len(trimmed))
+            // Strip a single leading space so `/// foo` renders as `foo`.
+            if len(rest) > 0 && strings.byte_at(rest, 0) == 32 {
+                rest = strings.slice(rest, 1, len(rest))
+            }
+            vec.push(&collected, rest)
+            i -= 1
+        }
+    }
+    if len(collected) == 0 { return "" }
+    var out: string = ""
+    var j: i64 = len(collected) - 1
+    while j >= 0 {
+        if !strings.eq_raw(out, "") { out = strings.cat(out, "\n") }
+        out = strings.cat(out, collected[j])
+        j -= 1
+    }
+    out
+}
+
+let strip_leading_whitespace(s: string): string = {
+    let n = len(s)
+    var i: i64 = 0
+    while i < n {
+        let b = strings.byte_at(s, i)
+        if b == 32 || b == 9 { i += 1 } else { return strings.slice(s, i, n) }
+    }
+    ""
 }
 
 // Return the nth (1-indexed) line of `text` excluding the
