@@ -28,6 +28,32 @@ int64_t qoz_time_unix_micros(void) {
     return (int64_t)tv.tv_sec * 1000000 + (int64_t)tv.tv_usec;
 }
 
+/* Stdio access for std/io. The handles return opaque FILE pointers
+ * so the FFI does not see the FILE struct. fgetc, fread, and fflush
+ * are wrapped because their libc signatures use FILE* and size_t,
+ * neither of which matches the (void*, i64) shape Qoz uses for the
+ * extern. */
+void *qoz_stdin_handle(void) {
+    return (void *)stdin;
+}
+
+void *qoz_stdout_handle(void) {
+    return (void *)stdout;
+}
+
+int32_t qoz_fgetc(void *fp) {
+    return (int32_t)fgetc((FILE *)fp);
+}
+
+int64_t qoz_fread(void *buf, int64_t size, int64_t n, void *fp) {
+    if (size <= 0 || n <= 0) return 0;
+    return (int64_t)fread(buf, (size_t)size, (size_t)n, (FILE *)fp);
+}
+
+int32_t qoz_fflush(void *fp) {
+    return (int32_t)fflush((FILE *)fp);
+}
+
 qoz_string qoz_target_os(void) {
 #if defined(__APPLE__)
     return (qoz_string){"darwin", 6, NULL};

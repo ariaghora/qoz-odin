@@ -1,0 +1,91 @@
+// std/io: blocking stdio access.
+//
+// Wraps libc fread, fgetc, and fflush against the FILE handles
+// surfaced by the runtime's qoz_stdin_handle / qoz_stdout_handle.
+// All logic above the FFI is plain Qoz.
+
+import mem
+
+@link_name("qoz_stdin_handle")
+external let stdin_handle(): *void
+
+@link_name("qoz_stdout_handle")
+external let stdout_handle(): *void
+
+@link_name("qoz_fgetc")
+external let fgetc(fp: *void): i32
+
+@link_name("qoz_fread")
+external let fread(buf: *void, size: i64, n: i64, fp: *void): i64
+
+@link_name("qoz_fflush")
+external let fflush(fp: *void): i32
+
+@link_name("qoz_string_alias")
+external let string_alias(buf: *void, n: i64): string
+
+@link_name("qoz_bytes_copy")
+external let bytes_copy(dst: *void, src: *void, n: i64)
+
+// Marker returned by read_line on EOF before any byte was read.
+let EOF: i32 = 0 - 1
+
+// Read one line from stdin, up to and including the trailing
+// newline. Returns None when stdin reaches EOF before any byte was
+// read. The trailing newline is preserved so LSP-style framing
+// callers can distinguish blank-line terminators.
+let read_line(): Option<string> = {
+    let fp = stdin_handle()
+    var cap: i64 = 128
+    var n: i64 = 0
+    var buf = mem.alloc(cap) as *u8
+    var hit_eof = true
+    var done = false
+    while !done {
+        let c = fgetc(fp)
+        if c == EOF {
+            done = true
+        } else {
+            hit_eof = false
+            if n + 1 > cap {
+                let new_cap = cap * 2
+                let nb = mem.realloc(buf as *void, new_cap) as *u8
+                buf = nb
+                cap = new_cap
+            }
+            buf[n] = c as u8
+            n += 1
+            if c == 10 { done = true }
+        }
+    }
+    if hit_eof && n == 0 { return None }
+    Some(string_alias(buf as *void, n))
+}
+
+// Read exactly `n` bytes from stdin. Returns the bytes that were
+// actually read; a shorter result means EOF arrived early.
+let read_bytes(n: i64): string = {
+    if n <= 0 { return string_alias(nil as *void, 0) }
+    let fp = stdin_handle()
+    let buf = mem.alloc(n)
+    var total: i64 = 0
+    var done = false
+    while !done {
+        let dst_ptr = (buf as i64) + total
+        let want = n - total
+        let got = fread(dst_ptr as *void, 1, want, fp)
+        if got <= 0 {
+            done = true
+        } else {
+            total += got
+            if total >= n { done = true }
+        }
+    }
+    string_alias(buf, total)
+}
+
+// Flush stdout. LSP frame writers must call this after every frame
+// so the response reaches the client before the next read blocks.
+let flush() = {
+    let _ = fflush(stdout_handle())
+}

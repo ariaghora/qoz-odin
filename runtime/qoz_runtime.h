@@ -123,6 +123,15 @@ qoz_string qoz_target_os(void);
 qoz_string qoz_target_arch(void);
 int64_t    qoz_target_pointer_size(void);
 
+/* Stdio bridge for std/io. Handles return opaque FILE pointers, and
+ * the wrappers below expose fgetc, fread, and fflush in signatures
+ * that match the Qoz FFI (i32 / i64 / *void, no size_t or FILE*). */
+void   *qoz_stdin_handle(void);
+void   *qoz_stdout_handle(void);
+int32_t qoz_fgetc(void *fp);
+int64_t qoz_fread(void *buf, int64_t size, int64_t n, void *fp);
+int32_t qoz_fflush(void *fp);
+
 /* Growable byte buffer used by std/strings::Strbuf. The struct layout
  * matches the Qoz-side Strbuf record so a Qoz value can be passed in
  * directly. */

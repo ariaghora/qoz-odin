@@ -7,7 +7,7 @@ which of the two editors you run.
 Layout:
 
 ```
-editor-support/vim/
+editor_support/vim/
   ftdetect/qoz.vim    map *.qoz to filetype qoz
   syntax/qoz.vim      highlight definitions
   ftplugin/qoz.vim    commentstring and 4-space indentation
@@ -31,7 +31,7 @@ then triggers the filetype and the syntax module loads.
 ```lua
 return {
   {
-    dir = "/absolute/path/to/qoz-odin/editor-support/vim",
+    dir = "/absolute/path/to/qoz-odin/editor_support/vim",
     name = "qoz.vim",
     ft = "qoz",
     init = function()
@@ -47,7 +47,7 @@ Most plugin managers can point at a subdirectory of a checked-out
 repo. vim-plug example:
 
 ```
-Plug 'your-fork/qoz-odin', { 'rtp': 'editor-support/vim' }
+Plug 'your-fork/qoz-odin', { 'rtp': 'editor_support/vim' }
 ```
 
 ## What is highlighted

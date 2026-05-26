@@ -1,0 +1,23 @@
+// expect: 0
+// Pure unit test for the LSP frame header parser. Drives the
+// content-length parser through valid and invalid header blobs and
+// asserts the right byte counts come back.
+
+import editor_support/lsp
+
+let check(label: string, headers: string, want: i64): i64 = {
+    let got = lsp.parse_content_length(headers)
+    if got == want { 0 } else { 1 }
+}
+
+let main(): i64 = {
+    var bad: i64 = 0
+    bad += check("simple", "Content-Length: 42\r\n\r\n", 42)
+    bad += check("case",   "content-length: 7\r\n\r\n", 7)
+    bad += check("mixed",  "CONTENT-Length:  100\r\n\r\n", 100)
+    bad += check("noisy",  "X-Foo: bar\r\nContent-Length: 9\r\n\r\n", 9)
+    bad += check("absent", "X-Foo: bar\r\n\r\n", 0 - 1)
+    bad += check("zero",   "Content-Length: 0\r\n\r\n", 0 - 1)
+    bad += check("alpha",  "Content-Length: abc\r\n\r\n", 0 - 1)
+    bad
+}

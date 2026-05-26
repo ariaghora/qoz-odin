@@ -1,0 +1,106 @@
+// compiler/lsp/frame: JSON-RPC frame reader and writer.
+//
+// LSP uses Content-Length-framed JSON over stdio:
+//
+//     Content-Length: 42\r\n
+//     \r\n
+//     <42 bytes of JSON>
+//
+// The pure parser (parse_content_length) is separated from the
+// stdin-driven reader so unit tests can exercise the parsing logic
+// without touching real I/O.
+
+import strings
+import fmt
+import io
+
+// Read one complete frame from stdin. Returns None at EOF or when
+// the header is malformed. Blocking I/O suspends the process, so a
+// quiet stream costs no CPU and no explicit sleep is needed.
+let read_frame(): Option<string> = {
+    var headers = ""
+    var done_headers = false
+    while !done_headers {
+        match io.read_line() {
+        | None    -> return None
+        | Some(l) -> {
+            headers = strings.cat(headers, l)
+            if ends_header_block(headers) { done_headers = true }
+        }
+        }
+    }
+    let n = parse_content_length(headers)
+    if n < 0 { return None }
+    if n == 0 { return Some("") }
+    let body = io.read_bytes(n)
+    if len(body) < n { return None }
+    Some(body)
+}
+
+// Write one Content-Length-framed JSON body to stdout and flush.
+let write_frame(body: string) = {
+    fmt.print(`Content-Length: {len(body)}\r\n\r\n`)
+    fmt.print(body)
+    io.flush()
+}
+
+// True when the accumulated header bytes end with a blank line.
+// Both `\r\n\r\n` (LSP-correct) and `\n\n` (forgiving) terminate.
+let ends_header_block(headers: string): bool = {
+    strings.has_suffix(headers, "\r\n\r\n") || strings.has_suffix(headers, "\n\n")
+}
+
+// Parse a Content-Length value out of an accumulated headers blob.
+// Returns the byte count, or -1 on failure. The header name match
+// is ASCII case-insensitive; surrounding whitespace on the value is
+// trimmed.
+let parse_content_length(headers: string): i64 = {
+    let lines = strings.split(headers, 10)
+    var found: i64 = 0 - 1
+    for line in lines {
+        let trimmed = strip_cr(line)
+        if has_prefix_ci(trimmed, "content-length:") {
+            let rest = strings.slice(trimmed, 15, len(trimmed))
+            let value = strip_spaces(rest)
+            let n = strings.parse_int(value)
+            if n > 0 { found = n }
+        }
+    }
+    found
+}
+
+let strip_cr(s: string): string = {
+    let n = len(s)
+    if n > 0 && strings.byte_at(s, n - 1) == 13 {
+        return strings.slice(s, 0, n - 1)
+    }
+    s
+}
+
+let strip_spaces(s: string): string = {
+    let n = len(s)
+    var lo: i64 = 0
+    var hi: i64 = n
+    while lo < hi && strings.byte_at(s, lo) == 32 { lo += 1 }
+    while hi > lo && strings.byte_at(s, hi - 1) == 32 { hi -= 1 }
+    strings.slice(s, lo, hi)
+}
+
+let has_prefix_ci(s: string, prefix: string): bool = {
+    let sn = len(s)
+    let pn = len(prefix)
+    if pn > sn { return false }
+    var i: i64 = 0
+    while i < pn {
+        let sc = lower_byte(strings.byte_at(s, i))
+        let pc = lower_byte(strings.byte_at(prefix, i))
+        if sc != pc { return false }
+        i += 1
+    }
+    true
+}
+
+let lower_byte(b: i64): i64 = {
+    if b >= 65 && b <= 90 { return b + 32 }
+    b
+}
