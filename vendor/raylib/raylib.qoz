@@ -6,11 +6,13 @@
 // Importing this package is enough. User programs do not need to
 // repeat the link directives at their entry point.
 //
-// The binding focuses on 2D: window, drawing primitives, input,
-// timing, randomness, collision tests, and Camera2D. 3D, audio,
-// texture/image loading, and font handling are intentionally
-// omitted because their C-side structs carry pointer fields that
-// the binding cannot mirror without additional helpers.
+// Covers the parts of raylib that map cleanly to Qoz: window and
+// drawing, input, collision, Camera2D / Camera3D, textures and
+// images, fonts, render targets, shaders, audio, and the 3D
+// drawing primitives. Mesh and Model bindings are not included
+// yet because their C structs carry fixed-size float arrays that
+// the Qoz field syntax cannot mirror without a manual layout
+// shim.
 
 #link_path("vendor/raylib")
 #link_library("raylib")
@@ -81,6 +83,143 @@ type Camera2D = {
     target:   Vector2,
     rotation: f32,
     zoom:     f32,
+}
+
+/// 3D camera with eye position, focus target, up axis, vertical
+/// field of view in degrees, and projection mode (perspective or
+/// orthographic). Use with `begin_mode_3d` / `end_mode_3d`.
+type Camera3D = {
+    position:   Vector3,
+    target:     Vector3,
+    up:         Vector3,
+    fovy:       f32,
+    projection: i32,
+}
+
+/// 4x4 column-major matrix laid out as 16 floats. The unusual
+/// field order matches raylib's: m0,m4,m8,m12 form the first row,
+/// then m1,m5,m9,m13, then m2,m6,m10,m14, then m3,m7,m11,m15.
+type Matrix = {
+    m0:  f32, m4:  f32, m8:  f32, m12: f32,
+    m1:  f32, m5:  f32, m9:  f32, m13: f32,
+    m2:  f32, m6:  f32, m10: f32, m14: f32,
+    m3:  f32, m7:  f32, m11: f32, m15: f32,
+}
+
+/// GPU texture handle plus dimensions and pixel format. Construct
+/// one with `load_texture` or `load_texture_from_image`. Texture2D
+/// is an alias of this type in C; Qoz mirrors raylib's typedef.
+type Texture = {
+    id:      u32,
+    width:   i32,
+    height:  i32,
+    mipmaps: i32,
+    format:  i32,
+}
+
+/// Same memory layout as `Texture`. Re-declared for clarity at
+/// call sites that want the 2D-specific name.
+type Texture2D = {
+    id:      u32,
+    width:   i32,
+    height:  i32,
+    mipmaps: i32,
+    format:  i32,
+}
+
+/// CPU-side pixel buffer with width, height, mipmap count, and
+/// pixel format identifier. Use `load_image` to read one from
+/// disk or the `gen_image_*` helpers to construct one
+/// procedurally. Convert to a `Texture` via `load_texture_from_image`.
+type Image = {
+    data:    *void,
+    width:   i32,
+    height:  i32,
+    mipmaps: i32,
+    format:  i32,
+}
+
+/// Off-screen render target. The `texture` field is the color
+/// buffer the rest of the program samples from; `depth` is the
+/// depth buffer raylib attaches automatically.
+type RenderTexture = {
+    id:      u32,
+    texture: Texture,
+    depth:   Texture,
+}
+
+type RenderTexture2D = {
+    id:      u32,
+    texture: Texture,
+    depth:   Texture,
+}
+
+/// Per-glyph layout info baked into a font atlas. `image` is the
+/// glyph's pixel data. Most user code accesses these via a `Font`
+/// rather than building them directly.
+type GlyphInfo = {
+    value:    i32,
+    offset_x: i32,
+    offset_y: i32,
+    advance_x: i32,
+    image:    Image,
+}
+
+/// Bitmap font atlas, glyph rectangles, and per-glyph layout
+/// info. `base_size` is the font's design size in pixels;
+/// `glyph_count` is the size of the `recs` and `glyphs` arrays.
+type Font = {
+    base_size:     i32,
+    glyph_count:   i32,
+    glyph_padding: i32,
+    texture:       Texture2D,
+    recs:          *Rectangle,
+    glyphs:        *GlyphInfo,
+}
+
+/// Compiled GPU shader plus a pointer to its uniform location
+/// table (one i32 per known engine-defined location slot).
+type Shader = {
+    id:   u32,
+    locs: *i32,
+}
+
+/// Streaming audio handle. `buffer` and `processor` are opaque
+/// engine-internal pointers and should be left as raylib returns
+/// them.
+type AudioStream = {
+    buffer:      *void,
+    processor:   *void,
+    sample_rate: u32,
+    sample_size: u32,
+    channels:    u32,
+}
+
+/// Decoded audio data sitting in RAM. The `data` pointer holds
+/// `frame_count * channels * (sample_size / 8)` bytes.
+type Wave = {
+    frame_count: u32,
+    sample_rate: u32,
+    sample_size: u32,
+    channels:    u32,
+    data:        *void,
+}
+
+/// Loaded sound effect backed by an AudioStream. Pass to
+/// `play_sound`, `stop_sound`, and so on.
+type Sound = {
+    stream:      AudioStream,
+    frame_count: u32,
+}
+
+/// Streaming music handle (mp3, ogg, flac, xm, mod). Call
+/// `update_music_stream` every frame to keep the buffer fed.
+type Music = {
+    stream:      AudioStream,
+    frame_count: u32,
+    looping:     bool,
+    ctx_type:    i32,
+    ctx_data:    *void,
 }
 
 // --- Named colours --------------------------------------------------
@@ -447,6 +586,458 @@ external let get_gamepad_axis_count(gamepad: i32): i32
 
 @link_name("GetGamepadAxisMovement")
 external let get_gamepad_axis_movement(gamepad: i32, axis: i32): f32
+
+// --- Texture loading and use ----------------------------------------
+
+@link_name("LoadTexture")
+external let load_texture(file_name: cstring): Texture2D
+
+@link_name("LoadTextureFromImage")
+external let load_texture_from_image(image: Image): Texture2D
+
+@link_name("IsTextureValid")
+external let is_texture_valid(texture: Texture2D): bool
+
+@link_name("UnloadTexture")
+external let unload_texture(texture: Texture2D)
+
+@link_name("UpdateTexture")
+external let update_texture(texture: Texture2D, pixels: *void)
+
+@link_name("UpdateTextureRec")
+external let update_texture_rec(texture: Texture2D, rec: Rectangle, pixels: *void)
+
+@link_name("GenTextureMipmaps")
+external let gen_texture_mipmaps(texture: *Texture2D)
+
+@link_name("SetTextureFilter")
+external let set_texture_filter(texture: Texture2D, filter: i32)
+
+@link_name("SetTextureWrap")
+external let set_texture_wrap(texture: Texture2D, wrap: i32)
+
+@link_name("DrawTexture")
+external let draw_texture(texture: Texture2D, pos_x: i32, pos_y: i32, tint: Color)
+
+@link_name("DrawTextureV")
+external let draw_texture_v(texture: Texture2D, position: Vector2, tint: Color)
+
+@link_name("DrawTextureEx")
+external let draw_texture_ex(texture: Texture2D, position: Vector2, rotation: f32, scale: f32, tint: Color)
+
+@link_name("DrawTextureRec")
+external let draw_texture_rec(texture: Texture2D, source: Rectangle, position: Vector2, tint: Color)
+
+@link_name("DrawTexturePro")
+external let draw_texture_pro(texture: Texture2D, source: Rectangle, dest: Rectangle, origin: Vector2, rotation: f32, tint: Color)
+
+// --- Image loading and manipulation ---------------------------------
+
+@link_name("LoadImage")
+external let load_image(file_name: cstring): Image
+
+@link_name("LoadImageRaw")
+external let load_image_raw(file_name: cstring, width: i32, height: i32, format: i32, header_size: i32): Image
+
+@link_name("LoadImageFromMemory")
+external let load_image_from_memory(file_type: cstring, file_data: *u8, data_size: i32): Image
+
+@link_name("LoadImageFromTexture")
+external let load_image_from_texture(texture: Texture2D): Image
+
+@link_name("LoadImageFromScreen")
+external let load_image_from_screen(): Image
+
+@link_name("IsImageValid")
+external let is_image_valid(image: Image): bool
+
+@link_name("UnloadImage")
+external let unload_image(image: Image)
+
+@link_name("ExportImage")
+external let export_image(image: Image, file_name: cstring): bool
+
+@link_name("GenImageColor")
+external let gen_image_color(width: i32, height: i32, color: Color): Image
+
+@link_name("GenImageGradientLinear")
+external let gen_image_gradient_linear(width: i32, height: i32, direction: i32, start: Color, end_c: Color): Image
+
+@link_name("GenImageGradientRadial")
+external let gen_image_gradient_radial(width: i32, height: i32, density: f32, inner: Color, outer: Color): Image
+
+@link_name("GenImageChecked")
+external let gen_image_checked(width: i32, height: i32, checks_x: i32, checks_y: i32, c1: Color, c2: Color): Image
+
+@link_name("GenImageWhiteNoise")
+external let gen_image_white_noise(width: i32, height: i32, factor: f32): Image
+
+@link_name("GenImagePerlinNoise")
+external let gen_image_perlin_noise(width: i32, height: i32, offset_x: i32, offset_y: i32, scale: f32): Image
+
+@link_name("ImageCopy")
+external let image_copy(image: Image): Image
+
+@link_name("ImageFromImage")
+external let image_from_image(image: Image, rec: Rectangle): Image
+
+@link_name("ImageFormat")
+external let image_format(image: *Image, new_format: i32)
+
+@link_name("ImageCrop")
+external let image_crop(image: *Image, crop: Rectangle)
+
+@link_name("ImageResize")
+external let image_resize(image: *Image, new_width: i32, new_height: i32)
+
+@link_name("ImageResizeNN")
+external let image_resize_nn(image: *Image, new_width: i32, new_height: i32)
+
+@link_name("ImageFlipVertical")
+external let image_flip_vertical(image: *Image)
+
+@link_name("ImageFlipHorizontal")
+external let image_flip_horizontal(image: *Image)
+
+@link_name("ImageRotate")
+external let image_rotate(image: *Image, degrees: i32)
+
+@link_name("ImageColorTint")
+external let image_color_tint(image: *Image, color: Color)
+
+@link_name("ImageColorInvert")
+external let image_color_invert(image: *Image)
+
+@link_name("ImageColorGrayscale")
+external let image_color_grayscale(image: *Image)
+
+@link_name("ImageColorBrightness")
+external let image_color_brightness(image: *Image, brightness: i32)
+
+@link_name("ImageColorContrast")
+external let image_color_contrast(image: *Image, contrast: f32)
+
+// --- Render textures ------------------------------------------------
+
+@link_name("LoadRenderTexture")
+external let load_render_texture(width: i32, height: i32): RenderTexture2D
+
+@link_name("IsRenderTextureValid")
+external let is_render_texture_valid(target: RenderTexture2D): bool
+
+@link_name("UnloadRenderTexture")
+external let unload_render_texture(target: RenderTexture2D)
+
+@link_name("BeginTextureMode")
+external let begin_texture_mode(target: RenderTexture2D)
+
+@link_name("EndTextureMode")
+external let end_texture_mode()
+
+// --- Fonts and text -------------------------------------------------
+
+@link_name("GetFontDefault")
+external let get_font_default(): Font
+
+@link_name("LoadFont")
+external let load_font(file_name: cstring): Font
+
+@link_name("LoadFontEx")
+external let load_font_ex(file_name: cstring, font_size: i32, codepoints: *i32, codepoint_count: i32): Font
+
+@link_name("LoadFontFromImage")
+external let load_font_from_image(image: Image, key: Color, first_char: i32): Font
+
+@link_name("IsFontValid")
+external let is_font_valid(font: Font): bool
+
+@link_name("UnloadFont")
+external let unload_font(font: Font)
+
+@link_name("DrawTextEx")
+external let draw_text_ex(font: Font, text: cstring, position: Vector2, font_size: f32, spacing: f32, tint: Color)
+
+@link_name("DrawTextPro")
+external let draw_text_pro(font: Font, text: cstring, position: Vector2, origin: Vector2, rotation: f32, font_size: f32, spacing: f32, tint: Color)
+
+@link_name("MeasureTextEx")
+external let measure_text_ex(font: Font, text: cstring, font_size: f32, spacing: f32): Vector2
+
+// --- Shaders --------------------------------------------------------
+
+@link_name("LoadShader")
+external let load_shader(vs_file_name: cstring, fs_file_name: cstring): Shader
+
+@link_name("LoadShaderFromMemory")
+external let load_shader_from_memory(vs_code: cstring, fs_code: cstring): Shader
+
+@link_name("IsShaderValid")
+external let is_shader_valid(shader: Shader): bool
+
+@link_name("GetShaderLocation")
+external let get_shader_location(shader: Shader, uniform_name: cstring): i32
+
+@link_name("GetShaderLocationAttrib")
+external let get_shader_location_attrib(shader: Shader, attrib_name: cstring): i32
+
+@link_name("SetShaderValue")
+external let set_shader_value(shader: Shader, loc_index: i32, value: *void, uniform_type: i32)
+
+@link_name("SetShaderValueV")
+external let set_shader_value_v(shader: Shader, loc_index: i32, value: *void, uniform_type: i32, count: i32)
+
+@link_name("SetShaderValueMatrix")
+external let set_shader_value_matrix(shader: Shader, loc_index: i32, mat: Matrix)
+
+@link_name("SetShaderValueTexture")
+external let set_shader_value_texture(shader: Shader, loc_index: i32, texture: Texture2D)
+
+@link_name("UnloadShader")
+external let unload_shader(shader: Shader)
+
+@link_name("BeginShaderMode")
+external let begin_shader_mode(shader: Shader)
+
+@link_name("EndShaderMode")
+external let end_shader_mode()
+
+// --- 3D camera and drawing ------------------------------------------
+
+@link_name("BeginMode3D")
+external let begin_mode_3d(camera: Camera3D)
+
+@link_name("EndMode3D")
+external let end_mode_3d()
+
+@link_name("UpdateCamera")
+external let update_camera(camera: *Camera3D, mode: i32)
+
+@link_name("GetWorldToScreen")
+external let get_world_to_screen(position: Vector3, camera: Camera3D): Vector2
+
+@link_name("DrawLine3D")
+external let draw_line_3d(start: Vector3, end_p: Vector3, color: Color)
+
+@link_name("DrawPoint3D")
+external let draw_point_3d(position: Vector3, color: Color)
+
+@link_name("DrawCircle3D")
+external let draw_circle_3d(center: Vector3, radius: f32, rotation_axis: Vector3, rotation_angle: f32, color: Color)
+
+@link_name("DrawTriangle3D")
+external let draw_triangle_3d(v1: Vector3, v2: Vector3, v3: Vector3, color: Color)
+
+@link_name("DrawCube")
+external let draw_cube(position: Vector3, width: f32, height: f32, length: f32, color: Color)
+
+@link_name("DrawCubeV")
+external let draw_cube_v(position: Vector3, size: Vector3, color: Color)
+
+@link_name("DrawCubeWires")
+external let draw_cube_wires(position: Vector3, width: f32, height: f32, length: f32, color: Color)
+
+@link_name("DrawSphere")
+external let draw_sphere(center_pos: Vector3, radius: f32, color: Color)
+
+@link_name("DrawSphereEx")
+external let draw_sphere_ex(center_pos: Vector3, radius: f32, rings: i32, slices: i32, color: Color)
+
+@link_name("DrawSphereWires")
+external let draw_sphere_wires(center_pos: Vector3, radius: f32, rings: i32, slices: i32, color: Color)
+
+@link_name("DrawCylinder")
+external let draw_cylinder(position: Vector3, radius_top: f32, radius_bottom: f32, height: f32, slices: i32, color: Color)
+
+@link_name("DrawCylinderWires")
+external let draw_cylinder_wires(position: Vector3, radius_top: f32, radius_bottom: f32, height: f32, slices: i32, color: Color)
+
+@link_name("DrawCapsule")
+external let draw_capsule(start_pos: Vector3, end_pos: Vector3, radius: f32, slices: i32, rings: i32, color: Color)
+
+@link_name("DrawPlane")
+external let draw_plane(center_pos: Vector3, size: Vector2, color: Color)
+
+@link_name("DrawRay")
+external let draw_ray(ray_position: Vector3, ray_direction: Vector3, color: Color)
+
+@link_name("DrawGrid")
+external let draw_grid(slices: i32, spacing: f32)
+
+// --- Audio ----------------------------------------------------------
+
+@link_name("InitAudioDevice")
+external let init_audio_device()
+
+@link_name("CloseAudioDevice")
+external let close_audio_device()
+
+@link_name("IsAudioDeviceReady")
+external let is_audio_device_ready(): bool
+
+@link_name("SetMasterVolume")
+external let set_master_volume(volume: f32)
+
+@link_name("GetMasterVolume")
+external let get_master_volume(): f32
+
+@link_name("LoadWave")
+external let load_wave(file_name: cstring): Wave
+
+@link_name("LoadWaveFromMemory")
+external let load_wave_from_memory(file_type: cstring, file_data: *u8, data_size: i32): Wave
+
+@link_name("IsWaveValid")
+external let is_wave_valid(wave: Wave): bool
+
+@link_name("UnloadWave")
+external let unload_wave(wave: Wave)
+
+@link_name("LoadSound")
+external let load_sound(file_name: cstring): Sound
+
+@link_name("LoadSoundFromWave")
+external let load_sound_from_wave(wave: Wave): Sound
+
+@link_name("IsSoundValid")
+external let is_sound_valid(sound: Sound): bool
+
+@link_name("UnloadSound")
+external let unload_sound(sound: Sound)
+
+@link_name("PlaySound")
+external let play_sound(sound: Sound)
+
+@link_name("StopSound")
+external let stop_sound(sound: Sound)
+
+@link_name("PauseSound")
+external let pause_sound(sound: Sound)
+
+@link_name("ResumeSound")
+external let resume_sound(sound: Sound)
+
+@link_name("IsSoundPlaying")
+external let is_sound_playing(sound: Sound): bool
+
+@link_name("SetSoundVolume")
+external let set_sound_volume(sound: Sound, volume: f32)
+
+@link_name("SetSoundPitch")
+external let set_sound_pitch(sound: Sound, pitch: f32)
+
+@link_name("SetSoundPan")
+external let set_sound_pan(sound: Sound, pan: f32)
+
+@link_name("LoadMusicStream")
+external let load_music_stream(file_name: cstring): Music
+
+@link_name("LoadMusicStreamFromMemory")
+external let load_music_stream_from_memory(file_type: cstring, data: *u8, data_size: i32): Music
+
+@link_name("IsMusicValid")
+external let is_music_valid(music: Music): bool
+
+@link_name("UnloadMusicStream")
+external let unload_music_stream(music: Music)
+
+@link_name("PlayMusicStream")
+external let play_music_stream(music: Music)
+
+@link_name("IsMusicStreamPlaying")
+external let is_music_stream_playing(music: Music): bool
+
+@link_name("UpdateMusicStream")
+external let update_music_stream(music: Music)
+
+@link_name("StopMusicStream")
+external let stop_music_stream(music: Music)
+
+@link_name("PauseMusicStream")
+external let pause_music_stream(music: Music)
+
+@link_name("ResumeMusicStream")
+external let resume_music_stream(music: Music)
+
+@link_name("SetMusicVolume")
+external let set_music_volume(music: Music, volume: f32)
+
+@link_name("SetMusicPitch")
+external let set_music_pitch(music: Music, pitch: f32)
+
+@link_name("GetMusicTimeLength")
+external let get_music_time_length(music: Music): f32
+
+@link_name("GetMusicTimePlayed")
+external let get_music_time_played(music: Music): f32
+
+// --- Constants for the new APIs -------------------------------------
+
+// Camera3D projection modes.
+let CAMERA_PERSPECTIVE:  i32 = 0
+let CAMERA_ORTHOGRAPHIC: i32 = 1
+
+// Camera modes for UpdateCamera.
+let CAMERA_CUSTOM:       i32 = 0
+let CAMERA_FREE:         i32 = 1
+let CAMERA_ORBITAL:      i32 = 2
+let CAMERA_FIRST_PERSON: i32 = 3
+let CAMERA_THIRD_PERSON: i32 = 4
+
+// Pixel format identifiers.
+let PIXELFORMAT_UNCOMPRESSED_GRAYSCALE:    i32 = 1
+let PIXELFORMAT_UNCOMPRESSED_GRAY_ALPHA:   i32 = 2
+let PIXELFORMAT_UNCOMPRESSED_R5G6B5:       i32 = 3
+let PIXELFORMAT_UNCOMPRESSED_R8G8B8:       i32 = 4
+let PIXELFORMAT_UNCOMPRESSED_R5G5B5A1:     i32 = 5
+let PIXELFORMAT_UNCOMPRESSED_R4G4B4A4:     i32 = 6
+let PIXELFORMAT_UNCOMPRESSED_R8G8B8A8:     i32 = 7
+let PIXELFORMAT_UNCOMPRESSED_R32:          i32 = 8
+let PIXELFORMAT_UNCOMPRESSED_R32G32B32:    i32 = 9
+let PIXELFORMAT_UNCOMPRESSED_R32G32B32A32: i32 = 10
+
+// Texture filter modes.
+let TEXTURE_FILTER_POINT:           i32 = 0
+let TEXTURE_FILTER_BILINEAR:        i32 = 1
+let TEXTURE_FILTER_TRILINEAR:       i32 = 2
+let TEXTURE_FILTER_ANISOTROPIC_4X:  i32 = 3
+let TEXTURE_FILTER_ANISOTROPIC_8X:  i32 = 4
+let TEXTURE_FILTER_ANISOTROPIC_16X: i32 = 5
+
+// Texture wrap modes.
+let TEXTURE_WRAP_REPEAT:        i32 = 0
+let TEXTURE_WRAP_CLAMP:         i32 = 1
+let TEXTURE_WRAP_MIRROR_REPEAT: i32 = 2
+let TEXTURE_WRAP_MIRROR_CLAMP:  i32 = 3
+
+// Shader uniform value types.
+let SHADER_UNIFORM_FLOAT:     i32 = 0
+let SHADER_UNIFORM_VEC2:      i32 = 1
+let SHADER_UNIFORM_VEC3:      i32 = 2
+let SHADER_UNIFORM_VEC4:      i32 = 3
+let SHADER_UNIFORM_INT:       i32 = 4
+let SHADER_UNIFORM_IVEC2:     i32 = 5
+let SHADER_UNIFORM_IVEC3:     i32 = 6
+let SHADER_UNIFORM_IVEC4:     i32 = 7
+let SHADER_UNIFORM_SAMPLER2D: i32 = 8
+
+// Blend modes for BeginBlendMode.
+@link_name("BeginBlendMode")
+external let begin_blend_mode(mode: i32)
+
+@link_name("EndBlendMode")
+external let end_blend_mode()
+
+let BLEND_ALPHA:             i32 = 0
+let BLEND_ADDITIVE:          i32 = 1
+let BLEND_MULTIPLIED:        i32 = 2
+let BLEND_ADD_COLORS:        i32 = 3
+let BLEND_SUBTRACT_COLORS:   i32 = 4
+let BLEND_ALPHA_PREMULTIPLY: i32 = 5
+let BLEND_CUSTOM:            i32 = 6
+let BLEND_CUSTOM_SEPARATE:   i32 = 7
+
+// Gradient direction (used by gen_image_gradient_linear). Degrees.
+// Common picks: 0=vertical, 90=horizontal.
 
 // --- Constants -------------------------------------------------------
 //
