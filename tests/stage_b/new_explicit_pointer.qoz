@@ -1,0 +1,35 @@
+// expect: 0
+// Phase B: explicit self-referential types. A Tree holds its children
+// behind *Tree pointers, so Tree is non-recursive (a value enum) and
+// the children are heap-allocated with `new`. The tree is built, a
+// garbage collection is forced, then the tree is summed; the `new`
+// allocations must be traced and survive.
+
+import fmt
+
+type Tree =
+    | Leaf(i64)
+    | Node(*Tree, *Tree)
+
+let sum(t: *Tree): i64 =
+    match *t {
+    | Leaf(x)    -> x
+    | Node(l, r) -> sum(l) + sum(r)
+    }
+
+let build(depth: i64): *Tree =
+    if depth == 0 { new Leaf(1) } else { new Node(build(depth - 1), build(depth - 1)) }
+
+let main(): i64 = {
+    let t = build(10)
+    // Force a collection while the tree is live.
+    var k: i64 = 0
+    while k < 80000 {
+        let junk = `j{k}-{k * 3}`
+        if len(junk) == 0 { return 99 }
+        k += 1
+    }
+    let total = sum(t)
+    fmt.println(`total={total}`)
+    total - 1024
+}

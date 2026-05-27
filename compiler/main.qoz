@@ -244,6 +244,7 @@ let rewrite_ident_refs(e: ast.Expr, pkg: string, local_fns: Map<string, bool>): 
         for v in values { vec.push(&nv, rewrite_ident_refs(v, pkg, local_fns)) }
         EMapLit(sp, nk, nv)
     }
+    | ENew(sp, inner) -> ENew(sp, rewrite_ident_refs(inner, pkg, local_fns))
     }
 }
 
@@ -728,6 +729,7 @@ let qualify_expr(e: ast.Expr, pkg: string, ctx: *main.QualifyCtx): ast.Expr = {
         for v in values { vec.push(&nv, qualify_expr(v, pkg, ctx)) }
         EMapLit(sp, nk, nv)
     }
+    | ENew(sp, inner) -> ENew(sp, qualify_expr(inner, pkg, ctx))
     }
 }
 

@@ -676,6 +676,10 @@ let print_expr(p: *format.Printer, e: ast.Expr) = {
             p_emit(p, "]")
         }
     }
+    | ENew(_, inner) -> {
+        p_emit(p, "new ")
+        print_expr(p, inner)
+    }
     }
 }
 

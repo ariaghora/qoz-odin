@@ -569,6 +569,7 @@ let walk_expr_for_types(e: *Emitter, ex: ast.Expr) = {
             register_container_lit(e, te)
         }
     }
+    | ENew(_, inner) -> walk_expr_for_types(e, inner)
     | EClosure(_, _, _, body) -> walk_expr_for_types(e, body)
     | _ -> { }
     }
@@ -1057,6 +1058,7 @@ let substitute_expr(e: *Emitter, x: ast.Expr, params: Vec<string>, args: Vec<ast
         propagate_lit_type(e, x, node, params, args)
         node
     }
+    | ENew(sp, inner) -> ENew(sp, substitute_expr(e, inner, params, args))
     }
 }
 
@@ -1377,6 +1379,7 @@ let collect_closure_captures(e: *Emitter, ex: ast.Expr, sc: *CaptureScope, out: 
     | ETuple(_, elems)
     | EArrayLit(_, elems)             -> { for el in elems { collect_closure_captures(e, el, sc, out) } }
     | EMapLit(_, keys, values)        -> { for k in keys { collect_closure_captures(e, k, sc, out) } for v in values { collect_closure_captures(e, v, sc, out) } }
+    | ENew(_, inner)                  -> collect_closure_captures(e, inner, sc, out)
     | ERecord(_, _, fields)           -> { for fl in fields { collect_closure_captures(e, fl.value, sc, out) } }
     | EClosure(_, _, _, _) -> { }
     | EBlock(_, stmts, tail) -> {
@@ -1589,6 +1592,48 @@ let emit_map_lit_using(e: *Emitter, sp: ast.Span, keys: Vec<ast.Expr>, values: V
     }
     hoist_to_prologue(e, start)
     push(e, tmp)
+}
+
+// The GC descriptor reference for a heap allocation of `te`. A named
+// record or ADT has a generated qoz_<name>_desc; a primitive, pointer,
+// tuple, or function has no precise descriptor and is allocated with
+// NULL (the collector scans it conservatively).
+let new_desc_expr(e: *Emitter, te: ast.TypeExpr): string = {
+    if let TENamed(_, path, args) = te {
+        if len(path) >= 1 {
+            let n = path[len(path) - 1]
+            if strings.eq_raw(primitive_c_name(n), "") {
+                let key = if len(args) > 0 { mangle_inst(e, n, args) } else { n }
+                return strings.cat("&qoz_", strings.cat(key, "_desc"))
+            }
+        }
+    }
+    "NULL"
+}
+
+// Emit, once per pointee type, a helper that heap-allocates a copy of a
+// value and returns the pointer. A `new` expression lowers to a call to
+// this helper, which keeps it a single expression: emitting it inline
+// with hoisting would evaluate the allocation (and its argument) in the
+// function prologue, running it unconditionally even inside a branch.
+let ensure_new_helper(e: *Emitter, te: ast.TypeExpr) = {
+    let key = mangle_type(e, te)
+    if map.contains(&e.byval_helpers_emitted, strings.cat("new_", key)) { return }
+    e.byval_helpers_emitted[strings.cat("new_", key)] = true
+    let ct = c_type_for(e, te)
+    let desc = new_desc_expr(e, te)
+    vec.push(&e.synth_fn_decls, `static {ct}* qoz_new__{key}({ct} v);\n`)
+    vec.push(&e.synth_fn_defs, `static {ct}* qoz_new__{key}({ct} v) {{ {ct}* p = ({ct}*)qoz_gc_alloc(sizeof({ct}), {desc}); *p = v; return p; }}\n`)
+}
+
+// Lower `new <inner>` to a call to the per-type allocation helper.
+let emit_new(e: *Emitter, sp: ast.Span, inner: ast.Expr) = {
+    let te = infer_value_te(e, inner)
+    ensure_new_helper(e, te)
+    let key = mangle_type(e, te)
+    push(e, `qoz_new__{key}(`)
+    emit_value_with_hint(e, inner, te)
+    push(e, ")")
 }
 
 let emit_closure_lifted(e: *Emitter, sp: ast.Span, cps: Vec<ast.ClosureParam>, ret: ast.TypeExpr, body: ast.Expr) = {
@@ -1907,6 +1952,7 @@ let emit_expr(e: *Emitter, ex: ast.Expr) = {
     // element; emit_map_lit_using extracts the Map key/value.
     | EArrayLit(sp, elems)         -> emit_array_lit_with_hint(e, sp, elems, lit_recorded_hint(e, ex, TEUnit(sp)))
     | EMapLit(sp, keys, values) -> emit_map_lit_using(e, sp, keys, values, lit_recorded_hint(e, ex, TEUnit(sp)))
+    | ENew(sp, inner) -> emit_new(e, sp, inner)
     }
 }
 
@@ -2060,7 +2106,7 @@ let span_of_expr(e: ast.Expr): ast.Span = {
     | ENil(sp)
     | EInt(sp, _) | EFloat(sp, _) | EString(sp, _) | EChar(sp, _) | EBool(sp, _)
     | EIdent(sp, _) | EPath(sp, _) | EReturn(sp, _) | EDefer(sp, _) | ESizeOf(sp, _)
-    | EArrayLit(sp, _) | EMapLit(sp, _, _) | ETry(sp, _) | ETuple(sp, _)
+    | EArrayLit(sp, _) | EMapLit(sp, _, _) | ENew(sp, _) | ETry(sp, _) | ETuple(sp, _)
     | EUnary(sp, _, _) | EField(sp, _, _) | EIndex(sp, _, _) | ECast(sp, _, _)
     | ERecord(sp, _, _) | EBlock(sp, _, _) | EWhile(sp, _, _) | EMatch(sp, _, _)
     | EBinary(sp, _, _, _) | EAssign(sp, _, _, _) | ECall(sp, _, _, _)
@@ -2374,6 +2420,7 @@ let infer_value_te(e: *Emitter, v: ast.Expr): ast.TypeExpr = {
         vec.push(&path, "Map")
         TENamed(sp, path, args)
     }
+    | ENew(sp, inner) -> TEPtr(sp, infer_value_te(e, inner))
     // Statement-shape expressions have no value type. They occur in
     // value position when an outer block ends with one. The inferred
     // type is unit and the emitter renders them as statements with a
@@ -5395,6 +5442,7 @@ let emit_value_with_hint(e: *Emitter, value: ast.Expr, hint: ast.TypeExpr) = {
     | EIdent(_, name) -> emit_ident_with_hint(e, name, hint)
     | EArrayLit(sp, elems) -> emit_array_lit_with_hint(e, sp, elems, lit_recorded_hint(e, value, hint))
     | EMapLit(sp, keys, values) -> emit_map_lit_using(e, sp, keys, values, lit_recorded_hint(e, value, hint))
+    | ENew(sp, inner) -> emit_new(e, sp, inner)
     | EField(_, base, name) -> {
         // `Enum.Variant` in value position with a known type hint
         // (e.g. `let a: Option<i32> = Option.None`) emits the mangled

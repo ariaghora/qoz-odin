@@ -410,6 +410,11 @@ let parse_unary(p: *Parser): ast.Expr = {
         let rhs = parse_unary(p)
         return EUnary(span, UOpDeref, rhs)
     }
+    if is_kw(tok, "new") {
+        advance(p)
+        let rhs = parse_unary(p)
+        return ENew(span, rhs)
+    }
     parse_postfix(p)
 }
 
