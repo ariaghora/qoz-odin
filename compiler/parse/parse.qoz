@@ -723,6 +723,11 @@ let is_interp_start_byte(b: i64): bool = {
     if b == 95 { return true }
     if b >= 65 && b <= 90  { return true }
     if b >= 97 && b <= 122 { return true }
+    if b >= 48 && b <= 57   { return true } // digit: a numeric or `2 * x` slot
+    // Prefix operators and grouping that begin an expression: a slot may
+    // start with deref `*`, negate `-`, not `!`, address `&`, or `(`.
+    // `{` is excluded so the `{{` literal-brace escape is unaffected.
+    if b == 42 || b == 45 || b == 33 || b == 38 || b == 40 { return true }
     false
 }
 

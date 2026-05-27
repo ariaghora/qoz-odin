@@ -1,0 +1,20 @@
+// expect: 0
+// An interpolation slot may begin with a prefix operator, a grouping
+// paren, or a digit, so any expression interpolates: deref, negate,
+// not, paren, a product, an index. The `{{ }}` escape still produces a
+// literal brace.
+
+import fmt
+import strings
+
+let main(): i64 = {
+    let n: *i64 = new(i64)
+    let x = 5
+    let arr: Vec<i64> = [10, 20]
+    let s = `deref={*n} neg={-x} not={!false} paren={(x + 1)} mul={2 * x} idx={arr[0]} lit={{literal}}`
+    let want = "deref=0 neg=-5 not=true paren=6 mul=10 idx=10 lit={literal}"
+    if strings.eq_raw(s, want) { 0 } else {
+        fmt.println(`got: {s}`)
+        1
+    }
+}
