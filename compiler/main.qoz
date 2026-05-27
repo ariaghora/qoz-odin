@@ -1357,10 +1357,11 @@ let main() = {
     let args = os.args()
     if len(args) < 2 {
         fmt.println("usage: qoz <subcommand> <path>")
-        fmt.println("       qoz build <path>   compile to <path>.c and clang to <path>.bin")
+        fmt.println("       qoz build <path>   compile to <path>.c and clang to a native binary")
         fmt.println("       qoz run   <path>   build, then execute and propagate exit code")
         fmt.println("       qoz emit  <path>   write <path>.c only (no clang)")
-        fmt.println("       qoz fmt   <path>   rewrite <path> with normalised whitespace")
+        fmt.println("       qoz check <path>   type-check only, report diagnostics")
+        fmt.println("       qoz fmt   <path>   rewrite <path> in canonical formatting")
         os.exit(1)
     }
     let qoz_root = os.getenv("QOZ_ROOT")
