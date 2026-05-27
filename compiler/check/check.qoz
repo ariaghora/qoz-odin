@@ -1624,6 +1624,74 @@ let te_path_segments(te: ast.TypeExpr): Vec<string> = {
     }
 }
 
+// The declared field names, in order, of a named-payload variant. Empty
+// for a positional or nullary variant, or an unknown name.
+let variant_named_field_names(tc: *TyContext, variant_name: string): Vec<string> = {
+    var out: Vec<string> = []
+    match map.get(&tc.variant_of, variant_name) {
+    | None     -> { }
+    | Some(en) -> {
+        match find_enum_short(tc, en) {
+        | Some(d) -> {
+            match d {
+            | DEnum(_, _, _, variants) -> {
+                for v in variants {
+                    if strings.eq_raw(v.name, variant_name) {
+                        for sf in v.named { vec.push(&out, sf.name) }
+                    }
+                }
+            }
+            | _ -> { }
+            }
+        }
+        | None -> { }
+        }
+    }
+    }
+    out
+}
+
+// Reorder a named-payload variant pattern `V { a, b: p }` to the
+// positional form the binder and emit expect, using the variant's
+// declared field order. An omitted field becomes a wildcard. Recurses
+// so nested patterns are reordered too. A positional pattern is
+// returned unchanged except for its sub-patterns being desugared.
+let desugar_pattern(tc: *TyContext, p: ast.Pattern): ast.Pattern = {
+    match p {
+    | PatVariant(sp, path, pats, names) -> {
+        var dpats: Vec<ast.Pattern> = []
+        for sub in pats { vec.push(&dpats, desugar_pattern(tc, sub)) }
+        if len(names) == 0 {
+            return PatVariant(sp, path, dpats, [])
+        }
+        let variant = path[len(path) - 1]
+        let order = variant_named_field_names(tc, variant)
+        var ordered: Vec<ast.Pattern> = []
+        for fname in order {
+            var idx: i64 = 0 - 1
+            var k: i64 = 0
+            for nm in names {
+                if strings.eq_raw(nm, fname) { idx = k }
+                k += 1
+            }
+            if idx >= 0 {
+                vec.push(&ordered, dpats[idx])
+            } else {
+                vec.push(&ordered, PatWild(sp))
+            }
+        }
+        PatVariant(sp, path, ordered, [])
+    }
+    | PatTuple(sp, subs) -> {
+        var d: Vec<ast.Pattern> = []
+        for s in subs { vec.push(&d, desugar_pattern(tc, s)) }
+        PatTuple(sp, d)
+    }
+    // Other patterns hold no sub-patterns to reorder.
+    | _ -> p
+    }
+}
+
 let ty_record_args(t: ty.Ty): Vec<ty.Ty> = {
     let empty: Vec<ty.Ty> = []
     match t {
@@ -2449,7 +2517,7 @@ let collect_covered_variants(arms: Vec<ast.MatchArm>, cs: *CoverSet) = {
     for arm in arms {
         if !arm.has_guard {
             match arm.pat {
-            | PatVariant(_, path, _) -> {
+            | PatVariant(_, path, _, _) -> {
                 if len(path) > 0 {
                     let last = path[len(path) - 1]
                     cs.bound[last] = true
@@ -2544,7 +2612,7 @@ let bind_pattern(tc: *TyContext, env: *Env, pat: ast.Pattern, scrut: ty.Ty) = {
         record_error(tc, sp, "tuple patterns are not yet implemented")
     }
     | PatBind(_, name)               -> env_define(env, name, scrut)
-    | PatVariant(sp, path, sub_pats) -> bind_variant_pattern(tc, env, sp, path, sub_pats, scrut)
+    | PatVariant(sp, path, sub_pats, _) -> bind_variant_pattern(tc, env, sp, path, sub_pats, scrut)
     }
 }
 
@@ -2737,6 +2805,36 @@ let infer_calls_expr(tc: *TyContext, env: *Env, e: ast.Expr, expected: ty.Ty): a
         ETuple(sp, ne)
     }
     | ERecord(sp, te, fields) -> {
+        // `Variant { a: x, b: y }` constructs a named-payload variant.
+        // Reorder the fields to the variant's declared order and rewrite
+        // to a positional constructor call, which the rest of the
+        // pipeline already handles.
+        let head_segs = te_path_segments(te)
+        if len(head_segs) >= 1 {
+            let head = head_segs[len(head_segs) - 1]
+            if map.contains(&tc.variant_of, head) {
+                let order = variant_named_field_names(tc, head)
+                var cargs: Vec<ast.Expr> = []
+                for fname in order {
+                    var found = false
+                    for f in fields {
+                        if strings.eq_raw(f.name, fname) {
+                            vec.push(&cargs, f.value)
+                            found = true
+                        }
+                    }
+                    if !found {
+                        record_error(tc, sp, `variant '{head}' is missing field '{fname}'`)
+                    }
+                }
+                let callee: ast.Expr = if len(head_segs) == 2 {
+                    EField(sp, new_clone(EIdent(sp, head_segs[0])), head)
+                } else {
+                    EIdent(sp, head)
+                }
+                return infer_calls_expr(tc, env, ECall(sp, new_clone(callee), [], cargs), expected)
+            }
+        }
         let effective_te = pick_record_type(tc, te, expected)
         var nf: Vec<ast.RecordFieldLit> = []
         for f in fields {
@@ -2776,8 +2874,11 @@ let infer_calls_expr(tc: *TyContext, env: *Env, e: ast.Expr, expected: ty.Ty): a
         var na: Vec<ast.MatchArm> = []
         for a in arms {
             let saved_len = len(env.bindings)
-            bind_pattern(tc, env, a.pat, scrut_ty)
-            vec.push(&na, ast.MatchArm { pat: a.pat, body: infer_calls_expr(tc, env, a.body, expected), has_guard: a.has_guard, guard: a.guard })
+            // Reorder a named-payload pattern to positional before
+            // binding, so the binder and emit only see positional.
+            let dpat = desugar_pattern(tc, a.pat)
+            bind_pattern(tc, env, dpat, scrut_ty)
+            vec.push(&na, ast.MatchArm { pat: dpat, body: infer_calls_expr(tc, env, a.body, expected), has_guard: a.has_guard, guard: a.guard })
             env_truncate(env, saved_len)
         }
         EMatch(sp, new_clone(new_scrut), na)

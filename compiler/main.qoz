@@ -578,7 +578,9 @@ let qualify_decl(d: ast.Decl, pkg: string, ctx: *QualifyCtx): ast.Decl = {
         for v in variants {
             var np: Vec<ast.TypeExpr> = []
             for t in v.pos { vec.push(&np, qualify_te(t, pkg, ctx)) }
-            vec.push(&nv, ast.VariantDecl { name: v.name, pos: np, kind: v.kind })
+            var nnamed: Vec<ast.StructField> = []
+            for sf in v.named { vec.push(&nnamed, ast.StructField { name: sf.name, ty: qualify_te(sf.ty, pkg, ctx) }) }
+            vec.push(&nv, ast.VariantDecl { span: v.span, name: v.name, kind: v.kind, pos: np, named: nnamed })
         }
         DEnum(sp, new_name, tps, nv)
     }

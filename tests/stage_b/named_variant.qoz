@@ -1,0 +1,38 @@
+// expect: 0
+// Algebraic data type variants may carry named fields, constructed and
+// matched by field name (Rust struct-variant style). Construction may
+// list fields in any order; a pattern may bind a field by its name,
+// match it against a nested pattern with `field: pat`, or omit it.
+
+import fmt
+import strings
+
+type Shape =
+    | Rect { w: i32, h: i32 }
+    | Labeled { name: string, n: i32 }
+    | Blank
+
+let area(s: Shape): i32 =
+    match s {
+    | Rect { w, h }        -> w * h
+    | Labeled { n: count } -> count   // explicit field: pat, omit `name`
+    | Blank                -> 0
+    }
+
+let main(): i64 = {
+    var bad: i64 = 0
+    let r = Rect { h: 4, w: 3 }           // fields out of declared order
+    let l = Labeled { name: "x", n: 9 }
+    if area(r) != 12 { bad += 1 }
+    if area(l) != 9 { bad += 1 }
+    if area(Blank) != 0 { bad += 1 }
+    // Bind a named field directly.
+    match l {
+    | Labeled { name, n } -> {
+        if !strings.eq_raw(name, "x") || n != 9 { bad += 1 }
+    }
+    | _ -> { bad += 1 }
+    }
+    fmt.println(`bad={bad}`)
+    bad
+}

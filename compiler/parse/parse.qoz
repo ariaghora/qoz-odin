@@ -1435,6 +1435,7 @@ let parse_pattern(p: *Parser): ast.Pattern = {
             }
         }
         var pos: Vec<ast.Pattern> = []
+        var field_names: Vec<string> = []
         if is_punct(peek(p), "(") {
             advance(p)
             if !is_punct(peek(p), ")") {
@@ -1445,15 +1446,41 @@ let parse_pattern(p: *Parser): ast.Pattern = {
                 }
             }
             expect_punct(p, ")")
+        } elif is_punct(peek(p), "{") {
+            // Named-payload pattern: `V { a, b: p }`. A bare field name
+            // binds a variable of that name; `field: pat` matches the
+            // field against a nested pattern.
+            advance(p)
+            var more_fields = true
+            while more_fields && !is_punct(peek(p), "}") && !at_eof(p) {
+                parse_named_pat_field(p, &field_names, &pos)
+                if is_punct(peek(p), ",") { advance(p) } else { more_fields = false }
+            }
+            expect_punct(p, "}")
         }
-        if len(path) == 1 && len(pos) == 0 {
+        if len(path) == 1 && len(pos) == 0 && len(field_names) == 0 {
             return PatBind(span, path[0])
         }
-        return PatVariant(span, path, pos)
+        return PatVariant(span, path, pos, field_names)
     }
     err_unexpected(p, "pattern", t)
     advance(p)
     PatWild(span)
+}
+
+// Parse one field of a named-payload variant pattern. `field` binds a
+// variable named `field`; `field: pat` matches against `pat`.
+let parse_named_pat_field(p: *Parser, names: *Vec<string>, pats: *Vec<ast.Pattern>) = {
+    let tok = peek(p)
+    let fsp = span_of(p, tok)
+    let fname = expect_ident(p)
+    vec.push(names, fname)
+    if is_punct(peek(p), ":") {
+        advance(p)
+        vec.push(pats, parse_pattern(p))
+    } else {
+        vec.push(pats, PatBind(fsp, fname))
+    }
 }
 
 let parse_block(p: *Parser): ast.Expr = {
@@ -1689,6 +1716,12 @@ let parse_variants(p: *Parser): Vec<ast.VariantDecl> = {
         } elif is_punct(peek(p), "{") {
             kind = VPKNamed
             named = parse_struct_fields(p)
+            // Mirror the named field types into the positional list so
+            // the payload struct, constructor, and equality emit through
+            // the same path as a positional variant. The names in
+            // `named` resolve a named literal or pattern to these
+            // positions.
+            for sf in named { vec.push(&pos, sf.ty) }
         }
         vec.push(&out, ast.VariantDecl { span: v_span, name: vname, kind: kind, pos: pos, named: named })
         while is_punct(peek(p), ";") { advance(p) }

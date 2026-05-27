@@ -2025,7 +2025,7 @@ let ingest_stmt_locals(e: *Emitter, s: ast.Stmt) = {
 
 let bare_enum_for_pat(e: *Emitter, pat: ast.Pattern): string = {
     match pat {
-    | PatVariant(_, path, _) -> {
+    | PatVariant(_, path, _, _) -> {
         if len(path) == 0 { return "" }
         match map.get(&e.variant_of, path[len(path) - 1]) {
         | Some(en) -> en
@@ -2942,7 +2942,7 @@ let bind_arm_locals_at(e: *Emitter, pat: ast.Pattern, value_te: ast.TypeExpr) = 
         | None    -> e.locals[bname] = value_te
         }
     }
-    | PatVariant(sp, path, sub_pats) -> {
+    | PatVariant(sp, path, sub_pats, _) -> {
         if len(path) < 1 {
             let _ = emit_die(sp, "variant pattern has no name")
             return
@@ -2969,7 +2969,7 @@ let bind_arm_locals_at(e: *Emitter, pat: ast.Pattern, value_te: ast.TypeExpr) = 
 
 let bind_arm_locals(e: *Emitter, enum_name: string, pat: ast.Pattern) = {
     match pat {
-    | PatVariant(_, path, sub_pats) -> {
+    | PatVariant(_, path, sub_pats, _) -> {
         if len(path) < 1 { return }
         let vname = path[len(path) - 1]
         var i: i64 = 0
@@ -6077,7 +6077,7 @@ let find_enum_from_arms_with_scrut(e: *Emitter, arms: Vec<ast.MatchArm>, scrut_t
 
 let variant_name_of_pat(p: ast.Pattern): string = {
     match p {
-    | PatVariant(_, path, _) -> if len(path) > 0 { path[len(path) - 1] } else { "" }
+    | PatVariant(_, path, _, _) -> if len(path) > 0 { path[len(path) - 1] } else { "" }
     | PatBind(_, name)       -> name
     | _                      -> ""
     }
@@ -6111,7 +6111,7 @@ let any_arm_has_guard(arms: Vec<ast.MatchArm>): bool = {
 let pat_needs_if_chain(p: ast.Pattern): bool = {
     match p {
     | PatLitInt(_, _) | PatLitString(_, _) | PatLitBool(_, _) -> true
-    | PatVariant(_, _, _) -> true
+    | PatVariant(_, _, _, _) -> true
     | _ -> false
     }
 }
@@ -6120,7 +6120,7 @@ let any_arm_is_literal(arms: Vec<ast.MatchArm>): bool = {
     for a in arms {
         match a.pat {
         | PatLitInt(_, _) | PatLitString(_, _) | PatLitBool(_, _) -> return true
-        | PatVariant(_, _, sub_pats) -> {
+        | PatVariant(_, _, sub_pats, _) -> {
             for sp in sub_pats {
                 if pat_needs_if_chain(sp) { return true }
             }
@@ -6226,7 +6226,7 @@ let emit_pat_match_cond(e: *Emitter, p: ast.Pattern, value_expr: string, value_t
     | PatLitString(_, text) -> {
         push(e, ` && qoz_string_eq({value_expr}, QOZ_STR_LIT({text}))`)
     }
-    | PatVariant(sp, path, sub_pats) -> {
+    | PatVariant(sp, path, sub_pats, _) -> {
         if len(path) == 0 {
             let _ = emit_die(sp, "variant pattern has no name")
             return
@@ -6267,7 +6267,7 @@ let emit_pat_bindings(e: *Emitter, p: ast.Pattern, value_expr: string, value_te:
         push(e, `{ct} {bname} = {value_expr}; (void){bname}; `)
         e.locals[bname] = value_te
     }
-    | PatVariant(sp, path, sub_pats) -> {
+    | PatVariant(sp, path, sub_pats, _) -> {
         if len(path) == 0 {
             let _ = emit_die(sp, "variant pattern has no name")
             return
@@ -6385,7 +6385,7 @@ let emit_arm_in_chain_with_te(e: *Emitter, enum_name: string, scrut_tmp: string,
     | PatLitString(_, text) -> {
         push(e, ` && qoz_string_eq({scrut_tmp}, QOZ_STR_LIT({text}))) {{ `)
     }
-    | PatVariant(psp, path, sub_pats) -> {
+    | PatVariant(psp, path, sub_pats, _) -> {
         if len(path) == 0 {
             let _ = emit_die(psp, "variant pattern has no name")
         }
@@ -6516,7 +6516,7 @@ let emit_match_arm_with_kind(e: *Emitter, enum_name: string, scrut_tmp: string, 
         }
         }
     }
-    | PatVariant(psp, path, sub_pats) -> {
+    | PatVariant(psp, path, sub_pats, _) -> {
         if len(path) == 0 {
             let _ = emit_die(psp, "variant pattern has no name")
             return

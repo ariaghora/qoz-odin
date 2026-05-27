@@ -69,7 +69,11 @@ type Pattern =
     | PatLitInt(Span, string)
     | PatLitString(Span, string)
     | PatLitBool(Span, bool)
-    | PatVariant(Span, Vec<string>, Vec<Pattern>)
+    // A variant pattern. The final Vec<string> holds field names for a
+    // named-payload pattern `V { a, b: p }`, parallel to the sub-pattern
+    // list; it is empty for a positional pattern `V(a, b)`. The checker
+    // reorders a named pattern to positional before binding.
+    | PatVariant(Span, Vec<string>, Vec<Pattern>, Vec<string>)
     | PatTuple(Span, Vec<Pattern>)
 
 type ClosureParam = {
