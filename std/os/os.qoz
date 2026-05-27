@@ -36,7 +36,7 @@ external let getenv(name: string): string
 /// The program's command-line arguments. Index 0 is the program
 /// name; user arguments start at index 1.
 let args(): Vec<string> = {
-    var v: Vec<string> = vec.make()
+    var v: Vec<string> = []
     let n = argc_raw()
     var i: i64 = 0
     while i < n {

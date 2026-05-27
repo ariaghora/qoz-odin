@@ -91,7 +91,7 @@ let clean(p: string): string = {
     let n = len(p)
     if n == 0 { return "." }
     let rooted = strings.byte_at(p, 0) == 47
-    var segs: Vec<string> = vec.make()
+    var segs: Vec<string> = []
     var i: i64 = if rooted { 1 } else { 0 }
     while i < n {
         // Skip consecutive slashes.
@@ -108,7 +108,7 @@ let clean(p: string): string = {
                 let segs_len = len(segs)
                 if segs_len > 0 && !strings.eq_raw(segs[segs_len - 1], "..") {
                     // Pop the previous segment.
-                    var rebuilt: Vec<string> = vec.make()
+                    var rebuilt: Vec<string> = []
                     var k: i64 = 0
                     while k < segs_len - 1 {
                         vec.push(&rebuilt, segs[k])

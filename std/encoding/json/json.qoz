@@ -321,7 +321,7 @@ let grow_to(buf: **u8, cap: i64, need: i64): i64 = {
 let parse_array(p: *Parser): Result<Json, string> = {
     advance(p)  // consume '['
     skip_ws(p)
-    var items: Vec<Json> = vec.make()
+    var items: Vec<Json> = []
     if !at_end(p) && cur(p) == 93 { advance(p); return Ok(Arr(items)) }
     var done = false
     while !done {
@@ -343,7 +343,7 @@ let parse_array(p: *Parser): Result<Json, string> = {
 let parse_object(p: *Parser): Result<Json, string> = {
     advance(p)  // consume '{'
     skip_ws(p)
-    var fields: Map<string, Json> = map.make()
+    var fields: Map<string, Json> = [:]
     if !at_end(p) && cur(p) == 125 { advance(p); return Ok(Obj(fields)) }
     var done = false
     while !done {

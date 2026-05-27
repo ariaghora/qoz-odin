@@ -90,7 +90,7 @@ let dir_of_path(path: string): string = {
 }
 
 let prelude_segs(path: string): Vec<string> = {
-    var v: Vec<string> = vec.make()
+    var v: Vec<string> = []
     var cur = ""
     var i: i64 = 0
     while i < len(path) {
@@ -147,7 +147,7 @@ let resolve_import_path(segs: Vec<string>, qoz_root: string): string = {
 // are joined with the directory prefix. Order matches list_qoz_files
 // (sorted by filename).
 let list_package_files(dir: string): Vec<string> = {
-    var out: Vec<string> = vec.make()
+    var out: Vec<string> = []
     let raw = fs.list_qoz_files(dir)
     if len(raw) == 0 { return out }
     let parts = strings.split(raw, 10)
@@ -197,7 +197,7 @@ let rewrite_ident_refs(e: ast.Expr, pkg: string, local_fns: Map<string, bool>): 
     | EBinary(sp, op, l, r)   -> EBinary(sp, op, rewrite_ident_refs(l, pkg, local_fns), rewrite_ident_refs(r, pkg, local_fns))
     | EAssign(sp, op, l, r)   -> EAssign(sp, op, rewrite_ident_refs(l, pkg, local_fns), rewrite_ident_refs(r, pkg, local_fns))
     | ECall(sp, callee, ta, args) -> {
-        var na: Vec<ast.Expr> = vec.make()
+        var na: Vec<ast.Expr> = []
         for a in args { vec.push(&na, rewrite_ident_refs(a, pkg, local_fns)) }
         ECall(sp, rewrite_ident_refs(callee, pkg, local_fns), ta, na)
     }
@@ -206,24 +206,24 @@ let rewrite_ident_refs(e: ast.Expr, pkg: string, local_fns: Map<string, bool>): 
     | ECast(sp, value, t)     -> ECast(sp, rewrite_ident_refs(value, pkg, local_fns), t)
     | ETry(sp, v)             -> ETry(sp, rewrite_ident_refs(v, pkg, local_fns))
     | ETuple(sp, elems)       -> {
-        var ne: Vec<ast.Expr> = vec.make()
+        var ne: Vec<ast.Expr> = []
         for el in elems { vec.push(&ne, rewrite_ident_refs(el, pkg, local_fns)) }
         ETuple(sp, ne)
     }
     | ERecord(sp, te, fields) -> {
-        var nf: Vec<ast.RecordFieldLit> = vec.make()
+        var nf: Vec<ast.RecordFieldLit> = []
         for f in fields { vec.push(&nf, ast.RecordFieldLit { name: f.name, value: rewrite_ident_refs(f.value, pkg, local_fns) }) }
         ERecord(sp, te, nf)
     }
     | EClosure(sp, cps, ret, body) -> EClosure(sp, cps, ret, rewrite_ident_refs(body, pkg, local_fns))
     | EBlock(sp, stmts, tail) -> {
-        var ns: Vec<ast.Stmt> = vec.make()
+        var ns: Vec<ast.Stmt> = []
         for s in stmts { vec.push(&ns, rewrite_ident_refs_stmt(s, pkg, local_fns)) }
         EBlock(sp, ns, rewrite_ident_refs(tail, pkg, local_fns))
     }
     | EIf(sp, c, t, f) -> EIf(sp, rewrite_ident_refs(c, pkg, local_fns), rewrite_ident_refs(t, pkg, local_fns), rewrite_ident_refs(f, pkg, local_fns))
     | EMatch(sp, scrut, arms) -> {
-        var na: Vec<ast.MatchArm> = vec.make()
+        var na: Vec<ast.MatchArm> = []
         for a in arms { vec.push(&na, ast.MatchArm { pat: a.pat, body: rewrite_ident_refs(a.body, pkg, local_fns), has_guard: a.has_guard, guard: a.guard }) }
         EMatch(sp, rewrite_ident_refs(scrut, pkg, local_fns), na)
     }
@@ -233,14 +233,14 @@ let rewrite_ident_refs(e: ast.Expr, pkg: string, local_fns: Map<string, bool>): 
     | EDefer(sp, v)           -> EDefer(sp, rewrite_ident_refs(v, pkg, local_fns))
     | ESizeOf(_, _)           -> e
     | EArrayLit(sp, elems)    -> {
-        var ne: Vec<ast.Expr> = vec.make()
+        var ne: Vec<ast.Expr> = []
         for el in elems { vec.push(&ne, rewrite_ident_refs(el, pkg, local_fns)) }
         EArrayLit(sp, ne)
     }
     | EMapLit(sp, keys, values) -> {
-        var nk: Vec<ast.Expr> = vec.make()
+        var nk: Vec<ast.Expr> = []
         for k in keys { vec.push(&nk, rewrite_ident_refs(k, pkg, local_fns)) }
-        var nv: Vec<ast.Expr> = vec.make()
+        var nv: Vec<ast.Expr> = []
         for v in values { vec.push(&nv, rewrite_ident_refs(v, pkg, local_fns)) }
         EMapLit(sp, nk, nv)
     }
@@ -283,10 +283,10 @@ type Loaded = {
 }
 
 let load_all(entry: string, qoz_root: string): Loaded = {
-    var entries: Vec<string> = vec.make()
+    var entries: Vec<string> = []
     vec.push(&entries, entry)
     let ctx = make_compile_ctx(qoz_root)
-    let overrides: Map<string, string> = map.make()
+    let overrides: Map<string, string> = [:]
     load_all_entries(entries, entry, qoz_root, ctx, &overrides)
 }
 
@@ -309,24 +309,24 @@ let read_with_override(path: string, overrides: *Map<string, string>): Option<st
 // second is the path used to identify the resulting `File` (its
 // `path` field is read by downstream phases for diagnostic anchoring).
 let load_all_entries(entries: Vec<string>, primary: string, qoz_root: string, ctx: main.CompileCtx, overrides: *Map<string, string>): Loaded = {
-    var queue: Vec<Pending> = vec.make()
-    var visited: Map<string, bool> = map.make()
-    var aggregated_decls: Vec<ast.Decl> = vec.make()
-    var sources: Vec<string> = vec.make()
-    var type_homes: Map<string, Vec<string>> = map.make()
-    var fn_homes:   Map<string, string> = map.make()
-    var file_pkgs:  Map<string, string> = map.make()
-    var load_errors: Vec<string> = vec.make()
+    var queue: Vec<Pending> = []
+    var visited: Map<string, bool> = [:]
+    var aggregated_decls: Vec<ast.Decl> = []
+    var sources: Vec<string> = []
+    var type_homes: Map<string, Vec<string>> = [:]
+    var fn_homes:   Map<string, string> = [:]
+    var file_pkgs:  Map<string, string> = [:]
+    var load_errors: Vec<string> = []
     // Per-directory cache of fn/extern names declared anywhere in the
     // package. process_one consults this so it parses each directory's
     // sibling list once instead of once per file in the package.
-    var dir_local_fns: Map<string, Map<string, bool>> = map.make()
+    var dir_local_fns: Map<string, Map<string, bool>> = [:]
     // Prelude: Option, Result, Vec, and Map are in scope without an
     // explicit import. Types and variant constructors flow through
     // the global namespace either way. Functions stay package-prefixed
     // so vec.push / map.get keep their qualified form rather than
     // colliding with arbitrary user identifiers named push / get.
-    var prelude_paths: Vec<string> = vec.make()
+    var prelude_paths: Vec<string> = []
     vec.push(&prelude_paths, "option")
     vec.push(&prelude_paths, "result")
     vec.push(&prelude_paths, "vec")
@@ -365,7 +365,7 @@ let load_all_entries(entries: Vec<string>, primary: string, qoz_root: string, ct
 // the original short-name entries linger and break composite-key
 // lookups.
 let rebuild_type_homes(decls: Vec<ast.Decl>, file_pkgs: Map<string, string>): Map<string, Vec<string>> = {
-    var out: Map<string, Vec<string>> = map.make()
+    var out: Map<string, Vec<string>> = [:]
     for d in decls {
         let sp = decl_span(d)
         let home = match map.get(&file_pkgs, sp.file) {
@@ -480,7 +480,7 @@ type QualifyCtx = {
 }
 
 let make_qualify_ctx(decls: Vec<ast.Decl>, file_pkgs: Map<string, string>): main.QualifyCtx = {
-    var type_pkgs: Map<string, Map<string, bool>> = map.make()
+    var type_pkgs: Map<string, Map<string, bool>> = [:]
     for d in decls {
         let sp = decl_span(d)
         let pkg = match map.get(&file_pkgs, sp.file) {
@@ -492,7 +492,7 @@ let make_qualify_ctx(decls: Vec<ast.Decl>, file_pkgs: Map<string, string>): main
             if !strings.eq_raw(name, "") {
                 var inner: Map<string, bool> = match map.get(&type_pkgs, name) {
                 | Some(m) -> m
-                | None    -> map.make()
+                | None    -> [:]
                 }
                 map.set(&inner, pkg, true)
                 map.set(&type_pkgs, name, inner)
@@ -544,7 +544,7 @@ let qualified_type_name(pkg: string, name: string): string = {
 }
 
 let qualify_decls(decls: Vec<ast.Decl>, ctx: *main.QualifyCtx): Vec<ast.Decl> = {
-    var out: Vec<ast.Decl> = vec.make()
+    var out: Vec<ast.Decl> = []
     for d in decls {
         let sp = decl_span(d)
         let pkg = match map.get(&ctx.file_pkgs, sp.file) {
@@ -560,7 +560,7 @@ let qualify_decl(d: ast.Decl, pkg: string, ctx: *main.QualifyCtx): ast.Decl = {
     match d {
     | DStruct(sp, n, tps, fields) -> {
         let new_name = if !strings.eq_raw(pkg, "") { qualified_type_name(pkg, n) } else { n }
-        var nf: Vec<ast.StructField> = vec.make()
+        var nf: Vec<ast.StructField> = []
         for f in fields {
             vec.push(&nf, ast.StructField { name: f.name, ty: qualify_te(f.ty, pkg, ctx) })
         }
@@ -568,9 +568,9 @@ let qualify_decl(d: ast.Decl, pkg: string, ctx: *main.QualifyCtx): ast.Decl = {
     }
     | DEnum(sp, n, tps, variants) -> {
         let new_name = if !strings.eq_raw(pkg, "") { qualified_type_name(pkg, n) } else { n }
-        var nv: Vec<ast.VariantDecl> = vec.make()
+        var nv: Vec<ast.VariantDecl> = []
         for v in variants {
-            var np: Vec<ast.TypeExpr> = vec.make()
+            var np: Vec<ast.TypeExpr> = []
             for t in v.pos { vec.push(&np, qualify_te(t, pkg, ctx)) }
             vec.push(&nv, ast.VariantDecl { name: v.name, pos: np, kind: v.kind })
         }
@@ -585,12 +585,12 @@ let qualify_decl(d: ast.Decl, pkg: string, ctx: *main.QualifyCtx): ast.Decl = {
         DCEnum(sp, new_name, qualify_te(underlying, pkg, ctx), variants)
     }
     | DFn(sp, n, tps, fp, rt, body, attr) -> {
-        var nfp: Vec<ast.FnParam> = vec.make()
+        var nfp: Vec<ast.FnParam> = []
         for p in fp { vec.push(&nfp, ast.FnParam { name: p.name, ty: qualify_te(p.ty, pkg, ctx) }) }
         DFn(sp, n, tps, nfp, qualify_te(rt, pkg, ctx), qualify_expr(body, pkg, ctx), attr)
     }
     | DExternal(sp, n, sym, fp, rt) -> {
-        var nfp: Vec<ast.FnParam> = vec.make()
+        var nfp: Vec<ast.FnParam> = []
         for p in fp { vec.push(&nfp, ast.FnParam { name: p.name, ty: qualify_te(p.ty, pkg, ctx) }) }
         DExternal(sp, n, sym, nfp, qualify_te(rt, pkg, ctx))
     }
@@ -606,12 +606,12 @@ let qualify_decl(d: ast.Decl, pkg: string, ctx: *main.QualifyCtx): ast.Decl = {
 let qualify_te(te: ast.TypeExpr, pkg: string, ctx: *main.QualifyCtx): ast.TypeExpr = {
     match te {
     | TENamed(sp, path, args) -> {
-        var new_args: Vec<ast.TypeExpr> = vec.make()
+        var new_args: Vec<ast.TypeExpr> = []
         for a in args { vec.push(&new_args, qualify_te(a, pkg, ctx)) }
         if len(path) == 1 {
             let n = path[0]
             if is_local_type(n, pkg, ctx) {
-                var np: Vec<string> = vec.make()
+                var np: Vec<string> = []
                 vec.push(&np, qualified_type_name(pkg, n))
                 return TENamed(sp, np, new_args)
             }
@@ -623,7 +623,7 @@ let qualify_te(te: ast.TypeExpr, pkg: string, ctx: *main.QualifyCtx): ast.TypeEx
             if is_local_type(qname, qpkg, ctx) {
                 // Keep the qualifier so resolve_named accepts the
                 // access. Only the last segment is renamed.
-                var np: Vec<string> = vec.make()
+                var np: Vec<string> = []
                 vec.push(&np, qpkg)
                 vec.push(&np, qualified_type_name(qpkg, qname))
                 return TENamed(sp, np, new_args)
@@ -634,12 +634,12 @@ let qualify_te(te: ast.TypeExpr, pkg: string, ctx: *main.QualifyCtx): ast.TypeEx
     }
     | TEPtr(sp, inner) -> TEPtr(sp, qualify_te(inner, pkg, ctx))
     | TETuple(sp, elems) -> {
-        var ne: Vec<ast.TypeExpr> = vec.make()
+        var ne: Vec<ast.TypeExpr> = []
         for el in elems { vec.push(&ne, qualify_te(el, pkg, ctx)) }
         TETuple(sp, ne)
     }
     | TEFn(sp, params, ret) -> {
-        var np: Vec<ast.TypeExpr> = vec.make()
+        var np: Vec<ast.TypeExpr> = []
         for p in params { vec.push(&np, qualify_te(p, pkg, ctx)) }
         TEFn(sp, np, qualify_te(ret, pkg, ctx))
     }
@@ -666,9 +666,9 @@ let qualify_expr(e: ast.Expr, pkg: string, ctx: *main.QualifyCtx): ast.Expr = {
     | EBinary(sp, op, l, r)   -> EBinary(sp, op, qualify_expr(l, pkg, ctx), qualify_expr(r, pkg, ctx))
     | EAssign(sp, op, l, r)   -> EAssign(sp, op, qualify_expr(l, pkg, ctx), qualify_expr(r, pkg, ctx))
     | ECall(sp, callee, ta, args) -> {
-        var na: Vec<ast.Expr> = vec.make()
+        var na: Vec<ast.Expr> = []
         for a in args { vec.push(&na, qualify_expr(a, pkg, ctx)) }
-        var nta: Vec<ast.TypeExpr> = vec.make()
+        var nta: Vec<ast.TypeExpr> = []
         for t in ta { vec.push(&nta, qualify_te(t, pkg, ctx)) }
         ECall(sp, qualify_expr(callee, pkg, ctx), nta, na)
     }
@@ -677,30 +677,30 @@ let qualify_expr(e: ast.Expr, pkg: string, ctx: *main.QualifyCtx): ast.Expr = {
     | ECast(sp, value, t)     -> ECast(sp, qualify_expr(value, pkg, ctx), qualify_te(t, pkg, ctx))
     | ETry(sp, v)             -> ETry(sp, qualify_expr(v, pkg, ctx))
     | ETuple(sp, elems) -> {
-        var ne: Vec<ast.Expr> = vec.make()
+        var ne: Vec<ast.Expr> = []
         for el in elems { vec.push(&ne, qualify_expr(el, pkg, ctx)) }
         ETuple(sp, ne)
     }
     | ERecord(sp, te, fields) -> {
-        var nf: Vec<ast.RecordFieldLit> = vec.make()
+        var nf: Vec<ast.RecordFieldLit> = []
         for f in fields {
             vec.push(&nf, ast.RecordFieldLit { name: f.name, value: qualify_expr(f.value, pkg, ctx) })
         }
         ERecord(sp, qualify_te(te, pkg, ctx), nf)
     }
     | EClosure(sp, cps, ret, body) -> {
-        var ncps: Vec<ast.ClosureParam> = vec.make()
+        var ncps: Vec<ast.ClosureParam> = []
         for c in cps { vec.push(&ncps, ast.ClosureParam { name: c.name, ty: qualify_te(c.ty, pkg, ctx) }) }
         EClosure(sp, ncps, qualify_te(ret, pkg, ctx), qualify_expr(body, pkg, ctx))
     }
     | EBlock(sp, stmts, tail) -> {
-        var ns: Vec<ast.Stmt> = vec.make()
+        var ns: Vec<ast.Stmt> = []
         for s in stmts { vec.push(&ns, qualify_stmt(s, pkg, ctx)) }
         EBlock(sp, ns, qualify_expr(tail, pkg, ctx))
     }
     | EIf(sp, c, t, f) -> EIf(sp, qualify_expr(c, pkg, ctx), qualify_expr(t, pkg, ctx), qualify_expr(f, pkg, ctx))
     | EMatch(sp, scrut, arms) -> {
-        var na: Vec<ast.MatchArm> = vec.make()
+        var na: Vec<ast.MatchArm> = []
         for a in arms {
             vec.push(&na, ast.MatchArm {
                 pat:       a.pat,
@@ -717,14 +717,14 @@ let qualify_expr(e: ast.Expr, pkg: string, ctx: *main.QualifyCtx): ast.Expr = {
     | EDefer(sp, v)           -> EDefer(sp, qualify_expr(v, pkg, ctx))
     | ESizeOf(sp, t)          -> ESizeOf(sp, qualify_te(t, pkg, ctx))
     | EArrayLit(sp, elems) -> {
-        var ne: Vec<ast.Expr> = vec.make()
+        var ne: Vec<ast.Expr> = []
         for el in elems { vec.push(&ne, qualify_expr(el, pkg, ctx)) }
         EArrayLit(sp, ne)
     }
     | EMapLit(sp, keys, values) -> {
-        var nk: Vec<ast.Expr> = vec.make()
+        var nk: Vec<ast.Expr> = []
         for k in keys { vec.push(&nk, qualify_expr(k, pkg, ctx)) }
-        var nv: Vec<ast.Expr> = vec.make()
+        var nv: Vec<ast.Expr> = []
         for v in values { vec.push(&nv, qualify_expr(v, pkg, ctx)) }
         EMapLit(sp, nk, nv)
     }
@@ -745,7 +745,7 @@ let qualify_stmt(s: ast.Stmt, pkg: string, ctx: *main.QualifyCtx): ast.Stmt = {
 let add_type_home(type_homes: *Map<string, Vec<string>>, name: string, home: string) = {
     var homes: Vec<string> = match map.get(type_homes, name) {
     | Some(v) -> v
-    | None    -> vec.make()
+    | None    -> []
     }
     var seen = false
     for h in homes { if strings.eq_raw(h, home) { seen = true } }
@@ -762,7 +762,7 @@ let sibling_fn_names(pkg_dir: string, cache: *Map<string, Map<string, bool>>): M
     if let Some(existing) = map.get(cache, pkg_dir) {
         return existing
     }
-    var local_fns: Map<string, bool> = map.make()
+    var local_fns: Map<string, bool> = [:]
     let pkg_files = list_package_files(pkg_dir)
     for sibling in pkg_files {
         let sib_src = fs.read_file(sibling)
@@ -861,7 +861,7 @@ let eval_const(e: ast.Expr, ctx: main.CompileCtx): main.CV = {
 // the first arm whose condition is true (or the else branch if
 // none match). Recurses so nested #if blocks expand cleanly.
 let expand_compile_ifs(decls: Vec<ast.Decl>, ctx: main.CompileCtx): Vec<ast.Decl> = {
-    var out: Vec<ast.Decl> = vec.make()
+    var out: Vec<ast.Decl> = []
     for d in decls {
         match d {
         | DCompileIf(span, arms, else_decls) -> {
@@ -942,7 +942,7 @@ type EntryPaths = { entries: Vec<string>, primary: string, c_path: string }
 
 let resolve_entry_paths(path: string): EntryPaths = {
     if strings.has_suffix(path, ".qoz") {
-        var v: Vec<string> = vec.make()
+        var v: Vec<string> = []
         vec.push(&v, path)
         return EntryPaths { entries: v, primary: path, c_path: strings.cat(path, ".c") }
     }
@@ -964,7 +964,7 @@ let resolve_entry_paths(path: string): EntryPaths = {
 }
 
 let cwd_basename(): string = {
-    var argv: Vec<string> = vec.make()
+    var argv: Vec<string> = []
     vec.push(&argv, "pwd")
     let r = os.process_exec(argv)
     if r.exit_code != 0 {
@@ -1008,7 +1008,7 @@ type BuildResult = {
 // points at the same on-disk directory regardless of the user's
 // current working directory at compile time.
 let collect_link_flags(file: ast.File, qoz_root: string): Vec<string> = {
-    var out: Vec<string> = vec.make()
+    var out: Vec<string> = []
     for d in file.decls {
         match d {
         | DLink(_, kind, name) -> {
@@ -1045,7 +1045,7 @@ let resolve_link_path(name: string, qoz_root: string): string = {
 let cmd_build(path: string, qoz_root: string): main.BuildResult = {
     let paths = resolve_entry_paths(path)
     let ctx = make_compile_ctx(qoz_root)
-    let overrides: Map<string, string> = map.make()
+    let overrides: Map<string, string> = [:]
     let loaded = load_all_entries(paths.entries, paths.primary, qoz_root, ctx, &overrides)
     if len(loaded.errors) > 0 {
         for msg in loaded.errors { fmt.println(msg) }
@@ -1122,7 +1122,7 @@ let cc_is_clang(cc: string): bool = {
 
 let clang_argv(c_path: string, bin_path: string, link_flags: Vec<string>): Vec<string> = {
     let cc = cc_command()
-    var argv: Vec<string> = vec.make()
+    var argv: Vec<string> = []
     vec.push(&argv, cc)
     vec.push(&argv, "-std=c11")
     vec.push(&argv, "-pedantic")
@@ -1153,7 +1153,7 @@ let clang_argv(c_path: string, bin_path: string, link_flags: Vec<string>): Vec<s
 // stays portable to platforms whose libc layout differs. Only a
 // working `rm` on PATH is required.
 let unlink_quiet(path: string) = {
-    var argv: Vec<string> = vec.make()
+    var argv: Vec<string> = []
     vec.push(&argv, "rm")
     vec.push(&argv, "-f")
     vec.push(&argv, path)
@@ -1259,7 +1259,7 @@ let cmd_run(path: string, qoz_root: string) = {
         os.exit(1)
     }
 
-    var run_argv: Vec<string> = vec.make()
+    var run_argv: Vec<string> = []
     vec.push(&run_argv, bin_path)
     let result = os.process_exec(run_argv)
     fmt.print(result.stdout)
@@ -1283,7 +1283,7 @@ let cmd_run(path: string, qoz_root: string) = {
 let cmd_expected_at(path: string, qoz_root: string, line: i64, col: i64, from_stdin: bool) = {
     let paths = resolve_entry_paths(path)
     let ctx = make_compile_ctx(qoz_root)
-    var overrides: Map<string, string> = map.make()
+    var overrides: Map<string, string> = [:]
     if from_stdin {
         let buffer = io.read_all_stdin()
         for ep in paths.entries { map.set(&overrides, ep, buffer) }
@@ -1337,7 +1337,7 @@ let enum_short_name(renamed: string, home: string): string = {
 let cmd_check(path: string, qoz_root: string, from_stdin: bool) = {
     let paths = resolve_entry_paths(path)
     let ctx = make_compile_ctx(qoz_root)
-    var overrides: Map<string, string> = map.make()
+    var overrides: Map<string, string> = [:]
     if from_stdin {
         let buffer = io.read_all_stdin()
         for ep in paths.entries { map.set(&overrides, ep, buffer) }
@@ -1353,7 +1353,7 @@ let cmd_check(path: string, qoz_root: string, from_stdin: bool) = {
     check.validate_signatures(&tc, file)
     let inferred = check.infer_calls(&tc, file)
     check.check_fn_bodies(&tc, inferred)
-    var seen: Map<string, bool> = map.make()
+    var seen: Map<string, bool> = [:]
     for e in tc.errors {
         let key = `{e.span.file}:{e.span.line}:{e.span.col}:{e.message}`
         if !map.contains(&seen, key) {
@@ -1404,7 +1404,7 @@ let main() = {
         let target = args[2]
         let paths = resolve_entry_paths(target)
         let ctx = make_compile_ctx(qoz_root)
-        var overrides: Map<string, string> = map.make()
+        var overrides: Map<string, string> = [:]
         let loaded = load_all_entries(paths.entries, paths.primary, qoz_root, ctx, &overrides)
         fmt.print(emit.debug_recursive_enums(loaded.file))
         os.exit(0)

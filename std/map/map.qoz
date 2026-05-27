@@ -191,7 +191,7 @@ let sort_keys<K>(keys: *Vec<K>) = {
 /// Return the map's keys sorted by `K`'s `<` operator. Useful for
 /// emitting maps in deterministic order.
 let sorted_keys<K, V>(m: *Map<K, V>): Vec<K> = {
-    var out: Vec<K> = vec.make()
+    var out: Vec<K> = []
     var i: i64 = 0
     while i < m.cap {
         if m.slots[i].occupied {

@@ -482,7 +482,7 @@ let is_unit_te(te: ast.TypeExpr): bool = {
 // matches, multi-arm ifs) are still rendered with newlines; the
 // result is then used only when no newline appears.
 let render_expr_oneline(e: ast.Expr): string = {
-    var sub = make_printer(vec.make())
+    var sub = make_printer([])
     print_expr(&sub, e)
     p_finish(&sub)
 }
@@ -802,7 +802,7 @@ let try_print_interp_block(p: *format.Printer, stmts: Vec<ast.Stmt>, tail: ast.E
     | _ -> return false
     }
     if !is_builtin_call_on(tail, "__qoz_interp_finish", sb_name) { return false }
-    var parts: Vec<format.InterpPart> = vec.make()
+    var parts: Vec<format.InterpPart> = []
     var i: i64 = 1
     while i < len(stmts) {
         match stmts[i] {

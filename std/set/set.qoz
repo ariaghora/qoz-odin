@@ -11,7 +11,7 @@ import vec
 type Set<T> = { items: Map<T, bool> }
 
 /// Return a fresh empty Set.
-let make<T>(): set.Set<T> = set.Set { items: map.make() }
+let make<T>(): set.Set<T> = set.Set { items: [:] }
 
 /// Insert `x` into the set. A no-op when `x` is already present.
 let add<T>(s: *Set<T>, x: T) = {

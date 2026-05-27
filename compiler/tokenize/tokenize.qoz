@@ -50,7 +50,7 @@ type Lexer = {
     comments: Vec<tokenize.Comment>,
 }
 
-let make_lexer(src: string): Lexer = Lexer { src: src, pos: 0, line: 1, col: 1, comments: vec.make() }
+let make_lexer(src: string): Lexer = Lexer { src: src, pos: 0, line: 1, col: 1, comments: [] }
 
 // Variant that starts the line / column counter at user-supplied
 // values. Used by the parser when re-tokenising an interpolation
@@ -58,10 +58,10 @@ let make_lexer(src: string): Lexer = Lexer { src: src, pos: 0, line: 1, col: 1, 
 // and the inner tokens carry spans that resolve to that position so
 // diagnostics anchor at the call site rather than the start of the
 // substring.
-let make_lexer_at(src: string, line: i64, col: i64): Lexer = Lexer { src: src, pos: 0, line: line, col: col, comments: vec.make() }
+let make_lexer_at(src: string, line: i64, col: i64): Lexer = Lexer { src: src, pos: 0, line: line, col: col, comments: [] }
 
 let run_at(src: string, start_line: i64, start_col: i64): Vec<tokenize.Token> = {
-    var raw: Vec<tokenize.Token> = vec.make()
+    var raw: Vec<tokenize.Token> = []
     var l = make_lexer_at(src, start_line, start_col)
     let kw = build_keywords()
     var running = true
@@ -72,7 +72,7 @@ let run_at(src: string, start_line: i64, start_col: i64): Vec<tokenize.Token> = 
         | _      -> vec.push(&raw, t)
         }
     }
-    var out: Vec<tokenize.Token> = vec.make()
+    var out: Vec<tokenize.Token> = []
     var paren_depth: i64 = 0
     var i: i64 = 0
     while i < len(raw) {
@@ -186,7 +186,7 @@ let is_keyword(kw: *Map<string, bool>, s: string): bool = {
 }
 
 let build_keywords(): Map<string, bool> = {
-    var m: Map<string, bool> = map.make()
+    var m: Map<string, bool> = [:]
     m["let"]      = true
     m["var"]      = true
     m["type"]     = true
@@ -465,7 +465,7 @@ let run_with_comments(src: string): tokenize.TokenizeResult = {
 let run(src: string): Vec<tokenize.Token> = run_with_comments(src).tokens
 
 let run_lexer_pass(l: *Lexer): Vec<tokenize.Token> = {
-    var raw: Vec<tokenize.Token> = vec.make()
+    var raw: Vec<tokenize.Token> = []
     let kw = build_keywords()
     var running = true
     while running {
@@ -479,7 +479,7 @@ let run_lexer_pass(l: *Lexer): Vec<tokenize.Token> = {
     // previous token can end a statement and the next token is not a
     // continuation. Suppress inside `(` and `[` so multi-line argument
     // lists, generic type lists, and array literals are unaffected.
-    var out: Vec<tokenize.Token> = vec.make()
+    var out: Vec<tokenize.Token> = []
     var paren_depth: i64 = 0
     var i: i64 = 0
     while i < len(raw) {

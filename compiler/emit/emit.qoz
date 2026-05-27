@@ -87,50 +87,50 @@ type Emitter = {
 
 let make_emitter(): Emitter = Emitter {
     out:               strings.Strbuf { buf: nil as *u8, len: 0, cap: 0 },
-    expr_types:        map.make(),
-    current_tparams:   vec.make(),
-    current_targs:     vec.make(),
+    expr_types:        [:],
+    current_tparams:   [],
+    current_targs:     [],
     pos_fn_typedefs:   -1,
     pos_tuple_typedefs: -1,
     pos_synth_fn_decls: -1,
-    variant_of:       map.make(),
-    is_enum:          map.make(),
-    value_enums:      map.make(),
-    value_ptr_enums:  map.make(),
-    enum_decls:       map.make(),
-    c_enum_decls:     map.make(),
-    struct_decls:     map.make(),
-    generic_decls:    map.make(),
-    generic_fn_decls: map.make(),
-    packages:         map.make(),
-    consts:           map.make(),
-    record_insts:     vec.make(),
-    record_seen:      map.make(),
-    enum_insts:       vec.make(),
-    enum_seen:        map.make(),
-    fn_insts:         vec.make(),
-    fn_seen:          map.make(),
-    locals:           map.make(),
-    externs:          map.make(),
-    fn_returns:       map.make(),
-    fn_params:        map.make(),
+    variant_of:       [:],
+    is_enum:          [:],
+    value_enums:      [:],
+    value_ptr_enums:  [:],
+    enum_decls:       [:],
+    c_enum_decls:     [:],
+    struct_decls:     [:],
+    generic_decls:    [:],
+    generic_fn_decls: [:],
+    packages:         [:],
+    consts:           [:],
+    record_insts:     [],
+    record_seen:      [:],
+    enum_insts:       [],
+    enum_seen:        [:],
+    fn_insts:         [],
+    fn_seen:          [:],
+    locals:           [:],
+    externs:          [:],
+    fn_returns:       [:],
+    fn_params:        [:],
     match_counter:    0,
     current_ret_te:   TEUnit(ast.Span { file: "", line: 0, col: 0 }),
     match_hint:       TEUnit(ast.Span { file: "", line: 0, col: 0 }),
-    fn_typedefs:      map.make(),
-    op_dispatch:      map.make(),
-    byval_helpers_emitted: map.make(),
-    pending_prologue:  vec.make(),
+    fn_typedefs:      [:],
+    op_dispatch:      [:],
+    byval_helpers_emitted: [:],
+    pending_prologue:  [],
     current_return_restore: "",
-    tuple_typedefs:   map.make(),
-    tuple_typedef_order: vec.make(),
-    fn_typedef_order: vec.make(),
+    tuple_typedefs:   [:],
+    tuple_typedef_order: [],
+    fn_typedef_order: [],
     closure_counter:  0,
-    synth_fn_defs:    vec.make(),
-    synth_fn_decls:   vec.make(),
-    show_pending:     map.make(),
-    show_order:       vec.make(),
-    show_emitted:     map.make(),
+    synth_fn_defs:    [],
+    synth_fn_decls:   [],
+    show_pending:     [:],
+    show_order:       [],
+    show_emitted:     [:],
 }
 
 let register_generics(e: *Emitter, file: ast.File) = {
@@ -394,7 +394,7 @@ let walk_decl_for_types(e: *Emitter, d: ast.Decl) = {
                 walk_typeexpr(e, fp.ty)
             }
             walk_typeexpr(e, ret)
-            e.locals = map.make()
+            e.locals = [:]
             for fp in fn_params { e.locals[fp.name] = fp.ty }
             walk_expr_for_types(e, body)
         }
@@ -460,14 +460,14 @@ let register_container_lit(e: *Emitter, te: ast.TypeExpr) = {
         if len(path) < 1 { return }
         let n = path[len(path) - 1]
         if strings.eq_raw(n, "Vec") && len(args) >= 1 {
-            var vec_args: Vec<ast.TypeExpr> = vec.make()
+            var vec_args: Vec<ast.TypeExpr> = []
             vec.push(&vec_args, args[0])
             walk_typeexpr(e, TENamed(sp, path, vec_args))
             register_fn_instantiation(e, EField(sp, EIdent(sp, "vec"), "make"), vec_args)
             register_fn_instantiation(e, EField(sp, EIdent(sp, "vec"), "push"), vec_args)
         }
         if strings.eq_raw(n, "Map") && len(args) >= 2 {
-            var map_args: Vec<ast.TypeExpr> = vec.make()
+            var map_args: Vec<ast.TypeExpr> = []
             vec.push(&map_args, args[0])
             vec.push(&map_args, args[1])
             walk_typeexpr(e, TENamed(sp, path, map_args))
@@ -533,7 +533,7 @@ let walk_expr_for_types(e: *Emitter, ex: ast.Expr) = {
                 | Some(en) -> {
                     let inferred = literal_variant_type_args(e, en, vname, args, sp)
                     if len(inferred) > 0 {
-                        var path: Vec<string> = vec.make()
+                        var path: Vec<string> = []
                         vec.push(&path, en)
                         walk_typeexpr(e, TENamed(sp, path, inferred))
                     }
@@ -943,7 +943,7 @@ let substitute_type(e: *Emitter, t: ast.TypeExpr, params: Vec<string>, args: Vec
     | TEUnit(_) -> t
     | TEPtr(span, inner) -> TEPtr(span, substitute_type(e, inner, params, args))
     | TETuple(span, elems) -> {
-        var new_elems: Vec<ast.TypeExpr> = vec.make()
+        var new_elems: Vec<ast.TypeExpr> = []
         for el in elems { vec.push(&new_elems, substitute_type(e, el, params, args)) }
         TETuple(span, new_elems)
     }
@@ -959,15 +959,26 @@ let substitute_type(e: *Emitter, t: ast.TypeExpr, params: Vec<string>, args: Vec
                 i += 1
             }
         }
-        var new_args: Vec<ast.TypeExpr> = vec.make()
+        var new_args: Vec<ast.TypeExpr> = []
         for a in t_args { vec.push(&new_args, substitute_type(e, a, params, args)) }
         TENamed(span, path, new_args)
     }
     | TEFn(span, fparams, ret) -> {
-        var new_fparams: Vec<ast.TypeExpr> = vec.make()
+        var new_fparams: Vec<ast.TypeExpr> = []
         for fp in fparams { vec.push(&new_fparams, substitute_type(e, fp, params, args)) }
         TEFn(span, new_fparams, substitute_type(e, ret, params, args))
     }
+    }
+}
+
+// Carry a container literal's checker-recorded type across a generic
+// instantiation. The original node's recorded type holds the type
+// parameters; substituting them gives the instance's concrete Vec or
+// Map type, which register_container_lit and the emitters then read
+// from expr_types for the freshly substituted node.
+let propagate_lit_type(e: *Emitter, orig: ast.Expr, node: ast.Expr, params: Vec<string>, args: Vec<ast.TypeExpr>) = {
+    if let Some(te) = map.get(&e.expr_types, expr_id(orig)) {
+        e.expr_types[expr_id(node)] = substitute_type(e, te, params, args)
     }
 }
 
@@ -985,9 +996,9 @@ let substitute_expr(e: *Emitter, x: ast.Expr, params: Vec<string>, args: Vec<ast
     | EBinary(sp, op, l, r)   -> EBinary(sp, op, substitute_expr(e, l, params, args), substitute_expr(e, r, params, args))
     | EAssign(sp, op, l, r)   -> EAssign(sp, op, substitute_expr(e, l, params, args), substitute_expr(e, r, params, args))
     | ECall(sp, callee, ta, ax) -> {
-        var new_ta: Vec<ast.TypeExpr> = vec.make()
+        var new_ta: Vec<ast.TypeExpr> = []
         for t in ta { vec.push(&new_ta, substitute_type(e, t, params, args)) }
-        var new_args: Vec<ast.Expr> = vec.make()
+        var new_args: Vec<ast.Expr> = []
         for a in ax { vec.push(&new_args, substitute_expr(e, a, params, args)) }
         ECall(sp, substitute_expr(e, callee, params, args), new_ta, new_args)
     }
@@ -996,32 +1007,32 @@ let substitute_expr(e: *Emitter, x: ast.Expr, params: Vec<string>, args: Vec<ast
     | ECast(sp, value, t)     -> ECast(sp, substitute_expr(e, value, params, args), substitute_type(e, t, params, args))
     | ETry(sp, value)         -> ETry(sp, substitute_expr(e, value, params, args))
     | ETuple(sp, elems)       -> {
-        var new_e: Vec<ast.Expr> = vec.make()
+        var new_e: Vec<ast.Expr> = []
         for el in elems { vec.push(&new_e, substitute_expr(e, el, params, args)) }
         ETuple(sp, new_e)
     }
     | ERecord(sp, te, fields) -> {
-        var new_fields: Vec<ast.RecordFieldLit> = vec.make()
+        var new_fields: Vec<ast.RecordFieldLit> = []
         for f in fields {
             vec.push(&new_fields, ast.RecordFieldLit { name: f.name, value: substitute_expr(e, f.value, params, args) })
         }
         ERecord(sp, substitute_type(e, te, params, args), new_fields)
     }
     | EClosure(sp, cps, ret, body) -> {
-        var new_cps: Vec<ast.ClosureParam> = vec.make()
+        var new_cps: Vec<ast.ClosureParam> = []
         for cp in cps {
             vec.push(&new_cps, ast.ClosureParam { name: cp.name, ty: substitute_type(e, cp.ty, params, args) })
         }
         EClosure(sp, new_cps, substitute_type(e, ret, params, args), substitute_expr(e, body, params, args))
     }
     | EBlock(sp, stmts, tail) -> {
-        var new_stmts: Vec<ast.Stmt> = vec.make()
+        var new_stmts: Vec<ast.Stmt> = []
         for s in stmts { vec.push(&new_stmts, substitute_stmt(e, s, params, args)) }
         EBlock(sp, new_stmts, substitute_expr(e, tail, params, args))
     }
     | EIf(sp, c, t, f)        -> EIf(sp, substitute_expr(e, c, params, args), substitute_expr(e, t, params, args), substitute_expr(e, f, params, args))
     | EMatch(sp, scrut, arms) -> {
-        var new_arms: Vec<ast.MatchArm> = vec.make()
+        var new_arms: Vec<ast.MatchArm> = []
         for a in arms { vec.push(&new_arms, ast.MatchArm { pat: a.pat, body: substitute_expr(e, a.body, params, args), has_guard: a.has_guard, guard: if a.has_guard { substitute_expr(e, a.guard, params, args) } else { a.guard } }) }
         EMatch(sp, substitute_expr(e, scrut, params, args), new_arms)
     }
@@ -1031,16 +1042,20 @@ let substitute_expr(e: *Emitter, x: ast.Expr, params: Vec<string>, args: Vec<ast
     | EDefer(sp, v)           -> EDefer(sp, substitute_expr(e, v, params, args))
     | ESizeOf(sp, t)          -> ESizeOf(sp, substitute_type(e, t, params, args))
     | EArrayLit(sp, elems)    -> {
-        var new_e: Vec<ast.Expr> = vec.make()
+        var new_e: Vec<ast.Expr> = []
         for el in elems { vec.push(&new_e, substitute_expr(e, el, params, args)) }
-        EArrayLit(sp, new_e)
+        let node = EArrayLit(sp, new_e)
+        propagate_lit_type(e, x, node, params, args)
+        node
     }
     | EMapLit(sp, keys, values) -> {
-        var nk: Vec<ast.Expr> = vec.make()
+        var nk: Vec<ast.Expr> = []
         for k in keys { vec.push(&nk, substitute_expr(e, k, params, args)) }
-        var nv: Vec<ast.Expr> = vec.make()
+        var nv: Vec<ast.Expr> = []
         for v in values { vec.push(&nv, substitute_expr(e, v, params, args)) }
-        EMapLit(sp, nk, nv)
+        let node = EMapLit(sp, nk, nv)
+        propagate_lit_type(e, x, node, params, args)
+        node
     }
     }
 }
@@ -1103,14 +1118,14 @@ let register_variants(e: *Emitter, file: ast.File) = {
         | DExternal(_, name, symbol, fps, ret) -> {
             e.externs[name] = symbol
             e.fn_returns[name] = ret
-            var pts: Vec<ast.TypeExpr> = vec.make()
+            var pts: Vec<ast.TypeExpr> = []
             for fp in fps { vec.push(&pts, fp.ty) }
             e.fn_params[name] = pts
         }
         | DFn(_, name, tparams, fps, ret, _, attr) -> {
             if len(tparams) == 0 {
                 e.fn_returns[name] = ret
-                var pts: Vec<ast.TypeExpr> = vec.make()
+                var pts: Vec<ast.TypeExpr> = []
                 for fp in fps { vec.push(&pts, fp.ty) }
                 e.fn_params[name] = pts
             }
@@ -1449,7 +1464,7 @@ let emit_try(e: *Emitter, sp: ast.Span, value: ast.Expr) = {
 }
 
 let emit_tuple_lit(e: *Emitter, sp: ast.Span, elems: Vec<ast.Expr>) = {
-    var elem_tes: Vec<ast.TypeExpr> = vec.make()
+    var elem_tes: Vec<ast.TypeExpr> = []
     for el in elems { vec.push(&elem_tes, infer_value_te(e, el)) }
     let tname = register_tuple_typedef(e, elem_tes)
     push(e, `(({tname}){{ `)
@@ -1487,15 +1502,15 @@ let emit_array_lit_using(e: *Emitter, sp: ast.Span, elems: Vec<ast.Expr>, hint: 
     if is_unit_typeexpr(elem_te) {
         elem_te = infer_value_te(e, elems[0])
     }
-    var elem_args: Vec<ast.TypeExpr> = vec.make()
+    var elem_args: Vec<ast.TypeExpr> = []
     vec.push(&elem_args, elem_te)
-    var pkg_path: Vec<string> = vec.make()
+    var pkg_path: Vec<string> = []
     vec.push(&pkg_path, "vec")
     let vec_callee_make: ast.Expr = EField(sp, EIdent(sp, "vec"), "make")
     let vec_callee_push: ast.Expr = EField(sp, EIdent(sp, "vec"), "push")
     register_fn_instantiation(e, vec_callee_make, elem_args)
     register_fn_instantiation(e, vec_callee_push, elem_args)
-    var vec_path: Vec<string> = vec.make()
+    var vec_path: Vec<string> = []
     vec.push(&vec_path, "Vec")
     walk_typeexpr(e, TENamed(sp, vec_path, elem_args))
     let make_mangled = mangle_inst(e, "vec_make", elem_args)
@@ -1547,12 +1562,12 @@ let emit_map_lit_using(e: *Emitter, sp: ast.Span, keys: Vec<ast.Expr>, values: V
         if is_unit_typeexpr(key_te) { key_te = infer_value_te(e, keys[0]) }
         if is_unit_typeexpr(val_te) { val_te = infer_value_te(e, values[0]) }
     }
-    var kv_args: Vec<ast.TypeExpr> = vec.make()
+    var kv_args: Vec<ast.TypeExpr> = []
     vec.push(&kv_args, key_te)
     vec.push(&kv_args, val_te)
     register_fn_instantiation(e, EField(sp, EIdent(sp, "map"), "make"), kv_args)
     register_map_helper(e, "map_set", kv_args)
-    var map_path: Vec<string> = vec.make()
+    var map_path: Vec<string> = []
     vec.push(&map_path, "Map")
     walk_typeexpr(e, TENamed(sp, map_path, kv_args))
     let make_mangled = mangle_inst(e, "map_make", kv_args)
@@ -1577,9 +1592,9 @@ let emit_map_lit_using(e: *Emitter, sp: ast.Span, keys: Vec<ast.Expr>, values: V
 }
 
 let emit_closure_lifted(e: *Emitter, sp: ast.Span, cps: Vec<ast.ClosureParam>, ret: ast.TypeExpr, body: ast.Expr) = {
-    var sc: CaptureScope = CaptureScope { bound: map.make() }
+    var sc: CaptureScope = CaptureScope { bound: [:] }
     for cp in cps { sc.bound[cp.name] = true }
-    var captures: Vec<string> = vec.make()
+    var captures: Vec<string> = []
     collect_closure_captures(e, body, &sc, &captures)
 
     let counter = e.closure_counter
@@ -1587,7 +1602,7 @@ let emit_closure_lifted(e: *Emitter, sp: ast.Span, cps: Vec<ast.ClosureParam>, r
     let cname = strings.cat("qoz_clo_", `{counter}`)
     let env_struct = strings.cat("qoz_clo_env_", `{counter}`)
 
-    var capture_tes: Vec<ast.TypeExpr> = vec.make()
+    var capture_tes: Vec<ast.TypeExpr> = []
     for c in captures {
         match map.get(&e.locals, c) {
         | Some(te) -> vec.push(&capture_tes, te)
@@ -1596,11 +1611,11 @@ let emit_closure_lifted(e: *Emitter, sp: ast.Span, cps: Vec<ast.ClosureParam>, r
     }
 
     // Closure-type typedef for the value the closure produces.
-    var ptes: Vec<ast.TypeExpr> = vec.make()
+    var ptes: Vec<ast.TypeExpr> = []
     for cp in cps { vec.push(&ptes, cp.ty) }
     let clo_type = register_fn_typedef(e, ptes, ret)
 
-    var fparams: Vec<ast.FnParam> = vec.make()
+    var fparams: Vec<ast.FnParam> = []
     for cp in cps {
         vec.push(&fparams, ast.FnParam { name: cp.name, ty: cp.ty })
     }
@@ -1651,7 +1666,7 @@ let emit_closure_lifted(e: *Emitter, sp: ast.Span, cps: Vec<ast.ClosureParam>, r
         push(e, `, {fp_c} {fp_n}`)
     }
     push(e, ") {\n    ")
-    e.locals = map.make()
+    e.locals = [:]
     for fp in fparams { e.locals[fp.name] = fp.ty }
     if len(captures) > 0 {
         push(e, `struct {env_struct} *_env = (struct {env_struct} *)_qoz_env;\n    `)
@@ -1980,9 +1995,9 @@ let infer_base_typeexpr(e: *Emitter, base: ast.Expr): ast.TypeExpr = {
         | None -> {
             match map.get(&e.variant_of, ident) {
             | Some(en) -> {
-                var path: Vec<string> = vec.make()
+                var path: Vec<string> = []
                 vec.push(&path, en)
-                TENamed(sp, path, vec.make())
+                TENamed(sp, path, [])
             }
             | None -> {
                 let _ = emit_die(sp, `identifier '{ident}' has no known ast.TypeExpr (not a local, parameter, or variant)`)
@@ -2157,7 +2172,7 @@ let prefer_typed_record(e: *Emitter, lit: ast.TypeExpr, cached: ast.TypeExpr): a
 }
 
 let type_args_of(te: ast.TypeExpr): Vec<ast.TypeExpr> = {
-    let empty: Vec<ast.TypeExpr> = vec.make()
+    let empty: Vec<ast.TypeExpr> = []
     match te {
     | TENamed(_, _, args) -> args
     | _                   -> empty
@@ -2307,12 +2322,12 @@ let infer_value_te(e: *Emitter, v: ast.Expr): ast.TypeExpr = {
     }
     | ESizeOf(sp, _) -> single_named_te(sp, "i64")
     | ETuple(sp, elems) -> {
-        var ets: Vec<ast.TypeExpr> = vec.make()
+        var ets: Vec<ast.TypeExpr> = []
         for el in elems { vec.push(&ets, infer_value_te(e, el)) }
         TETuple(sp, ets)
     }
     | EClosure(sp, cps, ret, _) -> {
-        var pte: Vec<ast.TypeExpr> = vec.make()
+        var pte: Vec<ast.TypeExpr> = []
         for cp in cps { vec.push(&pte, cp.ty) }
         TEFn(sp, pte, ret)
     }
@@ -2339,9 +2354,9 @@ let infer_value_te(e: *Emitter, v: ast.Expr): ast.TypeExpr = {
             return TEUnit(sp)
         }
         let elem_te = infer_value_te(e, elems[0])
-        var args: Vec<ast.TypeExpr> = vec.make()
+        var args: Vec<ast.TypeExpr> = []
         vec.push(&args, elem_te)
-        var path: Vec<string> = vec.make()
+        var path: Vec<string> = []
         vec.push(&path, "Vec")
         TENamed(sp, path, args)
     }
@@ -2352,10 +2367,10 @@ let infer_value_te(e: *Emitter, v: ast.Expr): ast.TypeExpr = {
         }
         let key_te = infer_value_te(e, keys[0])
         let val_te = infer_value_te(e, values[0])
-        var args: Vec<ast.TypeExpr> = vec.make()
+        var args: Vec<ast.TypeExpr> = []
         vec.push(&args, key_te)
         vec.push(&args, val_te)
-        var path: Vec<string> = vec.make()
+        var path: Vec<string> = []
         vec.push(&path, "Map")
         TENamed(sp, path, args)
     }
@@ -2380,9 +2395,9 @@ let infer_value_te(e: *Emitter, v: ast.Expr): ast.TypeExpr = {
 }
 
 let single_named_te(sp: ast.Span, name: string): ast.TypeExpr = {
-    var path: Vec<string> = vec.make()
+    var path: Vec<string> = []
     vec.push(&path, name)
-    TENamed(sp, path, vec.make())
+    TENamed(sp, path, [])
 }
 
 // Walk-time variant type-arg inference. Same shape as
@@ -2390,15 +2405,15 @@ let single_named_te(sp: ast.Span, name: string): ast.TypeExpr = {
 // infer_value_te so it works before locals are bound. Returns an
 // empty Vec when any argument is not a literal whose type is known.
 let literal_variant_type_args(e: *Emitter, enum_name: string, variant: string, args: Vec<ast.Expr>, sp: ast.Span): Vec<ast.TypeExpr> = {
-    var out: Vec<ast.TypeExpr> = vec.make()
-    let empty: Vec<ast.TypeExpr> = vec.make()
+    var out: Vec<ast.TypeExpr> = []
+    let empty: Vec<ast.TypeExpr> = []
     match map.get(&e.enum_decls, enum_name) {
     | None -> empty
     | Some(d) -> {
         match d {
         | DEnum(_, _, tparams, variants) -> {
             if len(tparams) == 0 { return empty }
-            var bindings: Map<string, ast.TypeExpr> = map.make()
+            var bindings: Map<string, ast.TypeExpr> = [:]
             var resolved_all = true
             for v in variants {
                 if strings.eq_raw(v.name, variant) {
@@ -2435,14 +2450,14 @@ let literal_variant_type_args(e: *Emitter, enum_name: string, variant: string, a
 // Returns the resolved per-tparam Vec<TypeExpr> in the enum's declared
 // tparam order.
 let infer_variant_type_args(e: *Emitter, enum_name: string, variant: string, args: Vec<ast.Expr>, sp: ast.Span): Vec<ast.TypeExpr> = {
-    var out: Vec<ast.TypeExpr> = vec.make()
+    var out: Vec<ast.TypeExpr> = []
     match map.get(&e.enum_decls, enum_name) {
     | None -> out
     | Some(d) -> {
         match d {
         | DEnum(_, _, tparams, variants) -> {
             if len(tparams) == 0 { return out }
-            var bindings: Map<string, ast.TypeExpr> = map.make()
+            var bindings: Map<string, ast.TypeExpr> = [:]
             for v in variants {
                 if strings.eq_raw(v.name, variant) {
                     var i: i64 = 0
@@ -2524,9 +2539,9 @@ let call_return_te(e: *Emitter, callee: ast.Expr, type_args: Vec<ast.TypeExpr>, 
     if strings.eq_raw(name, "hash")    { return single_named_te(sp, "u64") }
     if strings.has_prefix(name, "__qoz_interp_") {
         if strings.eq_raw(name, "__qoz_interp_init") {
-            var vp: Vec<string> = vec.make()
+            var vp: Vec<string> = []
             vec.push(&vp, "void")
-            return TEPtr(sp, TENamed(sp, vp, vec.make()))
+            return TEPtr(sp, TENamed(sp, vp, []))
         }
         if strings.eq_raw(name, "__qoz_interp_finish") {
             return single_named_te(sp, "string")
@@ -2536,7 +2551,7 @@ let call_return_te(e: *Emitter, callee: ast.Expr, type_args: Vec<ast.TypeExpr>, 
     // Variant constructor. If no explicit type args, infer from value args.
     match map.get(&e.variant_of, name) {
     | Some(en) -> {
-        var path: Vec<string> = vec.make()
+        var path: Vec<string> = []
         vec.push(&path, en)
         let final_args = if len(type_args) > 0 { type_args } else { infer_variant_type_args(e, en, name, args, sp) }
         return TENamed(sp, path, final_args)
@@ -2583,7 +2598,7 @@ type StmtScope = {
 // calling close_statement_scope to flush both.
 let open_statement_scope(e: *Emitter): StmtScope = {
     let saved = StmtScope { start: strings.sb_len(&e.out), prologue: e.pending_prologue }
-    e.pending_prologue = vec.make()
+    e.pending_prologue = []
     saved
 }
 
@@ -2666,7 +2681,7 @@ let emit_stmt_inner(e: *Emitter, s: ast.Stmt) = {
 }
 
 let collect_defers_in_stmts(stmts: Vec<ast.Stmt>): Vec<ast.Expr> = {
-    var defers: Vec<ast.Expr> = vec.make()
+    var defers: Vec<ast.Expr> = []
     for s in stmts {
         match s {
         | SExpr(_, expr) -> {
@@ -3379,7 +3394,7 @@ let emit_call(e: *Emitter, callee: ast.Expr, type_args: Vec<ast.TypeExpr>, args:
             | None      -> user_fn_c_name(qualified)
         }
         push(e, `{dispatch_name}(`)
-        var hints: Vec<ast.TypeExpr> = vec.make()
+        var hints: Vec<ast.TypeExpr> = []
         match map.get(&e.fn_params, qualified) {
         | Some(pts) -> hints = pts
         | None      -> { }
@@ -3500,7 +3515,7 @@ let emit_call(e: *Emitter, callee: ast.Expr, type_args: Vec<ast.TypeExpr>, args:
         match map.get(&e.externs, name) {
         | Some(sym) -> {
             push(e, `{sym}(`)
-            var hints: Vec<ast.TypeExpr> = vec.make()
+            var hints: Vec<ast.TypeExpr> = []
             match map.get(&e.fn_params, name) {
             | Some(pts) -> hints = pts
             | None      -> { }
@@ -3567,7 +3582,7 @@ let emit_call(e: *Emitter, callee: ast.Expr, type_args: Vec<ast.TypeExpr>, args:
     }
     if !emitted_callee { emit_expr(e, callee) }
     push(e, "(")
-    var fallback_hints: Vec<ast.TypeExpr> = vec.make()
+    var fallback_hints: Vec<ast.TypeExpr> = []
     match callee {
     | EIdent(_, cname) -> {
         match map.get(&e.fn_params, cname) {
@@ -4119,7 +4134,7 @@ let emit_fn(e: *Emitter, name: string, params: Vec<ast.FnParam>, ret: ast.TypeEx
     // the body so nested emits cannot poison an outer function.
     let saved_match_counter = e.match_counter
     e.match_counter = 0
-    e.locals = map.make()
+    e.locals = [:]
     for p in params {
         e.locals[p.name] = p.ty
         if c_type_is_pointer(c_type_for(e, p.ty)) {
@@ -4146,7 +4161,7 @@ let emit_fn(e: *Emitter, name: string, params: Vec<ast.FnParam>, ret: ast.TypeEx
     }
     e.current_return_restore = saved_ret
     e.match_counter = saved_match_counter
-    e.locals = map.make()
+    e.locals = [:]
     push(e, "}\n\n")
 }
 
@@ -4162,10 +4177,10 @@ let c_type_is_pointer(ct: string): bool = {
 // enum, a value enum payload may be a record), so they share one
 // topological pass. Boxed enums are pointers and are emitted afterward.
 let emit_aggregates_topological(e: *Emitter, f: ast.File) = {
-    var names: Vec<string> = vec.make()
-    var is_enum_node: Vec<bool> = vec.make()
-    var field_lists: Vec<Vec<ast.StructField>> = vec.make()
-    var variant_lists: Vec<Vec<ast.VariantDecl>> = vec.make()
+    var names: Vec<string> = []
+    var is_enum_node: Vec<bool> = []
+    var field_lists: Vec<Vec<ast.StructField>> = []
+    var variant_lists: Vec<Vec<ast.VariantDecl>> = []
     for d in f.decls {
         match d {
         | DStruct(_, name, params, fields) -> {
@@ -4173,7 +4188,7 @@ let emit_aggregates_topological(e: *Emitter, f: ast.File) = {
                 vec.push(&names, name)
                 vec.push(&is_enum_node, false)
                 vec.push(&field_lists, fields)
-                var empty: Vec<ast.VariantDecl> = vec.make()
+                var empty: Vec<ast.VariantDecl> = []
                 vec.push(&variant_lists, empty)
             }
         }
@@ -4181,7 +4196,7 @@ let emit_aggregates_topological(e: *Emitter, f: ast.File) = {
             if len(params) == 0 && map.contains(&e.value_enums, name) {
                 vec.push(&names, name)
                 vec.push(&is_enum_node, true)
-                var empty: Vec<ast.StructField> = vec.make()
+                var empty: Vec<ast.StructField> = []
                 vec.push(&field_lists, empty)
                 vec.push(&variant_lists, variants)
             }
@@ -4195,7 +4210,7 @@ let emit_aggregates_topological(e: *Emitter, f: ast.File) = {
     for inst in e.record_insts {
         if let Some(decl) = map.get(&e.generic_decls, inst.name) {
             if let DStruct(_, _, params, fields) = decl {
-                var subst_fields: Vec<ast.StructField> = vec.make()
+                var subst_fields: Vec<ast.StructField> = []
                 for fld in fields {
                     vec.push(&subst_fields, ast.StructField {
                         name: fld.name,
@@ -4205,7 +4220,7 @@ let emit_aggregates_topological(e: *Emitter, f: ast.File) = {
                 vec.push(&names, inst.mangled)
                 vec.push(&is_enum_node, false)
                 vec.push(&field_lists, subst_fields)
-                var empty: Vec<ast.VariantDecl> = vec.make()
+                var empty: Vec<ast.VariantDecl> = []
                 vec.push(&variant_lists, empty)
             }
         }
@@ -4216,14 +4231,14 @@ let emit_aggregates_topological(e: *Emitter, f: ast.File) = {
                 if let DEnum(_, _, params, variants) = decl {
                     vec.push(&names, inst.mangled)
                     vec.push(&is_enum_node, true)
-                    var empty: Vec<ast.StructField> = vec.make()
+                    var empty: Vec<ast.StructField> = []
                     vec.push(&field_lists, empty)
                     vec.push(&variant_lists, subst_variants_for(e, params, variants, inst.args))
                 }
             }
         }
     }
-    var visited: Map<string, bool> = map.make()
+    var visited: Map<string, bool> = [:]
     var i: i64 = 0
     while i < len(names) {
         emit_aggregate_visit(e, names[i], names, is_enum_node, field_lists, variant_lists, &visited)
@@ -4270,11 +4285,11 @@ let emit_aggregate_visit(e: *Emitter, name: string, names: Vec<string>, is_enum_
 // Substitute a generic enum's type parameters with concrete arguments,
 // producing the variant list for one instantiation.
 let subst_variants_for(e: *Emitter, params: Vec<string>, variants: Vec<ast.VariantDecl>, args: Vec<ast.TypeExpr>): Vec<ast.VariantDecl> = {
-    var out: Vec<ast.VariantDecl> = vec.make()
+    var out: Vec<ast.VariantDecl> = []
     for v in variants {
-        var np: Vec<ast.TypeExpr> = vec.make()
+        var np: Vec<ast.TypeExpr> = []
         for pt in v.pos { vec.push(&np, substitute_type(e, pt, params, args)) }
-        var nn: Vec<ast.StructField> = vec.make()
+        var nn: Vec<ast.StructField> = []
         for sf in v.named { vec.push(&nn, ast.StructField { name: sf.name, ty: substitute_type(e, sf.ty, params, args) }) }
         vec.push(&out, ast.VariantDecl { span: v.span, name: v.name, kind: v.kind, pos: np, named: nn })
     }
@@ -4422,11 +4437,11 @@ let emit_program(f: ast.File, expr_types: Map<i64, ast.TypeExpr>): string = {
         | Some(decl) -> {
             match decl {
             | DEnum(_, _, params, variants) -> {
-                var subst_variants: Vec<ast.VariantDecl> = vec.make()
+                var subst_variants: Vec<ast.VariantDecl> = []
                 for v in variants {
-                    var new_pos: Vec<ast.TypeExpr> = vec.make()
+                    var new_pos: Vec<ast.TypeExpr> = []
                     for pt in v.pos { vec.push(&new_pos, substitute_type(&e, pt, params, inst.args)) }
-                    var new_named: Vec<ast.StructField> = vec.make()
+                    var new_named: Vec<ast.StructField> = []
                     for nf in v.named { vec.push(&new_named, ast.StructField { name: nf.name, ty: substitute_type(&e, nf.ty, params, inst.args) }) }
                     vec.push(&subst_variants, ast.VariantDecl {
                         span:  v.span,
@@ -4478,7 +4493,7 @@ let emit_program(f: ast.File, expr_types: Map<i64, ast.TypeExpr>): string = {
         }
         | DConst(_, name, ty, value) -> {
             let resolved_ty = if is_unit_typeexpr(ty) { infer_value_te(&e, value) } else { ty }
-            var empty: Vec<ast.FnParam> = vec.make()
+            var empty: Vec<ast.FnParam> = []
             emit_fn_proto(&e, name, empty, resolved_ty)
         }
         // Type declarations (DStruct, DEnum, DTypeAlias) contribute
@@ -4493,7 +4508,7 @@ let emit_program(f: ast.File, expr_types: Map<i64, ast.TypeExpr>): string = {
         | Some(decl) -> {
             match decl {
             | DFn(_, _, tparams, params, ret, _, _) -> {
-                var subst_params: Vec<ast.FnParam> = vec.make()
+                var subst_params: Vec<ast.FnParam> = []
                 for pp in params {
                     vec.push(&subst_params, ast.FnParam {
                         name: pp.name,
@@ -4526,7 +4541,7 @@ let emit_program(f: ast.File, expr_types: Map<i64, ast.TypeExpr>): string = {
         }
         | DConst(_, name, ty, value) -> {
             let resolved_ty = if is_unit_typeexpr(ty) { infer_value_te(&e, value) } else { ty }
-            var empty: Vec<ast.FnParam> = vec.make()
+            var empty: Vec<ast.FnParam> = []
             emit_fn(&e, name, empty, resolved_ty, value)
         }
         // Other Decl kinds (DImport, DStruct, DEnum, DTypeAlias,
@@ -4542,7 +4557,7 @@ let emit_program(f: ast.File, expr_types: Map<i64, ast.TypeExpr>): string = {
         | Some(decl) -> {
             match decl {
             | DFn(_, _, tparams, params, ret, body, _) -> {
-                var subst_params: Vec<ast.FnParam> = vec.make()
+                var subst_params: Vec<ast.FnParam> = []
                 for pp in params {
                     vec.push(&subst_params, ast.FnParam {
                         name: pp.name,
@@ -4661,11 +4676,11 @@ let classify_value_enums(e: *Emitter, f: ast.File) = {
         if !map.contains(&rec, inst.name) {
             if let Some(decl) = map.get(&e.generic_decls, inst.name) {
                 if let DEnum(_, _, params, variants) = decl {
-                    var subst: Vec<ast.VariantDecl> = vec.make()
+                    var subst: Vec<ast.VariantDecl> = []
                     for v in variants {
-                        var np: Vec<ast.TypeExpr> = vec.make()
+                        var np: Vec<ast.TypeExpr> = []
                         for pt in v.pos { vec.push(&np, substitute_type(e, pt, params, inst.args)) }
-                        var nn: Vec<ast.StructField> = vec.make()
+                        var nn: Vec<ast.StructField> = []
                         for sf in v.named { vec.push(&nn, ast.StructField { name: sf.name, ty: substitute_type(e, sf.ty, params, inst.args) }) }
                         vec.push(&subst, ast.VariantDecl { span: v.span, name: v.name, kind: v.kind, pos: np, named: nn })
                     }
@@ -4955,7 +4970,7 @@ let collect_field_ptr_offsets(e: *Emitter, parent: string, field: string, te: as
                                 let composed_field  = sf.name
                                 // Build "(int32_t)(offsetof(parent, field) + offsetof(inner_parent, composed_field))"
                                 // by capturing each inner offset, then prefixing with our base offset.
-                                var inner_offsets: Vec<string> = vec.make()
+                                var inner_offsets: Vec<string> = []
                                 collect_field_ptr_offsets(e, composed_parent, composed_field, sf.ty, &inner_offsets)
                                 for inner in inner_offsets {
                                     // inner is "(int32_t)offsetof(...)" or "(int32_t)(offsetof(...) + ...)"
@@ -4985,7 +5000,7 @@ let emit_record_desc(e: *Emitter, name: string, fields: Vec<ast.StructField>) = 
         return
     }
     let parent = strings.cat("struct qoz_", name)
-    var offsets: Vec<string> = vec.make()
+    var offsets: Vec<string> = []
     for f in fields {
         collect_field_ptr_offsets(e, parent, f.name, f.ty, &offsets)
     }
@@ -5012,7 +5027,7 @@ let emit_record_desc(e: *Emitter, name: string, fields: Vec<ast.StructField>) = 
 // one ADT variant's positional payload. Returns an empty Vec for
 // variants with no payload, no positional fields, or no pointer slots.
 let collect_variant_ptr_offsets(e: *Emitter, enum_name: string, v: ast.VariantDecl): Vec<string> = {
-    var out: Vec<string> = vec.make()
+    var out: Vec<string> = []
     let parent = strings.cat("qoz_", strings.cat(enum_name, strings.cat("_", strings.cat(v.name, "_payload"))))
     if variant_has_positional(v) {
         var i: i64 = 0
@@ -5625,7 +5640,7 @@ let emit_call_with_hint(e: *Emitter, callee: ast.Expr, type_args: Vec<ast.TypeEx
 // concrete type hint to each argument of a nested variant
 // constructor.
 let variant_payload_hints(e: *Emitter, enum_name: string, variant: string, hint_args: Vec<ast.TypeExpr>): Vec<ast.TypeExpr> = {
-    var out: Vec<ast.TypeExpr> = vec.make()
+    var out: Vec<ast.TypeExpr> = []
     match map.get(&e.enum_decls, enum_name) {
     | None    -> out
     | Some(d) -> {
@@ -5657,9 +5672,9 @@ let hint_args_for_enum(hint: ast.TypeExpr, enum_name: string): Vec<ast.TypeExpr>
             let last = path[len(path) - 1]
             if strings.eq_raw(last, enum_name) { return args }
         }
-        vec.make()
+        []
     }
-    | _ -> vec.make()
+    | _ -> []
     }
 }
 
@@ -5689,7 +5704,7 @@ let expand_record_spread_fields(e: *Emitter, te: ast.TypeExpr, fields: Vec<ast.R
     var has_spread = false
     var sp = ast.Span { file: "", line: 0, col: 0 }
     var spread_base: ast.Expr = ENil(sp)
-    var listed: Map<string, bool> = map.make()
+    var listed: Map<string, bool> = [:]
     var i: i64 = 0
     while i < len(fields) {
         let f = fields[i]
@@ -5710,7 +5725,7 @@ let expand_record_spread_fields(e: *Emitter, te: ast.TypeExpr, fields: Vec<ast.R
         return fields
     }
 
-    var out: Vec<ast.RecordFieldLit> = vec.make()
+    var out: Vec<ast.RecordFieldLit> = []
     var j: i64 = 0
     while j < len(fields) {
         let f = fields[j]
@@ -5734,7 +5749,7 @@ let expand_record_spread_fields(e: *Emitter, te: ast.TypeExpr, fields: Vec<ast.R
 }
 
 let struct_decl_field_names(fields: Vec<ast.StructField>): Vec<string> = {
-    var out: Vec<string> = vec.make()
+    var out: Vec<string> = []
     var i: i64 = 0
     while i < len(fields) {
         vec.push(&out, fields[i].name)
@@ -5744,8 +5759,8 @@ let struct_decl_field_names(fields: Vec<ast.StructField>): Vec<string> = {
 }
 
 let struct_field_names_from_te(e: *Emitter, te: ast.TypeExpr): Vec<string> = {
-    let empty: Vec<string> = vec.make()
-    var path_segments: Vec<string> = vec.make()
+    let empty: Vec<string> = []
+    var path_segments: Vec<string> = []
     match te {
     | TENamed(_, path, _) -> path_segments = path
     | _ -> { return empty }
@@ -6404,9 +6419,9 @@ let emit_match_arm_with_kind(e: *Emitter, enum_name: string, scrut_tmp: string, 
                 push(e, `default: {{ qoz_{enum_name}* {name} = {scrut_tmp}; (void){name}; `)
             }
             let sp = ast.Span { file: "", line: 0, col: 0 }
-            var segs: Vec<string> = vec.make()
+            var segs: Vec<string> = []
             vec.push(&segs, enum_name)
-            e.locals[name] = TENamed(sp, segs, vec.make())
+            e.locals[name] = TENamed(sp, segs, [])
             if arm.has_guard {
                 push(e, "if (")
                 emit_expr(e, arm.guard)
@@ -6573,7 +6588,7 @@ let strip_mangled(name: string): string = {
 }
 
 let mangled_args(e: *Emitter, mangled: string, bare: string): Vec<ast.TypeExpr> = {
-    var out: Vec<ast.TypeExpr> = vec.make()
+    var out: Vec<ast.TypeExpr> = []
     let bn = len(bare)
     let mn = len(mangled)
     if mn <= bn + 2 { return out }
@@ -6599,9 +6614,9 @@ let mangled_args(e: *Emitter, mangled: string, bare: string): Vec<ast.TypeExpr> 
 
 let type_expr_from_mangled_part(part: string, sp: ast.Span): ast.TypeExpr = {
     let unmapped = unmangle_primitive(part)
-    var path: Vec<string> = vec.make()
+    var path: Vec<string> = []
     vec.push(&path, unmapped)
-    TENamed(sp, path, vec.make())
+    TENamed(sp, path, [])
 }
 
 let unmangle_primitive(s: string): string = {
@@ -6655,7 +6670,7 @@ let match_body_hint(e: *Emitter, enum_name: string, body: ast.Expr): ast.TypeExp
     let sp = ast.Span { file: "", line: 0, col: 0 }
     let bare = strip_mangled(enum_name)
     let inst_args = mangled_args(e, enum_name, bare)
-    var path: Vec<string> = vec.make()
+    var path: Vec<string> = []
     vec.push(&path, bare)
     TENamed(sp, path, inst_args)
 }
@@ -6689,7 +6704,7 @@ let emit_main(e: *Emitter, ret: ast.TypeExpr, body: ast.Expr) = {
         }
         emit_main_tail(e, kind, ret, effective_tail, defers)
     }
-    | _ -> emit_main_tail(e, kind, ret, body, vec.make())
+    | _ -> emit_main_tail(e, kind, ret, body, [])
     }
 }
 

@@ -385,7 +385,7 @@ let parse_f64(s: string): f64 = {
 /// Split `s` on every occurrence of the byte `sep` and return the
 /// pieces in order. Consecutive separators produce empty strings.
 let split(s: string, sep: i64): Vec<string> = {
-    var out: Vec<string> = vec.make()
+    var out: Vec<string> = []
     let total = len(s)
     var start: i64 = 0
     var i: i64 = 0

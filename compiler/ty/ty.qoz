@@ -170,11 +170,11 @@ let ty_eq(a: ty.Ty, b: ty.Ty): bool = {
 
 let ty_to_type_expr_at(t: ty.Ty, sp: ast.Span): ast.TypeExpr = {
     match t {
-    | TyInt(info) -> TENamed(sp, ints_to_path(info.width, info.is_signed), vec.make())
+    | TyInt(info) -> TENamed(sp, ints_to_path(info.width, info.is_signed), [])
     | TyFloat(info) -> {
-        var path: Vec<string> = vec.make()
+        var path: Vec<string> = []
         if info.width == 32 { vec.push(&path, "f32") } else { vec.push(&path, "f64") }
-        TENamed(sp, path, vec.make())
+        TENamed(sp, path, [])
     }
     | TyBool    -> single_path_te(sp, "bool")
     | TyChar    -> single_path_te(sp, "char")
@@ -186,14 +186,14 @@ let ty_to_type_expr_at(t: ty.Ty, sp: ast.Span): ast.TypeExpr = {
     | TyPtr(inner) -> TEPtr(sp, ty_to_type_expr_at(inner, sp))
     | TyAdt(home, name, args) -> named_with_args_homed(sp, home, name, args)
     | TyRecord(home, name, args) -> named_with_args_homed(sp, home, name, args)
-    | TyCEnum(home, name, _) -> named_with_args_homed(sp, home, name, vec.make())
+    | TyCEnum(home, name, _) -> named_with_args_homed(sp, home, name, [])
     | TyFn(fparams, ret) -> {
-        var pte: Vec<ast.TypeExpr> = vec.make()
+        var pte: Vec<ast.TypeExpr> = []
         for p in fparams { vec.push(&pte, ty_to_type_expr_at(p, sp)) }
         TEFn(sp, pte, ty_to_type_expr_at(ret, sp))
     }
     | TyTuple(elems) -> {
-        var ete: Vec<ast.TypeExpr> = vec.make()
+        var ete: Vec<ast.TypeExpr> = []
         for el in elems { vec.push(&ete, ty_to_type_expr_at(el, sp)) }
         TETuple(sp, ete)
     }
@@ -202,7 +202,7 @@ let ty_to_type_expr_at(t: ty.Ty, sp: ast.Span): ast.TypeExpr = {
 }
 
 let ints_to_path(width: i64, is_signed: bool): Vec<string> = {
-    var path: Vec<string> = vec.make()
+    var path: Vec<string> = []
     if is_signed {
         if width == 8  { vec.push(&path, "i8")  }
         if width == 16 { vec.push(&path, "i16") }
@@ -219,9 +219,9 @@ let ints_to_path(width: i64, is_signed: bool): Vec<string> = {
 }
 
 let single_path_te(sp: ast.Span, name: string): ast.TypeExpr = {
-    var path: Vec<string> = vec.make()
+    var path: Vec<string> = []
     vec.push(&path, name)
-    TENamed(sp, path, vec.make())
+    TENamed(sp, path, [])
 }
 
 let named_with_args(sp: ast.Span, name: string, args: Vec<ty.Ty>): ast.TypeExpr = {
@@ -232,10 +232,10 @@ let named_with_args(sp: ast.Span, name: string, args: Vec<ty.Ty>): ast.TypeExpr 
 // the first path segment when present, so the reconstructed
 // TypeExpr survives the cross-package access rule.
 let named_with_args_homed(sp: ast.Span, home: string, name: string, args: Vec<ty.Ty>): ast.TypeExpr = {
-    var path: Vec<string> = vec.make()
+    var path: Vec<string> = []
     if !strings.eq_raw(home, "") { vec.push(&path, home) }
     vec.push(&path, name)
-    var te_args: Vec<ast.TypeExpr> = vec.make()
+    var te_args: Vec<ast.TypeExpr> = []
     for a in args { vec.push(&te_args, ty_to_type_expr_at(a, sp)) }
     TENamed(sp, path, te_args)
 }

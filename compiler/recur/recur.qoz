@@ -77,7 +77,7 @@ let lookup_type_decl(t: *recur.Tables, name: string): Option<ast.Decl> = {
 // By-value successor type names of a declared enum or struct,
 // with the declaration's own type parameters treated as leaves.
 let type_byval_succs(t: *recur.Tables, name: string): Vec<string> = {
-    var out: Vec<string> = vec.make()
+    var out: Vec<string> = []
     match lookup_type_decl(t, name) {
     | Some(d) -> {
         match d {
@@ -120,8 +120,8 @@ let adt_reaches(t: *recur.Tables, target: string, current: string, visited: *Map
 }
 
 let build_tables(f: ast.File): recur.Tables = {
-    var enums:   Map<string, ast.Decl> = map.make()
-    var structs: Map<string, ast.Decl> = map.make()
+    var enums:   Map<string, ast.Decl> = [:]
+    var structs: Map<string, ast.Decl> = [:]
     for d in f.decls {
         match d {
         | DEnum(_, n, _, _)   -> map.set(&enums, n, d)
@@ -138,9 +138,9 @@ let build_tables(f: ast.File): recur.Tables = {
 // Names of every ADT in `f` that must remain heap-boxed.
 let recursive_adts(f: ast.File): Map<string, bool> = {
     var t = build_tables(f)
-    var result: Map<string, bool> = map.make()
+    var result: Map<string, bool> = [:]
     for name in map.sorted_keys(&t.enums) {
-        var visited: Map<string, bool> = map.make()
+        var visited: Map<string, bool> = [:]
         if adt_reaches(&t, name, name, &visited) {
             result[name] = true
         }
