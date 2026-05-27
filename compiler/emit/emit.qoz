@@ -449,29 +449,46 @@ let literal_typeexpr(ex: ast.Expr): Option<ast.TypeExpr> = {
     }
 }
 
-// When a `let v: Vec<T> = [...]` declares an explicit element type that
-// differs from what the array literal's first element would infer (for
-// example `Vec<i32> = [10, 20]` where the literals default to i64),
-// register the annotated instantiation up front so vec.make<T> and
-// vec.push<T> exist with the correct C suffix at link time.
-let walk_let_value_for_array_hint(e: *Emitter, ty: ast.TypeExpr, val: ast.Expr) = {
+// A `let v: Vec<T> = [...]` or `let m: Map<K, V> = [:]` declares an
+// explicit container type. Register the annotated instantiation up
+// front so the container helpers (vec.make/vec.push, or map.make/map_set)
+// exist with the correct C suffix, even when the literal is empty or its
+// inferred element type differs from the annotation.
+let walk_let_value_for_container_hint(e: *Emitter, ty: ast.TypeExpr, val: ast.Expr) = {
     if is_unit_typeexpr(ty) { return }
     match ty {
     | TENamed(sp, path, args) -> {
         if len(path) < 1 { return }
-        if !strings.eq_raw(path[len(path) - 1], "Vec") { return }
-        if len(args) < 1 { return }
-        match val {
-        | EArrayLit(_, _) -> {
-            var vec_args: Vec<ast.TypeExpr> = vec.make()
-            vec.push(&vec_args, args[0])
-            walk_typeexpr(e, TENamed(sp, path, vec_args))
-            register_fn_instantiation(e, EField(sp, EIdent(sp, "vec"), "make"), vec_args)
-            register_fn_instantiation(e, EField(sp, EIdent(sp, "vec"), "push"), vec_args)
+        let last = path[len(path) - 1]
+        if strings.eq_raw(last, "Vec") && len(args) >= 1 {
+            match val {
+            | EArrayLit(_, _) -> {
+                var vec_args: Vec<ast.TypeExpr> = vec.make()
+                vec.push(&vec_args, args[0])
+                walk_typeexpr(e, TENamed(sp, path, vec_args))
+                register_fn_instantiation(e, EField(sp, EIdent(sp, "vec"), "make"), vec_args)
+                register_fn_instantiation(e, EField(sp, EIdent(sp, "vec"), "push"), vec_args)
+            }
+            // Only an array literal needs the Vec helpers pre-registered.
+            | _ -> { }
+            }
         }
-        | _ -> { }
+        if strings.eq_raw(last, "Map") && len(args) >= 2 {
+            match val {
+            | EMapLit(_, _, _) -> {
+                var map_args: Vec<ast.TypeExpr> = vec.make()
+                vec.push(&map_args, args[0])
+                vec.push(&map_args, args[1])
+                walk_typeexpr(e, TENamed(sp, path, map_args))
+                register_fn_instantiation(e, EField(sp, EIdent(sp, "map"), "make"), map_args)
+                register_map_helper(e, "map_set", map_args)
+            }
+            // Only a map literal needs the Map helpers pre-registered.
+            | _ -> { }
+            }
         }
     }
+    // A non-container annotation has no container helpers to register.
     | _ -> { }
     }
 }
@@ -483,7 +500,7 @@ let walk_expr_for_types(e: *Emitter, ex: ast.Expr) = {
             match s {
             | SLet(_, name, ty, val) -> {
                 walk_typeexpr(e, ty)
-                walk_let_value_for_array_hint(e, ty, val)
+                walk_let_value_for_container_hint(e, ty, val)
                 walk_expr_for_types(e, val)
                 if !is_unit_typeexpr(ty) {
                     e.locals[name] = ty
@@ -491,7 +508,7 @@ let walk_expr_for_types(e: *Emitter, ex: ast.Expr) = {
             }
             | SVar(_, name, ty, val) -> {
                 walk_typeexpr(e, ty)
-                walk_let_value_for_array_hint(e, ty, val)
+                walk_let_value_for_container_hint(e, ty, val)
                 walk_expr_for_types(e, val)
                 if !is_unit_typeexpr(ty) {
                     e.locals[name] = ty
@@ -569,6 +586,32 @@ let walk_expr_for_types(e: *Emitter, ex: ast.Expr) = {
                 register_fn_instantiation(e, EField(sp, EIdent(sp, "vec"), "make"), args)
                 register_fn_instantiation(e, EField(sp, EIdent(sp, "vec"), "push"), args)
             }
+            | None -> { }
+            }
+        }
+    }
+    | EMapLit(sp, keys, values) -> {
+        for k in keys { walk_expr_for_types(e, k) }
+        for v in values { walk_expr_for_types(e, v) }
+        if len(keys) > 0 {
+            match literal_typeexpr(keys[0]) {
+            | Some(kt) -> {
+                match literal_typeexpr(values[0]) {
+                | Some(vt) -> {
+                    var args: Vec<ast.TypeExpr> = vec.make()
+                    vec.push(&args, kt)
+                    vec.push(&args, vt)
+                    var path: Vec<string> = vec.make()
+                    vec.push(&path, "Map")
+                    walk_typeexpr(e, TENamed(sp, path, args))
+                    register_fn_instantiation(e, EField(sp, EIdent(sp, "map"), "make"), args)
+                    register_map_helper(e, "map_set", args)
+                }
+                // A non-literal value type is resolved at emit time.
+                | None -> { }
+                }
+            }
+            // A non-literal key type is resolved at emit time.
             | None -> { }
             }
         }
@@ -1039,6 +1082,13 @@ let substitute_expr(e: *Emitter, x: ast.Expr, params: Vec<string>, args: Vec<ast
         for el in elems { vec.push(&new_e, substitute_expr(e, el, params, args)) }
         EArrayLit(sp, new_e)
     }
+    | EMapLit(sp, keys, values) -> {
+        var nk: Vec<ast.Expr> = vec.make()
+        for k in keys { vec.push(&nk, substitute_expr(e, k, params, args)) }
+        var nv: Vec<ast.Expr> = vec.make()
+        for v in values { vec.push(&nv, substitute_expr(e, v, params, args)) }
+        EMapLit(sp, nk, nv)
+    }
     }
 }
 
@@ -1358,6 +1408,7 @@ let collect_closure_captures(e: *Emitter, ex: ast.Expr, sc: *CaptureScope, out: 
     | EDefer(_, v)                    -> collect_closure_captures(e, v, sc, out)
     | ETuple(_, elems)
     | EArrayLit(_, elems)             -> { for el in elems { collect_closure_captures(e, el, sc, out) } }
+    | EMapLit(_, keys, values)        -> { for k in keys { collect_closure_captures(e, k, sc, out) } for v in values { collect_closure_captures(e, v, sc, out) } }
     | ERecord(_, _, fields)           -> { for fl in fields { collect_closure_captures(e, fl.value, sc, out) } }
     | EClosure(_, _, _, _) -> { }
     | EBlock(_, stmts, tail) -> {
@@ -1505,6 +1556,60 @@ let emit_array_lit_using(e: *Emitter, sp: ast.Span, elems: Vec<ast.Expr>, hint: 
         push(e, `qoz_{push_mangled}(&{tmp}, `)
         emit_expr(e, el)
         push(e, "); ")
+    }
+    hoist_to_prologue(e, start)
+    push(e, tmp)
+}
+
+// Lower a map literal to a temporary built with map.make followed by one
+// map_set per entry, then yield the temporary. Mirrors
+// emit_array_lit_using. The key and value types come from the hint when
+// it is a Map<K, V>, otherwise from the first entry. An empty `[:]` with
+// no hint cannot be typed.
+let emit_map_lit_using(e: *Emitter, sp: ast.Span, keys: Vec<ast.Expr>, values: Vec<ast.Expr>, hint: ast.TypeExpr) = {
+    if len(keys) == 0 && is_unit_typeexpr(hint) {
+        emit_die(sp, "empty map literal: key and value types cannot be inferred")
+        return
+    }
+    var key_te: ast.TypeExpr = TEUnit(sp)
+    var val_te: ast.TypeExpr = TEUnit(sp)
+    match hint {
+    | TENamed(_, path, args) -> {
+        if len(path) > 0 && len(args) >= 2 && strings.eq_raw(path[len(path) - 1], "Map") {
+            key_te = args[0]
+            val_te = args[1]
+        }
+    }
+    // A non-Map hint carries no key/value type; fall back to the
+    // first entry below.
+    | _ -> { }
+    }
+    if is_unit_typeexpr(key_te) { key_te = infer_value_te(e, keys[0]) }
+    if is_unit_typeexpr(val_te) { val_te = infer_value_te(e, values[0]) }
+    var kv_args: Vec<ast.TypeExpr> = vec.make()
+    vec.push(&kv_args, key_te)
+    vec.push(&kv_args, val_te)
+    register_fn_instantiation(e, EField(sp, EIdent(sp, "map"), "make"), kv_args)
+    register_map_helper(e, "map_set", kv_args)
+    var map_path: Vec<string> = vec.make()
+    vec.push(&map_path, "Map")
+    walk_typeexpr(e, TENamed(sp, map_path, kv_args))
+    let make_mangled = mangle_inst(e, "map_make", kv_args)
+    let k_m = mangle_type(e, key_te)
+    let v_m = mangle_type(e, val_te)
+    let map_c = strings.cat("qoz_", mangle_inst(e, "Map", kv_args))
+    e.closure_counter = e.closure_counter + 1
+    let tmp = strings.cat("_qoz_map_", `{e.closure_counter}`)
+    let start = strings.sb_len(&e.out)
+    push(e, `{map_c} {tmp} = qoz_{make_mangled}(); `)
+    var i: i64 = 0
+    while i < len(keys) {
+        push(e, `qoz_map_set__{k_m}__{v_m}(&{tmp}, `)
+        emit_expr(e, keys[i])
+        push(e, ", ")
+        emit_expr(e, values[i])
+        push(e, "); ")
+        i += 1
     }
     hoist_to_prologue(e, start)
     push(e, tmp)
@@ -1831,6 +1936,13 @@ let emit_expr(e: *Emitter, ex: ast.Expr) = {
         }
         emit_array_lit_using(e, sp, elems, recorded)
     }
+    | EMapLit(sp, keys, values) -> {
+        let recorded = match map.get(&e.expr_types, expr_id(ex)) {
+        | Some(te) -> te
+        | None     -> TEUnit(sp)
+        }
+        emit_map_lit_using(e, sp, keys, values, recorded)
+    }
     }
 }
 
@@ -1984,7 +2096,7 @@ let span_of_expr(e: ast.Expr): ast.Span = {
     | ENil(sp)
     | EInt(sp, _) | EFloat(sp, _) | EString(sp, _) | EChar(sp, _) | EBool(sp, _)
     | EIdent(sp, _) | EPath(sp, _) | EReturn(sp, _) | EDefer(sp, _) | ESizeOf(sp, _)
-    | EArrayLit(sp, _) | ETry(sp, _) | ETuple(sp, _)
+    | EArrayLit(sp, _) | EMapLit(sp, _, _) | ETry(sp, _) | ETuple(sp, _)
     | EUnary(sp, _, _) | EField(sp, _, _) | EIndex(sp, _, _) | ECast(sp, _, _)
     | ERecord(sp, _, _) | EBlock(sp, _, _) | EWhile(sp, _, _) | EMatch(sp, _, _)
     | EBinary(sp, _, _, _) | EAssign(sp, _, _, _) | ECall(sp, _, _, _)
@@ -2282,6 +2394,20 @@ let infer_value_te(e: *Emitter, v: ast.Expr): ast.TypeExpr = {
         vec.push(&args, elem_te)
         var path: Vec<string> = vec.make()
         vec.push(&path, "Vec")
+        TENamed(sp, path, args)
+    }
+    | EMapLit(sp, keys, values) -> {
+        if len(keys) == 0 {
+            let _ = emit_die(sp, "empty map literal: key and value types cannot be inferred")
+            return TEUnit(sp)
+        }
+        let key_te = infer_value_te(e, keys[0])
+        let val_te = infer_value_te(e, values[0])
+        var args: Vec<ast.TypeExpr> = vec.make()
+        vec.push(&args, key_te)
+        vec.push(&args, val_te)
+        var path: Vec<string> = vec.make()
+        vec.push(&path, "Map")
         TENamed(sp, path, args)
     }
     // Statement-shape expressions have no value type. They occur in
@@ -5289,6 +5415,7 @@ let emit_value_with_hint(e: *Emitter, value: ast.Expr, hint: ast.TypeExpr) = {
     | ECall(_, callee, ta, args) -> emit_call_with_hint(e, callee, ta, args, hint)
     | EIdent(_, name) -> emit_ident_with_hint(e, name, hint)
     | EArrayLit(sp, elems) -> emit_array_lit_with_hint(e, sp, elems, hint)
+    | EMapLit(sp, keys, values) -> emit_map_lit_using(e, sp, keys, values, hint)
     | EField(_, base, name) -> {
         // `Enum.Variant` in value position with a known type hint
         // (e.g. `let a: Option<i32> = Option.None`) emits the mangled

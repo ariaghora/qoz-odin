@@ -861,6 +861,31 @@ let synth_inner(tc: *check.TyContext, env: *Env, e: ast.Expr): ty.Ty = {
         vec.push(&args, elem_ty)
         ty.ty_record_("Vec", args)
     }
+    | EMapLit(sp, keys, values) -> {
+        if len(keys) == 0 { return ty.ty_error_() }
+        let key_ty = synth(tc, env, keys[0])
+        let val_ty = synth(tc, env, values[0])
+        var i: i64 = 1
+        while i < len(keys) {
+            let kt = synth(tc, env, keys[i])
+            let vt = synth(tc, env, values[i])
+            if !ty.ty_is_error(key_ty) && !ty.ty_is_error(kt) {
+                if !ty.ty_assignable(key_ty, kt) && !ty.ty_assignable(kt, key_ty) {
+                    record_error(tc, sp, `map literal key {i} has type {ty.ty_show(kt)}; earlier keys have type {ty.ty_show(key_ty)}`)
+                }
+            }
+            if !ty.ty_is_error(val_ty) && !ty.ty_is_error(vt) {
+                if !ty.ty_assignable(val_ty, vt) && !ty.ty_assignable(vt, val_ty) {
+                    record_error(tc, sp, `map literal value {i} has type {ty.ty_show(vt)}; earlier values have type {ty.ty_show(val_ty)}`)
+                }
+            }
+            i += 1
+        }
+        var margs: Vec<ty.Ty> = vec.make()
+        vec.push(&margs, key_ty)
+        vec.push(&margs, val_ty)
+        ty.ty_record_("Map", margs)
+    }
     }
 }
 
@@ -2226,7 +2251,7 @@ let scrut_span(scrut: ast.Expr): ast.Span = {
     | ENil(sp)
     | EInt(sp, _) | EFloat(sp, _) | EString(sp, _) | EChar(sp, _) | EBool(sp, _)
     | EIdent(sp, _) | EPath(sp, _) | EReturn(sp, _) | EDefer(sp, _) | ESizeOf(sp, _)
-    | EArrayLit(sp, _) | ETry(sp, _) | ETuple(sp, _)
+    | EArrayLit(sp, _) | EMapLit(sp, _, _) | ETry(sp, _) | ETuple(sp, _)
     | EUnary(sp, _, _) | EField(sp, _, _) | EIndex(sp, _, _) | ECast(sp, _, _)
     | ERecord(sp, _, _) | EBlock(sp, _, _) | EWhile(sp, _, _) | EMatch(sp, _, _)
     | EBinary(sp, _, _, _) | EAssign(sp, _, _, _) | ECall(sp, _, _, _)
@@ -2606,6 +2631,13 @@ let infer_calls_expr(tc: *check.TyContext, env: *Env, e: ast.Expr, expected: ty.
         var ne: Vec<ast.Expr> = vec.make()
         for el in elems { vec.push(&ne, infer_calls_expr(tc, env, el, ty.ty_error_())) }
         EArrayLit(sp, ne)
+    }
+    | EMapLit(sp, keys, values) -> {
+        var nk: Vec<ast.Expr> = vec.make()
+        for k in keys { vec.push(&nk, infer_calls_expr(tc, env, k, ty.ty_error_())) }
+        var nv: Vec<ast.Expr> = vec.make()
+        for v in values { vec.push(&nv, infer_calls_expr(tc, env, v, ty.ty_error_())) }
+        EMapLit(sp, nk, nv)
     }
     }
 }
@@ -3206,6 +3238,11 @@ let expr_has_return(e: ast.Expr): bool = {
     | EFor(_, _, _, it, b) -> expr_has_return(it) || expr_has_return(b)
     | EDefer(_, b) -> expr_has_return(b)
     | EArrayLit(_, elems) -> { for el in elems { if expr_has_return(el) { return true } } false }
+    | EMapLit(_, keys, values) -> {
+        for k in keys { if expr_has_return(k) { return true } }
+        for v in values { if expr_has_return(v) { return true } }
+        false
+    }
     | _ -> false
     }
 }

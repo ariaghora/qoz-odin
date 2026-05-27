@@ -118,6 +118,9 @@ type Expr =
     | EDefer(ast.Span, ast.Expr)
     | ESizeOf(ast.Span, ast.TypeExpr)
     | EArrayLit(ast.Span, Vec<ast.Expr>)
+    // Map literal: parallel keys and values. `[:]` is the empty map
+    // (both vectors empty); `[k: v, ...]` carries entries.
+    | EMapLit(ast.Span, Vec<ast.Expr>, Vec<ast.Expr>)
 
 type Stmt =
     | SLet(ast.Span, string, ast.TypeExpr, ast.Expr)
@@ -191,7 +194,7 @@ let span_of_expr(e: ast.Expr): ast.Span = {
     | ENil(sp)
     | EInt(sp, _) | EFloat(sp, _) | EString(sp, _) | EChar(sp, _) | EBool(sp, _)
     | EIdent(sp, _) | EPath(sp, _) | EReturn(sp, _) | EDefer(sp, _) | ESizeOf(sp, _)
-    | EArrayLit(sp, _) | ETry(sp, _) | ETuple(sp, _)
+    | EArrayLit(sp, _) | EMapLit(sp, _, _) | ETry(sp, _) | ETuple(sp, _)
     | EUnary(sp, _, _) | EField(sp, _, _) | EIndex(sp, _, _) | ECast(sp, _, _)
     | ERecord(sp, _, _) | EBlock(sp, _, _) | EWhile(sp, _, _) | EMatch(sp, _, _)
     | EBinary(sp, _, _, _) | EAssign(sp, _, _, _) | ECall(sp, _, _, _)

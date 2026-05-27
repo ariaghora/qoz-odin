@@ -660,6 +660,22 @@ let print_expr(p: *format.Printer, e: ast.Expr) = {
         }
         p_emit(p, "]")
     }
+    | EMapLit(_, keys, values) -> {
+        if len(keys) == 0 {
+            p_emit(p, "[:]")
+        } else {
+            p_emit(p, "[")
+            var i: i64 = 0
+            while i < len(keys) {
+                if i > 0 { p_emit(p, ", ") }
+                print_expr(p, keys[i])
+                p_emit(p, ": ")
+                print_expr(p, values[i])
+                i += 1
+            }
+            p_emit(p, "]")
+        }
+    }
     }
 }
 

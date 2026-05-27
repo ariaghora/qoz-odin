@@ -1105,17 +1105,51 @@ let parse_atom(p: *Parser): ast.Expr = {
     }
     if is_punct(t, "[") {
         advance(p)
-        var elems: Vec<ast.Expr> = vec.make()
-        if !is_punct(peek(p), "]") {
-            vec.push(&elems, parse_expr(p))
-            var done = false
-            while !done && is_punct(peek(p), ",") {
+        // Empty map literal `[:]`, distinct from the empty Vec `[]`.
+        if is_punct(peek(p), ":") && is_punct(peek_at(p, 1), "]") {
+            advance(p)
+            expect_punct(p, "]")
+            var mk: Vec<ast.Expr> = vec.make()
+            var mv: Vec<ast.Expr> = vec.make()
+            return EMapLit(span, mk, mv)
+        }
+        // Empty Vec literal `[]`.
+        if is_punct(peek(p), "]") {
+            advance(p)
+            var empty: Vec<ast.Expr> = vec.make()
+            return EArrayLit(span, empty)
+        }
+        let first = parse_expr(p)
+        // A colon after the first element marks a map literal.
+        if is_punct(peek(p), ":") {
+            advance(p)
+            var keys: Vec<ast.Expr> = vec.make()
+            var vals: Vec<ast.Expr> = vec.make()
+            vec.push(&keys, first)
+            vec.push(&vals, parse_expr(p))
+            var mdone = false
+            while !mdone && is_punct(peek(p), ",") {
                 advance(p)
                 if is_punct(peek(p), "]") {
-                    done = true
+                    mdone = true
                 } else {
-                    vec.push(&elems, parse_expr(p))
+                    vec.push(&keys, parse_expr(p))
+                    expect_punct(p, ":")
+                    vec.push(&vals, parse_expr(p))
                 }
+            }
+            expect_punct(p, "]")
+            return EMapLit(span, keys, vals)
+        }
+        var elems: Vec<ast.Expr> = vec.make()
+        vec.push(&elems, first)
+        var done = false
+        while !done && is_punct(peek(p), ",") {
+            advance(p)
+            if is_punct(peek(p), "]") {
+                done = true
+            } else {
+                vec.push(&elems, parse_expr(p))
             }
         }
         expect_punct(p, "]")

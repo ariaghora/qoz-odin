@@ -1,0 +1,36 @@
+// expect: 0
+// Map literals. `[:]` is the empty map, `[k: v, ...]` carries entries.
+// Distinct from the Vec literals `[]` and `[1, 2, 3]`. Exercises empty
+// and populated maps, lookup, length, and that array literals are
+// unaffected.
+
+import fmt
+import map
+
+let main(): i64 = {
+    let empty: Map<string, i64> = [:]
+    var m: Map<string, i64> = ["a": 1, "b": 2, "c": 3]
+    let xs: Vec<i64> = []
+    let ys = [10, 20, 30]
+
+    var bad: i64 = 0
+    if map.len(&empty) != 0 { bad += 1 }
+    if map.len(&m) != 3 { bad += 1 }
+    match map.get(&m, "b") {
+    | Some(v) -> { if v != 2 { bad += 1 } }
+    // "b" was inserted by the literal, so a miss is a real failure.
+    | None    -> { bad += 1 }
+    }
+    match map.get(&m, "missing") {
+    | Some(_) -> { bad += 1 }
+    // "missing" was never inserted, so None is the expected result.
+    | None    -> { }
+    }
+    m["d"] = 4
+    if map.len(&m) != 4 { bad += 1 }
+    if len(xs) != 0 { bad += 1 }
+    if len(ys) != 3 { bad += 1 }
+
+    fmt.println(`empty={map.len(&empty)} m={map.len(&m)} ys={len(ys)} bad={bad}`)
+    bad
+}

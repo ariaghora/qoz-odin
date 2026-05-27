@@ -237,6 +237,13 @@ let rewrite_ident_refs(e: ast.Expr, pkg: string, local_fns: Map<string, bool>): 
         for el in elems { vec.push(&ne, rewrite_ident_refs(el, pkg, local_fns)) }
         EArrayLit(sp, ne)
     }
+    | EMapLit(sp, keys, values) -> {
+        var nk: Vec<ast.Expr> = vec.make()
+        for k in keys { vec.push(&nk, rewrite_ident_refs(k, pkg, local_fns)) }
+        var nv: Vec<ast.Expr> = vec.make()
+        for v in values { vec.push(&nv, rewrite_ident_refs(v, pkg, local_fns)) }
+        EMapLit(sp, nk, nv)
+    }
     }
 }
 
@@ -713,6 +720,13 @@ let qualify_expr(e: ast.Expr, pkg: string, ctx: *main.QualifyCtx): ast.Expr = {
         var ne: Vec<ast.Expr> = vec.make()
         for el in elems { vec.push(&ne, qualify_expr(el, pkg, ctx)) }
         EArrayLit(sp, ne)
+    }
+    | EMapLit(sp, keys, values) -> {
+        var nk: Vec<ast.Expr> = vec.make()
+        for k in keys { vec.push(&nk, qualify_expr(k, pkg, ctx)) }
+        var nv: Vec<ast.Expr> = vec.make()
+        for v in values { vec.push(&nv, qualify_expr(v, pkg, ctx)) }
+        EMapLit(sp, nk, nv)
     }
     }
 }
