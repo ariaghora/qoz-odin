@@ -94,6 +94,8 @@ let type_byval_succs(t: *recur.Tables, name: string): Vec<string> = {
         | _ -> { }
         }
     }
+    // A name with no declaration (primitive, type parameter, or
+    // alias) has no by-value successors to follow.
     | None -> { }
     }
     out

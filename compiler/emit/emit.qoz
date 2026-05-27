@@ -31,6 +31,11 @@ type Emitter = {
     pos_synth_fn_decls: i64,
     variant_of:        Map<string, string>,  // bare variant name -> enum name (unique only)
     is_enum:           Map<string, bool>,    // names that refer to declared ADTs
+    // ADTs emitted as by-value structs rather than heap pointers.
+    // Currently the nullary-only enums, where every variant is
+    // payload-less. A value of one is just a tag that is never
+    // allocated and never traced.
+    value_enums:       Map<string, bool>,
     enum_decls:        Map<string, ast.Decl>,    // bare enum name -> DEnum (generic or not)
     c_enum_decls:      Map<string, ast.Decl>,    // bare C-enum name -> DCEnum
     struct_decls:      Map<string, ast.Decl>,    // bare struct name -> DStruct (generic or not)
@@ -84,6 +89,7 @@ let make_emitter(): Emitter = Emitter {
     pos_synth_fn_decls: -1,
     variant_of:       map.make(),
     is_enum:          map.make(),
+    value_enums:      map.make(),
     enum_decls:       map.make(),
     c_enum_decls:     map.make(),
     struct_decls:     map.make(),
@@ -1066,9 +1072,13 @@ let register_variants(e: *Emitter, file: ast.File) = {
         | DEnum(_, name, _, variants) -> {
             e.is_enum[name] = true
             e.enum_decls[name] = d
+            var all_nullary = true
             for v in variants {
                 e.variant_of[v.name] = name
+                if variant_has_positional(v) { all_nullary = false }
+                if len(v.named) > 0 { all_nullary = false }
             }
+            if all_nullary { e.value_enums[name] = true }
         }
         | DCEnum(_, name, _, _) -> {
             e.c_enum_decls[name] = d
@@ -1297,8 +1307,11 @@ let c_type_for_named_with_args(e: *Emitter, path: Vec<string>, args: Vec<ast.Typ
     } else {
         strings.cat("qoz_", n)
     }
-    // ADTs are heap-allocated. Their C representation is a pointer.
+    // A value ADT is stored inline, so its C representation is the
+    // struct itself. A boxed ADT is heap-allocated and represented
+    // as a pointer.
     if map.contains(&e.is_enum, n) {
+        if map.contains(&e.value_enums, n) { return base }
         return strings.cat(base, "*")
     }
     base
@@ -3566,6 +3579,17 @@ let binary_op_text(op: ast.BinaryOp): string = {
     }
 }
 
+// The value-enum name for a C type spelled `qoz_<Name>` (no
+// trailing `*`) when `Name` is a value enum, empty otherwise.
+let value_enum_name_of_ctype(e: *Emitter, ct: string): string = {
+    if len(ct) < 5 { return "" }
+    if !strings.eq_raw(strings.slice(ct, 0, 4), "qoz_") { return "" }
+    if strings.byte_at(ct, len(ct) - 1) == 42 { return "" }
+    let name = strings.slice(ct, 4, len(ct))
+    if map.contains(&e.value_enums, name) { return name }
+    ""
+}
+
 let record_struct_name_of_ctype(e: *Emitter, ct: string): string = {
     // The C type for a record value is `qoz_<MangledName>`. Pointers and
     // primitive types do not start that way, and ADTs come back with a `*`
@@ -3631,6 +3655,29 @@ let emit_binary(e: *Emitter, op: ast.BinaryOp, lhs: ast.Expr, rhs: ast.Expr) = {
                 push(e, ")")
                 return
             }
+        }
+    }
+    // A value enum compares by tag. C rejects `==` on struct
+    // values, so the comparison reads the tag field of each side.
+    // Nullary value enums have no payload, so the tag is the whole
+    // value.
+    let lname = value_enum_name_of_ctype(e, lct)
+    if !strings.eq_raw(lname, "") {
+        match op {
+        | BOpEq -> {
+            push(e, "(("); emit_expr(e, lhs); push(e, ").tag == ("); emit_expr(e, rhs); push(e, ").tag)")
+            return
+        }
+        | BOpNe -> {
+            push(e, "(("); emit_expr(e, lhs); push(e, ").tag != ("); emit_expr(e, rhs); push(e, ").tag)")
+            return
+        }
+        // Only == and != compare value enums. Ordering and
+        // arithmetic operators on an enum value are rejected
+        // earlier by the type checker, so any other op here falls
+        // through to the generic paths below without special
+        // handling.
+        | _ -> { }
         }
     }
     let record_name = record_struct_name_of_ctype(e, lct)
@@ -4031,16 +4078,13 @@ let debug_recursive_enums(f: ast.File): string = {
     var sb: strings.Strbuf = strings.Strbuf { buf: nil as *u8, len: 0, cap: 0 }
     strings.sb_init(&sb)
     for d in f.decls {
-        match d {
-        | DEnum(_, name, _, _) -> {
+        if let DEnum(_, name, _, _) = d {
             strings.sb_append(&sb, name)
             if map.contains(&rec, name) {
                 strings.sb_append(&sb, ": boxed (recursive)\n")
             } else {
                 strings.sb_append(&sb, ": value\n")
             }
-        }
-        | _ -> { }
         }
     }
     strings.sb_finish(&sb)
@@ -4111,16 +4155,25 @@ let emit_program(f: ast.File, expr_types: Map<i64, ast.TypeExpr>): string = {
     }
     push(&e, "\n")
     e.pos_synth_fn_decls = strings.sb_len(&e.out)
-    emit_records_topological(&e, f)
-    // Enum definitions (non-generic).
+    // Value enums are embedded by value in records and other enums,
+    // so their full struct definitions must precede any by-value
+    // use. Nullary value enums depend on nothing, so emitting them
+    // before the records pass satisfies the ordering.
     for d in f.decls {
-        match d {
-        | DEnum(_, name, params, variants) -> {
-            if len(params) == 0 {
+        if let DEnum(_, name, params, variants) = d {
+            if len(params) == 0 && map.contains(&e.value_enums, name) {
                 emit_enum(&e, name, variants)
             }
         }
-        | _ -> { }
+    }
+    emit_records_topological(&e, f)
+    // Enum definitions (non-generic), excluding value enums already
+    // emitted above.
+    for d in f.decls {
+        if let DEnum(_, name, params, variants) = d {
+            if len(params) == 0 && !map.contains(&e.value_enums, name) {
+                emit_enum(&e, name, variants)
+            }
         }
     }
     // Generic enum instantiations.
@@ -4341,6 +4394,16 @@ let int_to_string(n: i64): string = `{n}`
 
 let emit_variant_ctor(e: *Emitter, enum_name: string, v: ast.VariantDecl) = {
     let vn = v.name
+    // Value enums are returned by value, built in a local with no
+    // allocation. Boxed enums are heap-allocated and returned as a
+    // pointer the garbage collector tracks.
+    if map.contains(&e.value_enums, enum_name) {
+        push(e, `static qoz_{enum_name} qoz_make_{enum_name}_{vn}(void) {\n`)
+        push(e, `    qoz_{enum_name} p;\n`)
+        push(e, `    p.tag = qoz_{enum_name}_{vn};\n`)
+        push(e, "    return p;\n}\n\n")
+        return
+    }
     push(e, `static qoz_{enum_name} *qoz_make_{enum_name}_{vn}`)
     if !variant_has_positional(v) {
         push(e, "(void) {\n")
@@ -4391,6 +4454,10 @@ let collect_field_ptr_offsets(e: *Emitter, parent: string, field: string, te: as
         if len(path) >= 1 {
             let n = path[len(path) - 1]
             if map.contains(&e.is_enum, n) {
+                // A value enum is stored inline. Nullary value
+                // enums carry no pointers, so they contribute no
+                // managed-pointer slot to the parent's descriptor.
+                if map.contains(&e.value_enums, n) { return }
                 vec.push(out, strings.cat("(int32_t)", base))
                 return
             }
@@ -4585,11 +4652,17 @@ let emit_field_hash_expr(e: *Emitter, te: ast.TypeExpr, fname: string) = {
     | TENamed(_, path, args) -> {
         if len(path) >= 1 {
             let n = path[len(path) - 1]
-            // C-style enum is a typedefed integer at runtime;
-            // hash and equality lower to the underlying scalar
-            // ops rather than a generated helper.
+            // A C-style enum is a typedefed integer at runtime, so
+            // hash and equality lower to the underlying scalar ops
+            // rather than a generated helper.
             if map.contains(&e.c_enum_decls, n) {
                 push(e, `(uint64_t)(v.{fname})`)
+                return
+            }
+            // A value enum field is an inline struct whose tag is
+            // the whole value for the nullary case.
+            if map.contains(&e.value_enums, n) {
+                push(e, `(uint64_t)(v.{fname}.tag)`)
                 return
             }
             if strings.eq_raw(primitive_c_name(n), "") {
@@ -4618,6 +4691,10 @@ let emit_field_eq_expr(e: *Emitter, te: ast.TypeExpr, fname: string) = {
             let n = path[len(path) - 1]
             if map.contains(&e.c_enum_decls, n) {
                 push(e, `a.{fname} == b.{fname}`)
+                return
+            }
+            if map.contains(&e.value_enums, n) {
+                push(e, `a.{fname}.tag == b.{fname}.tag`)
                 return
             }
             if strings.eq_raw(primitive_c_name(n), "") {
@@ -5443,9 +5520,19 @@ let emit_match_as_expr(e: *Emitter, span: ast.Span, scrut: ast.Expr, arms: Vec<a
     // statement, and the expression position resolves to `res_tmp`
     // (or 0 for void-yielding matches).
     let start = strings.sb_len(&e.out)
-    push(e, `qoz_{enum_name}* {scrut_tmp} = `)
-    emit_expr(e, scrut)
-    push(e, "; ")
+    // A value enum scrutinee is materialized into a local whose
+    // address feeds the switch, so every `{scrut_tmp}->tag` and
+    // payload access below works the same for value and boxed
+    // enums.
+    if map.contains(&e.value_enums, enum_name) {
+        push(e, `qoz_{enum_name} {scrut_tmp}_v = `)
+        emit_expr(e, scrut)
+        push(e, `; qoz_{enum_name}* {scrut_tmp} = &{scrut_tmp}_v; `)
+    } else {
+        push(e, `qoz_{enum_name}* {scrut_tmp} = `)
+        emit_expr(e, scrut)
+        push(e, "; ")
+    }
     if !is_void {
         let dv = default_value_for(res_ctype)
         push(e, `{res_ctype} {res_tmp} = {dv}; `)
@@ -5616,10 +5703,15 @@ let emit_arm_in_chain_with_te(e: *Emitter, enum_name: string, scrut_tmp: string,
             if let Some(_) = map.get(&e.variant_of, name) {
                 push(e, ` && {scrut_tmp}->tag == qoz_{enum_name}_{name}) {{ `)
             } else {
-                // Catch-all bind on an enum scrutinee: name is bound
-                // to the enum pointer so the arm body can inspect or
-                // forward the entire value.
-                push(e, `) {{ qoz_{enum_name}* {name} = {scrut_tmp}; (void){name}; `)
+                // Catch-all bind on an enum scrutinee binds the
+                // whole value. A boxed enum binds the pointer; a
+                // value enum binds a copy by dereferencing the
+                // materialized scrutinee.
+                if map.contains(&e.value_enums, enum_name) {
+                    push(e, `) {{ qoz_{enum_name} {name} = *{scrut_tmp}; (void){name}; `)
+                } else {
+                    push(e, `) {{ qoz_{enum_name}* {name} = {scrut_tmp}; (void){name}; `)
+                }
                 e.locals[name] = scrut_te
             }
         } else {
@@ -5743,12 +5835,16 @@ let emit_match_arm_with_kind(e: *Emitter, enum_name: string, scrut_tmp: string, 
             push(e, " break; } ")
         }
         | None -> {
-            // Catch-all bind on a switch-style enum match. Bind
-            // `name` to the enum pointer so the body sees the whole
-            // value rather than a placeholder zero. Register the
-            // binding's TypeExpr so the inner code can call match,
-            // field access, and the like on it.
-            push(e, `default: {{ qoz_{enum_name}* {name} = {scrut_tmp}; (void){name}; `)
+            // Catch-all bind on a switch-style enum match binds the
+            // whole value so the body sees it rather than a
+            // placeholder zero. A boxed enum binds the pointer; a
+            // value enum binds a copy by dereferencing the
+            // materialized scrutinee.
+            if map.contains(&e.value_enums, enum_name) {
+                push(e, `default: {{ qoz_{enum_name} {name} = *{scrut_tmp}; (void){name}; `)
+            } else {
+                push(e, `default: {{ qoz_{enum_name}* {name} = {scrut_tmp}; (void){name}; `)
+            }
             let sp = ast.Span { file: "", line: 0, col: 0 }
             var segs: Vec<string> = vec.make()
             vec.push(&segs, enum_name)
