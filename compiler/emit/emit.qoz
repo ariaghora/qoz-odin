@@ -3777,8 +3777,23 @@ let emit_binary(e: *Emitter, op: ast.BinaryOp, lhs: ast.Expr, rhs: ast.Expr) = {
         let lhs_te = infer_value_te(e, lhs)
         let tname = operator_first_param_type_name(lhs_te)
         if !strings.eq_raw(tname, "") {
-            let key = strings.cat(strings.cat(op_text, "::"), tname)
-            if let Some(fn_name) = map.get(&e.op_dispatch, key) {
+            // Resolve the overload for this operator. `!=` with no `!=`
+            // overload derives from the `==` overload by negation, so a
+            // single @operator("==") covers both comparisons.
+            var fn_name = ""
+            var negate = false
+            match map.get(&e.op_dispatch, strings.cat(strings.cat(op_text, "::"), tname)) {
+            | Some(f) -> fn_name = f
+            | None    -> {
+                if let BOpNe = op {
+                    if let Some(f) = map.get(&e.op_dispatch, strings.cat("==::", tname)) {
+                        fn_name = f
+                        negate = true
+                    }
+                }
+            }
+            }
+            if !strings.eq_raw(fn_name, "") {
                 let ct = c_type_for(e, lhs_te)
                 let ret_te = match map.get(&e.fn_returns, fn_name) {
                 | Some(t) -> t
@@ -3793,6 +3808,7 @@ let emit_binary(e: *Emitter, op: ast.BinaryOp, lhs: ast.Expr, rhs: ast.Expr) = {
                 // a `let` taking `*T` parameters. Call the by-value
                 // forwarder so each argument lands in a stable local of
                 // the helper whose address can be passed through.
+                if negate { push(e, "!") }
                 push(e, `_qoz_byval_{fn_name}(`)
                 emit_expr(e, lhs)
                 push(e, ", ")

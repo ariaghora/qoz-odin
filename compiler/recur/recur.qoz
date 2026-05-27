@@ -147,3 +147,45 @@ let recursive_adts(f: ast.File): Map<string, bool> = {
     }
     result
 }
+
+// Precise self-by-value reachability: only a cycle back to `target`
+// through declared enums and structs counts. An undeclared, alias, or
+// otherwise unknown name is a dead end here rather than a conservative
+// "recursive". This is the predicate for REJECTING a value type that
+// contains itself; the conservative `adt_reaches` is for choosing a
+// representation, where over-approximation is safe.
+let adt_reaches_strict(t: *recur.Tables, target: string, current: string, visited: *Map<string, bool>): bool = {
+    if map.contains(visited, current) { return false }
+    visited[current] = true
+    match lookup_type_decl(t, current) {
+    | None    -> return false // foreign, alias, or undeclared leaf: not a self-cycle
+    | Some(_) -> { }
+    }
+    for s in type_byval_succs(t, current) {
+        if strings.eq_raw(s, target) { return true }
+        if adt_reaches_strict(t, target, s, visited) { return true }
+    }
+    false
+}
+
+// Names of every enum and struct in `f` that contain themselves through
+// a by-value chain. A value type cannot embed itself (the C struct would
+// be infinite), so each of these is an error the user must break with a
+// pointer field or a Vec / Map.
+let value_recursive_adts(f: ast.File): Map<string, bool> = {
+    var t = build_tables(f)
+    var result: Map<string, bool> = [:]
+    for name in map.sorted_keys(&t.enums) {
+        var visited: Map<string, bool> = [:]
+        if adt_reaches_strict(&t, name, name, &visited) {
+            result[name] = true
+        }
+    }
+    for name in map.sorted_keys(&t.structs) {
+        var visited: Map<string, bool> = [:]
+        if adt_reaches_strict(&t, name, name, &visited) {
+            result[name] = true
+        }
+    }
+    result
+}

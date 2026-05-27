@@ -1,21 +1,21 @@
 // expect: 0
-// A boxed (recursive) ADT carries no auto-derived structural eq/hash,
-// but an @operator("==") and @operator("hash") overload make it usable
-// with ==, !=, and as a map key. Expr is recursive through Add, so it
-// is boxed. The operators compare and hash by evaluated value, so two
-// structurally different trees with the same value are equal.
+// Expr recurses through *Expr, so it is a value enum whose default
+// structural eq/hash would compare the child pointers by identity. An
+// @operator("==") and @operator("hash") overload takes precedence and
+// makes Expr compare and hash by evaluated value, so two structurally
+// different trees with the same value are equal and usable as a map key.
 
 import fmt
 import map
 
 type Expr =
     | Num(i64)
-    | Add(Expr, Expr)
+    | Add(*Expr, *Expr)
 
 let eval(e: Expr): i64 =
     match e {
     | Num(n)    -> n
-    | Add(l, r) -> eval(l) + eval(r)
+    | Add(l, r) -> eval(*l) + eval(*r)
     }
 
 @operator("==")
@@ -25,8 +25,8 @@ let expr_eq(a: *Expr, b: *Expr): bool = eval(*a) == eval(*b)
 let expr_hash(p: *Expr): u64 = eval(*p) as u64
 
 let main(): i64 = {
-    let a = Add(Num(1), Num(2))
-    let b = Add(Num(2), Num(1))
+    let a = Add(new_clone(Num(1)), new_clone(Num(2)))
+    let b = Add(new_clone(Num(2)), new_clone(Num(1)))
     let c = Num(5)
     var bad: i64 = 0
     if !(a == b) { bad += 1 }

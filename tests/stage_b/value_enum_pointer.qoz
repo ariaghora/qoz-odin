@@ -1,14 +1,16 @@
 // expect: 0
-// A3 regression: pointer-holding value enums. Tok carries a string, so
+// GC regression: pointer-holding value enums. Tok carries a string, so
 // it is non-recursive and represented by value, with the string pointer
-// stored inline. Tree is recursive and therefore boxed; a Leaf embeds a
-// Tok by value, so the Tree allocation holds a string pointer at a
-// tag-dependent offset and uses a conservative descriptor. The test
-// builds many boxed trees that own inline strings, allocates throwaway
-// strings to force a garbage collection, then reads the owned strings
-// back. A string that does not round-trip means the inline pointer was
-// not traced. Also exercises match, the ? operator, interpolation,
-// nested patterns, and a catch-all bind on the value enum.
+// stored inline. Tree recurses through *Tree, so it is a value enum
+// whose Node variant holds two heap child pointers and whose Leaf
+// variant embeds a Tok by value. Each new_clone(Leaf(...)) is a heap
+// cell holding a string pointer at a tag-dependent offset, traced
+// through a conservative descriptor. The test builds many trees that
+// own inline strings, allocates throwaway strings to force a garbage
+// collection, then reads the owned strings back. A string that does not
+// round-trip means the inline pointer was not traced. Also exercises
+// match, the ? operator, interpolation, nested patterns, and a catch-all
+// bind on the value enum.
 
 import fmt
 import strings
@@ -20,7 +22,7 @@ type Tok =
 
 type Tree =
     | Leaf(Tok)
-    | Node(Tree, Tree)
+    | Node(*Tree, *Tree)
 
 let show_tok(t: Tok): string =
     match t {
@@ -47,7 +49,7 @@ let main(): i64 = {
     var i: i64 = 0
     while i < 8000 {
         let s = `tok{i}`
-        let pair = Node(Leaf(Word(s)), Leaf(Eof))
+        let pair = Node(new_clone(Leaf(Word(s))), new_clone(Leaf(Eof)))
         vec.push(&trees, pair)
         i += 1
     }
@@ -67,7 +69,7 @@ let main(): i64 = {
         let pair = trees[j]
         match pair {
         | Node(l, _) -> {
-            match unwrap(l) {
+            match unwrap(*l) {
             | Ok(g)  -> { if !strings.eq_raw(g, `got:tok{j}`) { bad += 1 } }
             // A word leaf must succeed; an Err here means the inline
             // string pointer was collected, so it is a real failure.

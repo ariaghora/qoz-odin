@@ -8,6 +8,7 @@ import strings
 import fs
 import compiler/ast
 import compiler/ty
+import compiler/recur
 
 type TypeError = {
     span:    ast.Span,
@@ -982,7 +983,7 @@ let synth_unary(tc: *check.TyContext, env: *Env, sp: ast.Span, op: ast.UnaryOp, 
     }
     | UOpDeref -> {
         match t {
-        | TyPtr(inner) -> inner
+        | TyPtr(inner) -> *inner
         | _            -> {
             record_error(tc, sp, `cannot dereference value of type {ty.ty_show(t)}`)
             ty.ty_error_()
@@ -1139,7 +1140,7 @@ let is_qualified_variant_field(tc: *check.TyContext, base: ast.Expr, name: strin
 
 let field_type_of(tc: *check.TyContext, bt: ty.Ty, name: string): ty.Ty = {
     match bt {
-    | TyPtr(inner) -> field_type_of(tc, inner, name)
+    | TyPtr(inner) -> field_type_of(tc, *inner, name)
     | TyRecord(home, struct_name, tyargs) -> lookup_field(tc, home, struct_name, tyargs, name)
     | TyTuple(elems) -> {
         // Tuple fields are named `_0`, `_1`, ...
@@ -1196,7 +1197,7 @@ let apply_subst(t: ty.Ty, params: Vec<string>, args: Vec<ty.Ty>): ty.Ty = {
         }
         t
     }
-    | TyPtr(inner) -> ty.ty_ptr_(apply_subst(inner, params, args))
+    | TyPtr(inner) -> ty.ty_ptr_(apply_subst(*inner, params, args))
     | TyAdt(h, n, a)  -> {
         var na: Vec<ty.Ty> = []
         for x in a { vec.push(&na, apply_subst(x, params, args)) }
@@ -1210,7 +1211,7 @@ let apply_subst(t: ty.Ty, params: Vec<string>, args: Vec<ty.Ty>): ty.Ty = {
     | TyFn(p, r) -> {
         var np: Vec<ty.Ty> = []
         for x in p { vec.push(&np, apply_subst(x, params, args)) }
-        ty.ty_fn_(np, apply_subst(r, params, args))
+        ty.ty_fn_(np, apply_subst(*r, params, args))
     }
     | _ -> t
     }
@@ -1251,7 +1252,7 @@ let synth_index(tc: *check.TyContext, env: *Env, sp: ast.Span, base: ast.Expr, i
         if !ty.ty_is_int(it) {
             record_error(tc, sp, `pointer index must be an integer, got {ty.ty_show(it)}`)
         }
-        inner
+        *inner
     }
     | _ -> {
         record_error(tc, sp, `cannot index value of type {ty.ty_show(bt)}`)
@@ -1309,7 +1310,7 @@ let is_len_argument(t: ty.Ty): bool = {
     match t {
     | TyString | TyCstring -> true
     | TyRecord(_, name, _) -> strings.eq_raw(name, "Vec") || strings.eq_raw(name, "Map")
-    | TyPtr(inner)         -> is_len_argument(inner)
+    | TyPtr(inner)         -> is_len_argument(*inner)
     | TyVar(_, _)          -> true
     | _                    -> false
     }
@@ -1323,7 +1324,7 @@ let is_hash_argument(t: ty.Ty): bool = {
     match t {
     | TyString | TyCstring | TyChar | TyBool -> true
     | TyInt(_)        -> true
-    | TyPtr(inner)    -> is_hash_argument(inner)
+    | TyPtr(inner)    -> is_hash_argument(*inner)
     | TyVar(_, _)     -> true
     | TyRecord(_, _, _) -> true
     | _               -> false
@@ -1337,7 +1338,7 @@ let is_hash_argument(t: ty.Ty): bool = {
 let can_show_ty(t: ty.Ty): bool = {
     match t {
     | TyRecord(_, _, _) | TyAdt(_, _, _) | TyTuple(_) -> true
-    | TyPtr(inner)                              -> can_show_ty(inner)
+    | TyPtr(inner)                              -> can_show_ty(*inner)
     | _                                         -> false
     }
 }
@@ -1457,7 +1458,7 @@ let synth_call_full(tc: *check.TyContext, env: *Env, sp: ast.Span, callee: ast.E
             if env_has(env, fn_name) {
                 let bt = env_lookup(env, fn_name)
                 match bt {
-                | TyFn(_, rt) -> return rt
+                | TyFn(_, rt) -> return *rt
                 | _ -> { }
                 }
             }
@@ -1891,7 +1892,7 @@ let unify(pattern: ty.Ty, concrete: ty.Ty, env: *Map<string, ty.Ty>): bool = {
     }
     | TyPtr(pi) -> {
         match concrete {
-        | TyPtr(ci) -> unify(pi, ci, env)
+        | TyPtr(ci) -> unify(*pi, *ci, env)
         | TyNil     -> true
         | _         -> false
         }
@@ -1922,7 +1923,7 @@ let unify(pattern: ty.Ty, concrete: ty.Ty, env: *Map<string, ty.Ty>): bool = {
     }
     | TyFn(pp, pr) -> {
         match concrete {
-        | TyFn(cp, cr) -> unify_args(pp, cp, env) && unify(pr, cr, env)
+        | TyFn(cp, cr) -> unify_args(pp, cp, env) && unify(*pr, *cr, env)
         | _            -> false
         }
     }
@@ -2682,7 +2683,7 @@ let infer_calls_expr(tc: *check.TyContext, env: *Env, e: ast.Expr, expected: ty.
         // `new e` yields `*T`, so the inner expression's expected type is
         // the pointee of the surrounding expected type when known.
         var inner_expected = ty.ty_error_()
-        if let TyPtr(it) = expected { inner_expected = it }
+        if let TyPtr(it) = expected { inner_expected = *it }
         ENew(sp, new_clone(infer_calls_expr(tc, env, *inner, inner_expected)))
     }
     }
@@ -2914,7 +2915,7 @@ type ContainerInfo = {
 // the actual recv type is a pointer to the container.
 let unwrap_container_ty(t: ty.Ty): ContainerInfo = {
     let inner = match t {
-    | TyPtr(x) -> x
+    | TyPtr(x) -> *x
     | _        -> t
     }
     match inner {
@@ -2961,7 +2962,7 @@ let ty_to_type_expr_at(t: ty.Ty, sp: ast.Span): ast.TypeExpr = {
     | TyNil    -> single_te(sp, "void")
     | TyError  -> single_te(sp, "i64")
     | TyVar(_, n) -> single_te(sp, n)
-    | TyPtr(inner) -> TEPtr(sp, new_clone(ty_to_type_expr_at(inner, sp)))
+    | TyPtr(inner) -> TEPtr(sp, new_clone(ty_to_type_expr_at(*inner, sp)))
     | TyAdt(_, n, args) | TyRecord(_, n, args) -> {
         var path: Vec<string> = []
         vec.push(&path, n)
@@ -3398,6 +3399,30 @@ let validate_signatures(tc: *check.TyContext, f: ast.File) = {
         | DImport(_, _, _)
         | DLink(_, _, _)
         | DCompileIf(_, _, _)          -> { }
+        }
+    }
+    check_value_recursion(tc, f)
+}
+
+// A value type cannot contain itself: the inline C struct would be
+// infinite. Recursion must pass through a pointer (`*T`), a Vec, or a
+// Map, all of which hold their contents behind a heap indirection.
+let check_value_recursion(tc: *check.TyContext, f: ast.File) = {
+    let recs = recur.value_recursive_adts(f)
+    for d in f.decls {
+        match d {
+        | DEnum(sp, name, _, _) -> {
+            if map.contains(&recs, name) {
+                record_error(tc, sp, `recursive type '{name}' contains itself by value. Break the cycle with a pointer field such as '*{name}', or with a Vec or Map`)
+            }
+        }
+        | DStruct(sp, name, _, _) -> {
+            if map.contains(&recs, name) {
+                record_error(tc, sp, `recursive type '{name}' contains itself by value. Break the cycle with a pointer field such as '*{name}', or with a Vec or Map`)
+            }
+        }
+        // Only enums and structs hold by-value payloads that can recur.
+        | _ -> { }
         }
     }
 }

@@ -400,6 +400,7 @@ All heap memory is owned by the garbage collector. There is no `free`, no alloca
 
 - Algebraic data types are value types by default. A non-recursive ADT is stored inline (a tagged union), built directly by its variant constructor: `Shape.Circle(1.0)` is a value. Assignment copies.
 - A self-referential ADT carries the recursion behind an explicit pointer field. `type Tree<T> = | Leaf | Node(*Tree<T>, T, *Tree<T>)`: the `*Tree<T>` fields make `Tree` finite-size, and each child is heap-allocated. Pointer-vs-value is explicit in the source; there is no hidden boxing.
+- A type that contains itself by value is rejected. `type Bad = | Box(Bad)` and a struct field of its own type are infinite-size, so the compiler reports an error and points the user at a pointer field such as `*Bad`, or a `Vec` or `Map`. Recursion through `*T`, `Vec`, `Map`, or a function type is finite and allowed, because each of those holds its contents behind a heap indirection.
 - `new_clone(value)` heap-allocates a copy of an existing value and yields a `*T`. It is how a `*T` field is filled with a value that must outlive the current stack frame: `Node(new_clone(left), x, new_clone(right))`. Taking `&local` instead is unsafe, since the local dies with its frame.
 - `new` is reserved for heap construction of a type (`new T(...)`), the counterpart to `new_clone`. (Not yet implemented.)
 - Records are value types. `Point { x: 1.0, y: 2.0 }` is a stack value. Assignment copies. Use `new_clone(Point { ... })` to obtain a heap pointer to a record.

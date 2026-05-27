@@ -1,0 +1,18 @@
+// Negative: a value type cannot contain itself. Shape recurses through
+// the Box variant by value, which would be an infinite C struct. The
+// checker rejects it and directs the user to break the cycle with a
+// pointer field such as `*Shape`.
+
+type Shape =
+    | Rectangle(i32, i32)
+    | Circle(f32)
+    | Box(Shape)
+
+let main(): i64 = {
+    let s = Circle(1.0)
+    match s {
+    | Rectangle(_, _) -> 1
+    | Circle(_)       -> 0
+    | Box(_)          -> 2
+    }
+}

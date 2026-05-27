@@ -25,7 +25,7 @@ type Ty =
     | TyUnit
     | TyNil
     | TyError
-    | TyPtr(ty.Ty)
+    | TyPtr(*ty.Ty)
     // The string fields are (home_pkg, name). home_pkg is empty for
     // prelude / entry types and the package name otherwise. Storing
     // it alongside the name keeps every Ty self-describing about
@@ -37,8 +37,8 @@ type Ty =
     // underlying TyInt determines the C representation; the
     // type-checker keeps the named identity so distinct enums
     // built on the same width are not interchangeable.
-    | TyCEnum(string, string, ty.Ty)
-    | TyFn(Vec<ty.Ty>, ty.Ty)
+    | TyCEnum(string, string, *ty.Ty)
+    | TyFn(Vec<ty.Ty>, *ty.Ty)
     | TyTuple(Vec<ty.Ty>)
     | TyVar(i64, string)
 
@@ -58,14 +58,14 @@ let ty_unit_(): ty.Ty   = TyUnit
 let ty_nil_(): ty.Ty    = TyNil
 let ty_error_(): ty.Ty  = TyError
 
-let ty_ptr_(inner: ty.Ty): ty.Ty = TyPtr(inner)
+let ty_ptr_(inner: ty.Ty): ty.Ty = TyPtr(new_clone(inner))
 
 let ty_adt_(name: string, args: Vec<ty.Ty>): ty.Ty = TyAdt("", name, args)
 let ty_record_(name: string, args: Vec<ty.Ty>): ty.Ty = TyRecord("", name, args)
 let ty_adt_homed(home: string, name: string, args: Vec<ty.Ty>): ty.Ty = TyAdt(home, name, args)
 let ty_record_homed(home: string, name: string, args: Vec<ty.Ty>): ty.Ty = TyRecord(home, name, args)
-let ty_cenum_(home: string, name: string, underlying: ty.Ty): ty.Ty = TyCEnum(home, name, underlying)
-let ty_fn_(params: Vec<ty.Ty>, ret: ty.Ty): ty.Ty = TyFn(params, ret)
+let ty_cenum_(home: string, name: string, underlying: ty.Ty): ty.Ty = TyCEnum(home, name, new_clone(underlying))
+let ty_fn_(params: Vec<ty.Ty>, ret: ty.Ty): ty.Ty = TyFn(params, new_clone(ret))
 let ty_tuple_(elems: Vec<ty.Ty>): ty.Ty = TyTuple(elems)
 
 let ty_var_(name: string): ty.Ty = TyVar(0, name)
@@ -125,7 +125,7 @@ let ty_eq(a: ty.Ty, b: ty.Ty): bool = {
     | TyError   -> { match b { | TyError -> true | _ -> false } }
     | TyPtr(ai) -> {
         match b {
-        | TyPtr(bi) -> ty_eq(ai, bi)
+        | TyPtr(bi) -> ty_eq(*ai, *bi)
         | _         -> false
         }
     }
@@ -149,7 +149,7 @@ let ty_eq(a: ty.Ty, b: ty.Ty): bool = {
     }
     | TyFn(ap, ar) -> {
         match b {
-        | TyFn(bp, br) -> ty_args_eq(ap, bp) && ty_eq(ar, br)
+        | TyFn(bp, br) -> ty_args_eq(ap, bp) && ty_eq(*ar, *br)
         | _            -> false
         }
     }
@@ -183,14 +183,14 @@ let ty_to_type_expr_at(t: ty.Ty, sp: ast.Span): ast.TypeExpr = {
     | TyUnit    -> TEUnit(sp)
     | TyNil     -> single_path_te(sp, "nil")
     | TyError   -> single_path_te(sp, "?")
-    | TyPtr(inner) -> TEPtr(sp, new_clone(ty_to_type_expr_at(inner, sp)))
+    | TyPtr(inner) -> TEPtr(sp, new_clone(ty_to_type_expr_at(*inner, sp)))
     | TyAdt(home, name, args) -> named_with_args_homed(sp, home, name, args)
     | TyRecord(home, name, args) -> named_with_args_homed(sp, home, name, args)
     | TyCEnum(home, name, _) -> named_with_args_homed(sp, home, name, [])
     | TyFn(fparams, ret) -> {
         var pte: Vec<ast.TypeExpr> = []
         for p in fparams { vec.push(&pte, ty_to_type_expr_at(p, sp)) }
-        TEFn(sp, pte, new_clone(ty_to_type_expr_at(ret, sp)))
+        TEFn(sp, pte, new_clone(ty_to_type_expr_at(*ret, sp)))
     }
     | TyTuple(elems) -> {
         var ete: Vec<ast.TypeExpr> = []
@@ -272,7 +272,7 @@ let ty_show(t: ty.Ty): string = {
     | TyNil     -> "nil"
     | TyError   -> "<error>"
     | TyVar(_, n) -> n
-    | TyPtr(inner) -> strings.cat("*", ty_show(inner))
+    | TyPtr(inner) -> strings.cat("*", ty_show(*inner))
     | TyAdt(_, n, args) | TyRecord(_, n, args) -> {
         if len(args) == 0 { return n }
         var out = strings.cat(n, "<")
@@ -294,7 +294,7 @@ let ty_show(t: ty.Ty): string = {
             i += 1
         }
         out = strings.cat(out, ") -> ")
-        strings.cat(out, ty_show(ret))
+        strings.cat(out, ty_show(*ret))
     }
     | TyTuple(elems) -> {
         var out = "("
@@ -402,7 +402,7 @@ let same_constructor_assignable(param: ty.Ty, arg: ty.Ty): bool = {
         }
     }
     | TyPtr(pi) -> {
-        match arg { | TyPtr(ai) -> ty_assignable(pi, ai) | _ -> false }
+        match arg { | TyPtr(ai) -> ty_assignable(*pi, *ai) | _ -> false }
     }
     | _ -> false
     }
