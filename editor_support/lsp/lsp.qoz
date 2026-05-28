@@ -960,7 +960,7 @@ let binding_struct_in_expr(e: ast.Expr, varname: string): string = {
             }
             // A destructure binds to tuple elements; the elements'
             // types are not record types the field completion needs.
-            | SLetTuple(_, _, _) -> { }
+            | SLetTuple(_, _, _, _) -> { }
             }
         }
         binding_struct_in_expr(*tail, varname)

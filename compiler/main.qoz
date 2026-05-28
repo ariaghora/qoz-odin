@@ -256,7 +256,7 @@ let rewrite_ident_refs_stmt(s: ast.Stmt, pkg: string, local_fns: Map<string, boo
     | SLet(sp, name, te, val) -> SLet(sp, name, te, rewrite_ident_refs(val, pkg, local_fns))
     | SVar(sp, name, te, val) -> SVar(sp, name, te, rewrite_ident_refs(val, pkg, local_fns))
     | SExpr(sp, x) -> SExpr(sp, rewrite_ident_refs(x, pkg, local_fns))
-    | SLetTuple(sp, names, val) -> SLetTuple(sp, names, rewrite_ident_refs(val, pkg, local_fns))
+    | SLetTuple(sp, names, val, is_var) -> SLetTuple(sp, names, rewrite_ident_refs(val, pkg, local_fns), is_var)
     }
 }
 
@@ -756,7 +756,7 @@ let qualify_stmt(s: ast.Stmt, pkg: string, ctx: *QualifyCtx): ast.Stmt = {
     | SLet(sp, name, te, val) -> SLet(sp, name, qualify_te(te, pkg, ctx), qualify_expr(val, pkg, ctx))
     | SVar(sp, name, te, val) -> SVar(sp, name, qualify_te(te, pkg, ctx), qualify_expr(val, pkg, ctx))
     | SExpr(sp, x)            -> SExpr(sp, qualify_expr(x, pkg, ctx))
-    | SLetTuple(sp, names, val) -> SLetTuple(sp, names, qualify_expr(val, pkg, ctx))
+    | SLetTuple(sp, names, val, is_var) -> SLetTuple(sp, names, qualify_expr(val, pkg, ctx), is_var)
     }
 }
 

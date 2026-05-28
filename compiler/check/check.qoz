@@ -2375,7 +2375,7 @@ let synth_block(tc: *TyContext, env: *Env, stmts: Vec<ast.Stmt>, tail: ast.Expr)
             check_binding_compat(tc, sp, te, bound, vt)
             env_define_var(env, name, bound, true)
         }
-        | SLetTuple(_, _, _) -> { } // already desugared by infer_calls
+        | SLetTuple(_, _, _, _) -> { } // already desugared by infer_calls
         | SExpr(sp, ex)           -> {
             let t = synth(tc, env, ex)
             // A discarded Result<T, E> is almost always a bug because
@@ -2917,7 +2917,7 @@ let infer_calls_expr(tc: *TyContext, env: *Env, e: ast.Expr, expected: ty.Ty): a
             // Desugar `let (a, b, ...) = expr` here so downstream
             // phases only see the underlying SLet sequence.
             match s {
-            | SLetTuple(ssp, names, value) -> {
+            | SLetTuple(ssp, names, value, is_var) -> {
                 let new_value = infer_calls_expr(tc, env, value, ty.ty_error_())
                 let tmp = `_qoz_tup_{len(ns)}`
                 let value_ty = synth(tc, env, new_value)
@@ -2930,7 +2930,13 @@ let infer_calls_expr(tc: *TyContext, env: *Env, e: ast.Expr, expected: ty.Ty): a
                         let fld: ast.Expr = EField(ssp, new_clone(EIdent(ssp, tmp)), field)
                         let bty = synth(tc, env, fld)
                         env_define(env, bname, bty)
-                        vec.push(&ns, SLet(ssp, bname, TEUnit(ssp), fld))
+                        // `var (a, b) = ...` produces mutable bindings;
+                        // `let (a, b) = ...` produces immutable ones.
+                        if is_var {
+                            vec.push(&ns, SVar(ssp, bname, TEUnit(ssp), fld))
+                        } else {
+                            vec.push(&ns, SLet(ssp, bname, TEUnit(ssp), fld))
+                        }
                     }
                     bi += 1
                 }
@@ -3052,7 +3058,7 @@ let infer_calls_stmt(tc: *TyContext, env: *Env, s: ast.Stmt): ast.Stmt = {
     | SExpr(sp, x) -> SExpr(sp, infer_calls_expr(tc, env, x, ty.ty_error_()))
     // EBlock catches SLetTuple inline; reaching here means a stray
     // destructure outside a block, which is currently unsupported.
-    | SLetTuple(sp, names, val) -> SLetTuple(sp, names, infer_calls_expr(tc, env, val, ty.ty_error_()))
+    | SLetTuple(sp, names, val, is_var) -> SLetTuple(sp, names, infer_calls_expr(tc, env, val, ty.ty_error_()), is_var)
     }
 }
 
@@ -3618,7 +3624,7 @@ let expr_has_return(e: ast.Expr): bool = {
 
 let stmt_has_return(s: ast.Stmt): bool = {
     match s {
-    | SLet(_, _, _, v) | SVar(_, _, _, v) | SExpr(_, v) | SLetTuple(_, _, v) -> expr_has_return(v)
+    | SLet(_, _, _, v) | SVar(_, _, _, v) | SExpr(_, v) | SLetTuple(_, _, v, _) -> expr_has_return(v)
     }
 }
 

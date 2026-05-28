@@ -154,10 +154,11 @@ type Stmt =
     | SLet(Span, string, TypeExpr, Expr)
     | SVar(Span, string, TypeExpr, Expr)
     | SExpr(Span, Expr)
-    // `let (a, b, ...) = expr`. Names may include "_" for ignored
-    // positions. The checker's rewrite pass desugars this into a
-    // SLet sequence; the formatter prints the source form.
-    | SLetTuple(Span, Vec<string>, Expr)
+    // `let (a, b, ...) = expr` or `var (a, b, ...) = expr`. Names may
+    // include "_" for ignored positions. The trailing bool is true
+    // for `var`. The checker's rewrite pass desugars this into a
+    // SLet or SVar sequence; the formatter prints the source form.
+    | SLetTuple(Span, Vec<string>, Expr, bool)
 
 type FnParam = {
     name: string,

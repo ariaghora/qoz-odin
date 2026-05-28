@@ -495,7 +495,7 @@ let walk_expr_for_types(e: *Emitter, ex: ast.Expr) = {
             | SExpr(_, ex2) -> walk_expr_for_types(e, ex2)
             // SLetTuple is desugared into SLet sequence by the checker
             // before emit. Reaching here would be an internal bug.
-            | SLetTuple(_, _, val) -> walk_expr_for_types(e, val)
+            | SLetTuple(_, _, val, _) -> walk_expr_for_types(e, val)
             }
         }
         walk_expr_for_types(e, *tail)
@@ -1053,7 +1053,7 @@ let substitute_stmt(e: *Emitter, s: ast.Stmt, params: Vec<string>, args: Vec<ast
     | SLet(sp, name, te, val)  -> SLet(sp, name, substitute_type(e, te, params, args), substitute_expr(e, val, params, args))
     | SVar(sp, name, te, val)  -> SVar(sp, name, substitute_type(e, te, params, args), substitute_expr(e, val, params, args))
     | SExpr(sp, x)             -> SExpr(sp, substitute_expr(e, x, params, args))
-    | SLetTuple(sp, names, val) -> SLetTuple(sp, names, substitute_expr(e, val, params, args))
+    | SLetTuple(sp, names, val, is_var) -> SLetTuple(sp, names, substitute_expr(e, val, params, args), is_var)
     }
 }
 
@@ -1385,7 +1385,7 @@ let collect_closure_captures(e: *Emitter, ex: ast.Expr, sc: *CaptureScope, out: 
                 sc.bound[name] = true
             }
             | SExpr(_, expr)          -> collect_closure_captures(e, expr, sc, out)
-            | SLetTuple(_, _, val)    -> collect_closure_captures(e, val, sc, out)
+            | SLetTuple(_, _, val, _) -> collect_closure_captures(e, val, sc, out)
             }
         }
         collect_closure_captures(e, *tail, sc, out)
@@ -2035,7 +2035,7 @@ let ingest_stmt_locals(e: *Emitter, s: ast.Stmt) = {
     | SExpr(_, _) -> { }
     // The checker desugars SLetTuple before emit; this arm exists for
     // exhaustiveness only.
-    | SLetTuple(_, _, _) -> { }
+    | SLetTuple(_, _, _, _) -> { }
     }
 }
 
@@ -2742,7 +2742,7 @@ let emit_stmt_inner(e: *Emitter, s: ast.Stmt) = {
         }
     }
     // Should never be reached: checker desugars to SLet sequence.
-    | SLetTuple(sp, _, _) -> { let _ = emit_die(sp, "internal: SLetTuple reached emit; checker should have desugared it") }
+    | SLetTuple(sp, _, _, _) -> { let _ = emit_die(sp, "internal: SLetTuple reached emit; checker should have desugared it") }
     }
 }
 

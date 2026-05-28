@@ -1482,6 +1482,27 @@ let parse_pattern(p: *Parser): ast.Pattern = {
     PatWild(span)
 }
 
+// Parse a `( a, b, ..., )` binding list for tuple destructuring,
+// consuming the surrounding parens. Trailing comma is accepted.
+let parse_tuple_binds(p: *Parser): Vec<string> = {
+    expect_punct(p, "(")
+    var binds: Vec<string> = []
+    if !is_punct(peek(p), ")") {
+        vec.push(&binds, expect_ident(p))
+        var keep = true
+        while keep && is_punct(peek(p), ",") {
+            advance(p)
+            if is_punct(peek(p), ")") {
+                keep = false
+            } else {
+                vec.push(&binds, expect_ident(p))
+            }
+        }
+    }
+    expect_punct(p, ")")
+    binds
+}
+
 // Parse one field of a named-payload variant pattern. `field` binds a
 // variable named `field`; `field: pat` matches against `pat`.
 let parse_named_pat_field(p: *Parser, names: *Vec<string>, pats: *Vec<ast.Pattern>) = {
@@ -1517,26 +1538,10 @@ let parse_block(p: *Parser): ast.Expr = {
             advance(p)
             if is_punct(peek(p), "(") {
                 // let (a, b, ...) = expr  destructures a tuple.
-                advance(p)
-                var binds: Vec<string> = []
-                if !is_punct(peek(p), ")") {
-                    vec.push(&binds, expect_ident(p))
-                    var keep = true
-                    while keep && is_punct(peek(p), ",") {
-                        advance(p)
-                        if is_punct(peek(p), ")") {
-                            keep = false
-                        } else {
-                            vec.push(&binds, expect_ident(p))
-                        }
-                    }
-                }
-                expect_punct(p, ")")
+                let binds = parse_tuple_binds(p)
                 expect_punct(p, "=")
                 let value = parse_expr(p)
-                // Preserve the source-form binding list. The checker
-                // rewrites this to a SLet sequence before emit.
-                vec.push(&stmts, SLetTuple(stmt_span, binds, value))
+                vec.push(&stmts, SLetTuple(stmt_span, binds, value, false))
             } else {
                 let name = expect_ident(p)
                 var ann: ast.TypeExpr = TEUnit(stmt_span)
@@ -1550,15 +1555,24 @@ let parse_block(p: *Parser): ast.Expr = {
             }
         } elif is_kw(t, "var") {
             advance(p)
-            let name = expect_ident(p)
-            var ann: ast.TypeExpr = TEUnit(stmt_span)
-            if is_punct(peek(p), ":") {
-                advance(p)
-                ann = parse_type(p)
+            if is_punct(peek(p), "(") {
+                // var (a, b, ...) = expr  destructures a tuple into
+                // mutable bindings.
+                let binds = parse_tuple_binds(p)
+                expect_punct(p, "=")
+                let value = parse_expr(p)
+                vec.push(&stmts, SLetTuple(stmt_span, binds, value, true))
+            } else {
+                let name = expect_ident(p)
+                var ann: ast.TypeExpr = TEUnit(stmt_span)
+                if is_punct(peek(p), ":") {
+                    advance(p)
+                    ann = parse_type(p)
+                }
+                expect_punct(p, "=")
+                let value = parse_expr(p)
+                vec.push(&stmts, SVar(stmt_span, name, ann, value))
             }
-            expect_punct(p, "=")
-            let value = parse_expr(p)
-            vec.push(&stmts, SVar(stmt_span, name, ann, value))
         } else {
             let e = parse_expr(p)
             // Skip trailing `;` (including ASI-injected ones) so an
