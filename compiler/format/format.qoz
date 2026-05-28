@@ -358,6 +358,13 @@ let decl_span(d: ast.Decl): ast.Span = {
 // Binding tightness of a binary operator, matching the parser's layer
 // order (higher binds tighter). Used to decide where the printer must
 // insert parentheses so the re-parsed tree keeps its shape.
+// Range operators print tight, like `0..<n`, not `0 ..< n`. The
+// surrounding-space rule for normal binary operators (`a + b`) does
+// not match how range is written anywhere.
+let is_range_op(op: ast.BinaryOp): bool = {
+    match op { | BOpRange | BOpRangeInclusive -> true | _ -> false }
+}
+
 let binop_prec(op: ast.BinaryOp): i64 = {
     match op {
     | BOpRange | BOpRangeInclusive -> 1
@@ -618,10 +625,11 @@ let print_expr(p: *Printer, e: ast.Expr) = {
         // Left-associative: the left operand keeps its grouping at the
         // same precedence, the right operand needs parentheses at the
         // same precedence so a - (b - c) does not reprint as a - b - c.
+        let pad = !is_range_op(op) // range writes tight: `0..<n`, not `0 ..< n`
         print_expr_paren(p, *l, prec)
-        p_emit(p, " ")
+        if pad { p_emit(p, " ") }
         p_emit(p, binary_op_text(op))
-        p_emit(p, " ")
+        if pad { p_emit(p, " ") }
         print_expr_paren(p, *r, prec + 1)
     }
     | EAssign(_, op, l, r) -> {
