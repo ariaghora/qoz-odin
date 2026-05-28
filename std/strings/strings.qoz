@@ -17,6 +17,20 @@ external let string_alias(buf: *void, n: i64): string
 @link_name("qoz_bytes_copy")
 external let bytes_copy(dst: *void, src: *void, n: i64)
 
+/// Allocate a NUL-terminated copy of `s` and return it as a `cstring`,
+/// suitable for FFI calls that take `const char *`. The buffer is
+/// GC-managed; do not free it. A Qoz `string` is length-tracked and
+/// not NUL-terminated, so a runtime-built string (an interpolation
+/// result, a `cat`, a `slice`) needs this conversion before reaching
+/// a C API. A C string literal in source position still coerces
+/// directly; this helper is for runtime-built strings.
+let to_cstring(s: string): cstring = {
+    let n = len(s)
+    let buf = mem.calloc(n + 1)
+    bytes_copy(buf, string_data(s), n)
+    buf as cstring
+}
+
 // Compare byte ranges starting at `ad + ao` and `bd + bo`, length `n`,
 // for equality. `ad` and `bd` are *u8 cast to opaque pointers.
 let bytes_eq(ad: *u8, ao: i64, bd: *u8, bo: i64, n: i64): bool = {

@@ -6760,6 +6760,7 @@ qoz_string qoz_strings_sb_slice_copy(qoz_strings_Strbuf* b, int64_t from, int64_
 extern void* qoz_string_data(qoz_string);
 extern qoz_string qoz_string_alias(void*, int64_t);
 extern void qoz_bytes_copy(void*, void*, int64_t);
+const char * qoz_strings_to_cstring(qoz_string s);
 bool qoz_strings_bytes_eq(uint8_t* ad, int64_t ao, uint8_t* bd, int64_t bo, int64_t n);
 bool qoz_strings_eq_raw(qoz_string a, qoz_string b);
 uint64_t qoz_strings_hash_raw(qoz_string s);
@@ -8200,6 +8201,12 @@ qoz_string qoz_strings_sb_slice_copy(qoz_strings_Strbuf* b, int64_t from, int64_
     qoz_frame_push("strings_sb_slice_copy");
     qoz_gc_push_root(&b);
     int64_t lo = from; int64_t hi = to; if (lo < 0) { lo = 0; } if (hi > b->len) { hi = b->len; } if (lo > hi) { lo = hi; } int64_t n = hi - lo; void* buf = qoz_alloc(n); qoz_gc_push_root(&buf); if (n > 0) { int64_t src_off = ((int64_t)((void*)b->buf)) + lo; qoz_bytes_copy(buf, ((void*)src_off), n); } qoz_frame_pop(); qoz_gc_shadow_set_top(_qoz_shadow_guard); return qoz_string_alias(buf, n);
+}
+
+const char * qoz_strings_to_cstring(qoz_string s) {
+    int64_t _qoz_shadow_guard = qoz_gc_shadow_top();
+    qoz_frame_push("strings_to_cstring");
+    int64_t n = (s).len; void* buf = qoz_calloc(n + 1); qoz_gc_push_root(&buf); qoz_bytes_copy(buf, qoz_string_data(s), n); qoz_frame_pop(); qoz_gc_shadow_set_top(_qoz_shadow_guard); return ((const char *)buf);
 }
 
 bool qoz_strings_bytes_eq(uint8_t* ad, int64_t ao, uint8_t* bd, int64_t bo, int64_t n) {
