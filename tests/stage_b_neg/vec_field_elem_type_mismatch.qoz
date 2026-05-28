@@ -1,0 +1,7 @@
+// Negative: a record field of Vec<T> propagates its element type to a
+// literal used to initialize that field.
+type Bag = { items: Vec<i32> }
+let main(): i64 = {
+    let b: Bag = Bag { items: [1, 2, "x"] }
+    0
+}

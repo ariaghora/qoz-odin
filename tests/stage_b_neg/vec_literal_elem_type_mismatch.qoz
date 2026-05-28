@@ -1,0 +1,6 @@
+// Negative: a Vec<T> annotation pins the element type, so a literal
+// whose element does not match T is rejected at the bad element.
+let main(): i64 = {
+    let vals: Vec<i32> = [1, 2, 3, 4.3]
+    0
+}

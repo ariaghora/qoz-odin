@@ -1,0 +1,12 @@
+// Negative: a function parameter of Vec<T> propagates its element type
+// to the literal in argument position. A wrong-typed element is caught
+// at the call site, not at clang.
+let sum(xs: Vec<i32>): i32 = {
+    var s: i32 = 0
+    for x in xs { s = s + x }
+    s
+}
+let main(): i64 = {
+    let _ = sum([1, 2, 4.3])
+    0
+}

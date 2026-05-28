@@ -873,57 +873,92 @@ let synth_inner(tc: *TyContext, env: *Env, e: ast.Expr): ty.Ty = {
     | EDefer(_, b)           -> { let _ = synth(tc, env, *b); ty.ty_unit_() }
     | ESizeOf(_, _)          -> ty.ty_int_(64, true)
     | EArrayLit(sp, elems, lit_te)   -> {
-        // The checker-filled container type wins; otherwise infer from
-        // the elements. An empty `[]` has only this field to go on.
+        // A `Vec<T>` annotation pins the element type; without one, the
+        // first element's synth fixes it. Every element is then checked
+        // against the expected type, so a mismatch is caught here
+        // instead of reaching emit.
+        var has_lit = false
+        var lit_ty: ty.Ty = ty.ty_error_()
+        var elem_expected: ty.Ty = ty.ty_error_()
         match lit_te {
-        | TEUnit(_) -> { } // no recorded type yet; infer from elements below
-        | _         -> return resolve_type(tc, lit_te)
+        | TEUnit(_) -> { }
+        | _         -> {
+            has_lit = true
+            lit_ty = resolve_type(tc, lit_te)
+            if let TyRecord(_, _, args) = lit_ty {
+                if len(args) >= 1 { elem_expected = args[0] }
+            }
         }
-        if len(elems) == 0 { return ty.ty_error_() }
-        let elem_ty = synth(tc, env, elems[0])
-        var i: i64 = 1
-        while i < len(elems) {
-            let et = synth(tc, env, elems[i])
-            if !ty.ty_is_error(elem_ty) && !ty.ty_is_error(et) {
-                if !ty.ty_assignable(elem_ty, et) && !ty.ty_assignable(et, elem_ty) {
-                    record_error(tc, sp, `array literal element {i} has type {ty.ty_show(et)}; earlier elements have type {ty.ty_show(elem_ty)}`)
+        }
+        if !has_lit {
+            if len(elems) == 0 { return ty.ty_error_() }
+            elem_expected = synth(tc, env, elems[0])
+        }
+        var idx: i64 = 0
+        for el in elems {
+            let et = synth(tc, env, el)
+            if !ty.ty_is_error(elem_expected) && !ty.ty_is_error(et) {
+                if !ty.ty_assignable(elem_expected, et) {
+                    record_error(tc, ast.span_of_expr(el), `array element {idx} has type {ty.ty_show(et)}, expected {ty.ty_show(elem_expected)}`)
                 }
             }
-            i += 1
+            idx += 1
         }
-        var args: Vec<ty.Ty> = []
-        vec.push(&args, elem_ty)
-        ty.ty_record_("Vec", args)
+        if has_lit { return lit_ty }
+        var args2: Vec<ty.Ty> = []
+        vec.push(&args2, elem_expected)
+        ty.ty_record_("Vec", args2)
     }
     | EMapLit(sp, keys, values, lit_te) -> {
-        // The checker-filled container type wins; otherwise infer from
-        // the entries. An empty `[:]` has only this field to go on.
+        // A `Map<K, V>` annotation pins both element types; without one,
+        // the first entry fixes them. Every key and value is checked
+        // against the expected types.
+        var has_lit = false
+        var lit_ty: ty.Ty = ty.ty_error_()
+        var key_expected: ty.Ty = ty.ty_error_()
+        var val_expected: ty.Ty = ty.ty_error_()
         match lit_te {
-        | TEUnit(_) -> { } // no recorded type yet; infer from entries below
-        | _         -> return resolve_type(tc, lit_te)
-        }
-        if len(keys) == 0 { return ty.ty_error_() }
-        let key_ty = synth(tc, env, keys[0])
-        let val_ty = synth(tc, env, values[0])
-        var i: i64 = 1
-        while i < len(keys) {
-            let kt = synth(tc, env, keys[i])
-            let vt = synth(tc, env, values[i])
-            if !ty.ty_is_error(key_ty) && !ty.ty_is_error(kt) {
-                if !ty.ty_assignable(key_ty, kt) && !ty.ty_assignable(kt, key_ty) {
-                    record_error(tc, sp, `map literal key {i} has type {ty.ty_show(kt)}; earlier keys have type {ty.ty_show(key_ty)}`)
+        | TEUnit(_) -> { }
+        | _         -> {
+            has_lit = true
+            lit_ty = resolve_type(tc, lit_te)
+            if let TyRecord(_, _, args) = lit_ty {
+                if len(args) >= 2 {
+                    key_expected = args[0]
+                    val_expected = args[1]
                 }
             }
-            if !ty.ty_is_error(val_ty) && !ty.ty_is_error(vt) {
-                if !ty.ty_assignable(val_ty, vt) && !ty.ty_assignable(vt, val_ty) {
-                    record_error(tc, sp, `map literal value {i} has type {ty.ty_show(vt)}; earlier values have type {ty.ty_show(val_ty)}`)
+        }
+        }
+        if !has_lit {
+            if len(keys) == 0 { return ty.ty_error_() }
+            key_expected = synth(tc, env, keys[0])
+            val_expected = synth(tc, env, values[0])
+        }
+        var ki: i64 = 0
+        for k in keys {
+            let kt = synth(tc, env, k)
+            if !ty.ty_is_error(key_expected) && !ty.ty_is_error(kt) {
+                if !ty.ty_assignable(key_expected, kt) {
+                    record_error(tc, ast.span_of_expr(k), `map key {ki} has type {ty.ty_show(kt)}, expected {ty.ty_show(key_expected)}`)
                 }
             }
-            i += 1
+            ki += 1
         }
+        var vi: i64 = 0
+        for v in values {
+            let vt = synth(tc, env, v)
+            if !ty.ty_is_error(val_expected) && !ty.ty_is_error(vt) {
+                if !ty.ty_assignable(val_expected, vt) {
+                    record_error(tc, ast.span_of_expr(v), `map value {vi} has type {ty.ty_show(vt)}, expected {ty.ty_show(val_expected)}`)
+                }
+            }
+            vi += 1
+        }
+        if has_lit { return lit_ty }
         var margs: Vec<ty.Ty> = []
-        vec.push(&margs, key_ty)
-        vec.push(&margs, val_ty)
+        vec.push(&margs, key_expected)
+        vec.push(&margs, val_expected)
         ty.ty_record_("Map", margs)
     }
     | ENew(_, inner) -> ty.ty_ptr_(synth(tc, env, *inner))
@@ -1527,11 +1562,13 @@ let synth_record(tc: *TyContext, env: *Env, sp: ast.Span, te: ast.TypeExpr, fiel
     let struct_home = record_home_of(bare_resolved)
     validate_record_fields(tc, sp, struct_home, struct_name, fields)
     let tparams = struct_tparams(tc, struct_home, struct_name)
-    if len(tparams) == 0 { return bare_resolved }
-    if annotation_pins_type_args(te, tparams) { return bare_resolved }
+    let pinned = len(tparams) > 0 && annotation_pins_type_args(te, tparams)
     var bindings: Map<string, ty.Ty> = [:]
     let saved = tc.type_params
     set_type_params(tc, tparams)
+    // Check each provided field's value against its declared type, and
+    // collect bindings for a generic struct so the tparams can be
+    // inferred from the field values.
     var i: i64 = 0
     while i < len(fields) {
         let f = fields[i]
@@ -1539,12 +1576,24 @@ let synth_record(tc: *TyContext, env: *Env, sp: ast.Span, te: ast.TypeExpr, fiel
             if let Some(dte) = struct_field_typeexpr(tc, struct_home, struct_name, f.name) {
                 let p_ty = resolve_type(tc, dte)
                 let v_ty = synth(tc, env, f.value)
-                let _ = unify(p_ty, v_ty, &bindings)
+                if !ty.ty_is_error(p_ty) && !ty.ty_is_error(v_ty) {
+                    if len(tparams) > 0 {
+                        if !unify(p_ty, v_ty, &bindings) {
+                            record_error(tc, ast.span_of_expr(f.value), `field '{f.name}' has type {ty.ty_show(v_ty)}, expected {ty.ty_show(p_ty)}`)
+                        }
+                    } else {
+                        if !ty.ty_assignable(p_ty, v_ty) {
+                            record_error(tc, ast.span_of_expr(f.value), `field '{f.name}' has type {ty.ty_show(v_ty)}, expected {ty.ty_show(p_ty)}`)
+                        }
+                    }
+                }
             }
         }
         i += 1
     }
     tc.type_params = saved
+    if len(tparams) == 0 { return bare_resolved }
+    if pinned { return bare_resolved }
     var args: Vec<ty.Ty> = []
     var ti: i64 = 0
     while ti < len(tparams) {

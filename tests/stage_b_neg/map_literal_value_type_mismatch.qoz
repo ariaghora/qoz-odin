@@ -1,0 +1,6 @@
+// Negative: a Map<K, V> annotation pins both element types. A value of
+// the wrong type is rejected at the bad entry.
+let main(): i64 = {
+    let person: Map<string, string> = ["Aria": 32, "Bob": 100]
+    0
+}

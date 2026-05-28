@@ -1,0 +1,5 @@
+// Negative: a Map<string, V> rejects a non-string key.
+let main(): i64 = {
+    let m: Map<string, i32> = [42: 1, "ok": 2]
+    0
+}
