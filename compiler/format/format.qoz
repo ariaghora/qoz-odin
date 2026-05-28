@@ -1,1215 +1,195 @@
-// AST-based Qoz source formatter. Consumes a parsed File plus a
-// list of source comments and emits canonical source text. The
-// printer makes structural decisions (single-line vs multi-line,
-// where to break, indent depth); comment placement is handled by
-// a parallel walk that interleaves the comment stream with the
-// node stream by source position.
+// Token-driven Qoz source formatter. Walks the token stream and the
+// comment stream produced by the tokenizer; consults neither the AST
+// nor any post-parse desugaring. Source-form decisions the user made
+// (parentheses, range tightness, line breaks, blank-line groupings,
+// comment placement, directive form, destructure shape) are preserved
+// by definition because the tokens carry them. The formatter only
+// normalizes:
+//
+// - amounts of whitespace between adjacent tokens on the same line
+//   (collapse runs to one space, drop trailing whitespace),
+// - line indentation to four spaces per open-delimiter depth,
+// - presence of a final newline.
+//
+// Spans of consecutive blank lines are kept as-is. A multi-line block
+// comment is emitted verbatim; its internal indentation is the user's
+// problem if it disagrees with the surrounding depth (rare and
+// contained).
 
-import fmt
 import vec
-import map
 import strings
-import compiler/ast
 import compiler/tokenize
 
-type InterpPart = {
-    lit:      bool,
-    lit_text: string,
-    expr:     ast.Expr,
+let INDENT_STEP: i64 = 4
+
+// A merged event over the tokenizer's output: a real token or a
+// captured comment. Ordered by (line, col).
+type Event = {
+    is_comment: bool,
+    text:       string,
+    line:       i64,
+    col:        i64,
+    end_line:   i64,
+    end_col:    i64,
 }
 
-type Printer = {
-    out:    strings.Strbuf,
-    indent: i64,
-    // Column of the next byte to be written, 0-indexed. Reset by
-    // p_newline. Used by width-aware wrapping decisions.
-    col:    i64,
-    // Comments captured by the tokenizer, in source order.
-    // Consumed greedily as the printer walks nodes: any comment
-    // whose span is <= the cursor is emitted before the next
-    // node.
-    comments: Vec<tokenize.Comment>,
-    cmt_idx:  i64,
-    // Line of the last node emitted. Used to detect blank lines
-    // in the original source that should be preserved.
-    last_line: i64,
+// Entry: take raw source, return canonical-whitespace source.
+let format_source(src: string): string = {
+    let tres = tokenize.run_raw_with_comments(src)
+    let events = build_events(tres.tokens, tres.comments)
+    var out: strings.Strbuf = strings.Strbuf { buf: nil as *u8, len: 0, cap: 0 }
+    strings.sb_init(&out)
+    emit_events(&out, events)
+    if !ends_with_byte(&out, 10) { strings.sb_append(&out, "\n") }
+    strings.sb_finish(&out)
 }
 
-let make_printer(comments: Vec<tokenize.Comment>): Printer = {
-    var sb: strings.Strbuf = strings.Strbuf { buf: nil as *u8, len: 0, cap: 0 }
-    strings.sb_init(&sb)
-    Printer { out: sb, indent: 0, col: 0, comments: comments, cmt_idx: 0, last_line: 0 }
-}
+// --- token/comment merge ------------------------------------------
 
-let p_emit(p: *Printer, s: string) = {
-    let n = len(s)
-    if n == 0 { return }
-    if p.col == 0 && p.indent > 0 {
-        let pad = p.indent * 4
-        var i: i64 = 0
-        while i < pad {
-            strings.sb_append(&p.out, " ")
-            i += 1
+let build_events(tokens: Vec<tokenize.Token>, comments: Vec<tokenize.Comment>): Vec<Event> = {
+    var out: Vec<Event> = []
+    var ti: i64 = 0
+    var ci: i64 = 0
+    while ti < len(tokens) || ci < len(comments) {
+        let take_comment = if ti >= len(tokens) {
+            true
+        } elif ci >= len(comments) {
+            false
+        } else {
+            comment_before(comments[ci], tokens[ti])
         }
-        p.col = pad
+        if take_comment {
+            let c = comments[ci]
+            vec.push(&out, event_of_comment(c))
+            ci += 1
+        } else {
+            let t = tokens[ti]
+            if !is_eof(t) {
+                vec.push(&out, event_of_token(t))
+            }
+            ti += 1
+        }
     }
-    strings.sb_append(&p.out, s)
-    p.col += n
+    out
 }
 
-let p_newline(p: *Printer) = {
-    strings.sb_append(&p.out, "\n")
-    p.col = 0
+let comment_before(c: tokenize.Comment, t: tokenize.Token): bool = {
+    if c.line < t.line { return true }
+    if c.line > t.line { return false }
+    c.col < t.col
 }
 
-let p_indent_in(p: *Printer) = { p.indent += 1 }
-let p_indent_out(p: *Printer) = { p.indent -= 1 }
+let is_eof(t: tokenize.Token): bool = {
+    match t.kind { | TokEOF -> true | _ -> false }
+}
 
-let p_finish(p: *Printer): string = strings.sb_finish(&p.out)
+let event_of_token(t: tokenize.Token): Event = {
+    let nl = count_newlines(t.text)
+    let el = if nl > 0 { t.line + nl } else { t.line }
+    let ec = if nl > 0 { 1 + len_after_last_newline(t.text) } else { t.col + len(t.text) }
+    Event { is_comment: false, text: t.text, line: t.line, col: t.col, end_line: el, end_col: ec }
+}
 
-// --- TypeExpr ---
+let event_of_comment(c: tokenize.Comment): Event = {
+    let nl = count_newlines(c.text)
+    let el = if nl > 0 { c.line + nl } else { c.line }
+    let ec = if nl > 0 { 1 + len_after_last_newline(c.text) } else { c.col + len(c.text) }
+    Event { is_comment: true, text: c.text, line: c.line, col: c.col, end_line: el, end_col: ec }
+}
 
-let print_te(p: *Printer, te: ast.TypeExpr) = {
-    match te {
-    | TENamed(_, path, args) -> {
-        var first = true
-        for seg in path {
-            if !first { p_emit(p, ".") }
+// --- main emit loop -----------------------------------------------
+
+let emit_events(out: *strings.Strbuf, events: Vec<Event>) = {
+    var depth: i64 = 0
+    var prev_line: i64 = 1
+    var prev_end_col: i64 = 1
+    var first = true
+    for ev in events {
+        if first {
+            // Leading blank lines in the source are dropped.
+            if is_close_delim(ev.text) { depth = depth_after_close(depth) }
+            emit_indent(out, depth)
+            strings.sb_append(out, ev.text)
+            if is_open_delim(ev.text) { depth += 1 }
             first = false
-            p_emit(p, seg)
-        }
-        if len(args) > 0 {
-            p_emit(p, "<")
-            var i: i64 = 0
-            for a in args {
-                if i > 0 { p_emit(p, ", ") }
-                print_te(p, a)
-                i += 1
+        } elif ev.line > prev_line {
+            let gap = ev.line - prev_line
+            var n = gap
+            while n > 0 {
+                strings.sb_append(out, "\n")
+                n -= 1
             }
-            p_emit(p, ">")
-        }
-    }
-    | TEPtr(_, inner) -> {
-        p_emit(p, "*")
-        print_te(p, *inner)
-    }
-    | TETuple(_, elems) -> {
-        p_emit(p, "(")
-        var i: i64 = 0
-        for e in elems {
-            if i > 0 { p_emit(p, ", ") }
-            print_te(p, e)
-            i += 1
-        }
-        p_emit(p, ")")
-    }
-    | TEUnit(_) -> p_emit(p, "()")
-    | TEFn(_, params, ret) -> {
-        p_emit(p, "fn(")
-        var i: i64 = 0
-        for pa in params {
-            if i > 0 { p_emit(p, ", ") }
-            print_te(p, pa)
-            i += 1
-        }
-        p_emit(p, "): ")
-        print_te(p, *ret)
-    }
-    }
-}
-
-// --- Comment interleaving ---
-
-// Emit any comments whose start line is strictly before the next
-// node's line. The caller is responsible for any blank line that
-// precedes the first comment of the group; this helper only
-// emits the comments themselves so callers stay in charge of the
-// gap rule.
-let p_emit_leading_comments(p: *Printer, next_line: i64) = {
-    while p.cmt_idx < len(p.comments) {
-        let c = p.comments[p.cmt_idx]
-        if c.line >= next_line { return }
-        p_emit(p, c.text)
-        p_newline(p)
-        p.last_line = c.line
-        p.cmt_idx += 1
-    }
-}
-
-// Emit a comment trailing on the same line as a node ending at
-// `node_line`. Returns true when one was emitted (caller does not
-// add its own newline).
-let p_emit_trailing_comment(p: *Printer, node_line: i64): bool = {
-    if p.cmt_idx < len(p.comments) {
-        let c = p.comments[p.cmt_idx]
-        if c.line == node_line {
-            p_emit(p, " ")
-            p_emit(p, c.text)
-            p.cmt_idx += 1
-            return true
-        }
-    }
-    false
-}
-
-// Track that the printer just finished emitting a node ending on
-// `line`. Used so leading-comment emission can preserve blank
-// lines between top-level decls.
-let p_mark_line(p: *Printer, line: i64) = {
-    if line > p.last_line { p.last_line = line }
-}
-
-// --- Decl printers (skeleton subset) ---
-
-let print_import(p: *Printer, path: Vec<string>, alias: string) = {
-    p_emit(p, "import ")
-    var i: i64 = 0
-    for seg in path {
-        if i > 0 { p_emit(p, "/") }
-        p_emit(p, seg)
-        i += 1
-    }
-    if !strings.eq_raw(alias, "") {
-        p_emit(p, " as ")
-        p_emit(p, alias)
-    }
-}
-
-let print_link(p: *Printer, kind: ast.LinkKind, target: string) = {
-    p_emit(p, "#link_")
-    match kind {
-    | LinkLibrary   -> p_emit(p, "library")
-    | LinkFramework -> p_emit(p, "framework")
-    | LinkPath      -> p_emit(p, "path")
-    }
-    p_emit(p, "(\"")
-    p_emit(p, target)
-    p_emit(p, "\")")
-}
-
-let print_type_alias(p: *Printer, name: string, tparams: Vec<string>, target: ast.TypeExpr) = {
-    p_emit(p, "type ")
-    p_emit(p, name)
-    print_type_params(p, tparams)
-    p_emit(p, " = ")
-    print_te(p, target)
-}
-
-let print_type_params(p: *Printer, tparams: Vec<string>) = {
-    if len(tparams) > 0 {
-        p_emit(p, "<")
-        var i: i64 = 0
-        for tp in tparams {
-            if i > 0 { p_emit(p, ", ") }
-            p_emit(p, tp)
-            i += 1
-        }
-        p_emit(p, ">")
-    }
-}
-
-let print_struct(p: *Printer, name: string, tparams: Vec<string>, fields: Vec<ast.StructField>) = {
-    p_emit(p, "type ")
-    p_emit(p, name)
-    print_type_params(p, tparams)
-    p_emit(p, " = {")
-    p_newline(p)
-    p_indent_in(p)
-    var i: i64 = 0
-    let align = struct_field_align(fields)
-    for f in fields {
-        p_emit(p, f.name)
-        p_emit(p, ":")
-        var pad: i64 = align - len(f.name)
-        while pad > 0 {
-            p_emit(p, " ")
-            pad -= 1
-        }
-        p_emit(p, " ")
-        print_te(p, f.ty)
-        p_emit(p, ",")
-        p_newline(p)
-        i += 1
-    }
-    p_indent_out(p)
-    p_emit(p, "}")
-}
-
-let struct_field_align(fields: Vec<ast.StructField>): i64 = {
-    var m: i64 = 0
-    for f in fields {
-        let n = len(f.name)
-        if n > m { m = n }
-    }
-    m
-}
-
-let print_c_enum(p: *Printer, name: string, underlying: ast.TypeExpr, variants: Vec<string>) = {
-    p_emit(p, "type ")
-    p_emit(p, name)
-    p_emit(p, ": ")
-    print_te(p, underlying)
-    p_emit(p, " = ")
-    var i: i64 = 0
-    for v in variants {
-        if i > 0 { p_emit(p, " | ") }
-        p_emit(p, v)
-        i += 1
-    }
-}
-
-// --- File driver ---
-
-let print_decl(p: *Printer, d: ast.Decl) = {
-    match d {
-    | DImport(_, path, alias)           -> print_import(p, path, alias)
-    | DStruct(_, n, tps, fs)            -> print_struct(p, n, tps, fs)
-    | DEnum(_, n, tps, vs)              -> print_enum(p, n, tps, vs)
-    | DCEnum(_, n, under, vs)           -> print_c_enum(p, n, under, vs)
-    | DTypeAlias(_, n, tps, target)     -> print_type_alias(p, n, tps, target)
-    | DConst(_, n, te, val)             -> print_const(p, n, te, val)
-    | DFn(_, n, tps, ps, ret, body, at) -> print_fn(p, n, tps, ps, ret, body, at)
-    | DExternal(_, n, sym, ps, ret)     -> print_extern(p, n, sym, ps, ret)
-    | DLink(_, kind, target)            -> print_link(p, kind, target)
-    | DCompileIf(_, arms, defaults)     -> print_compile_if(p, arms, defaults)
-    }
-}
-
-let print_compile_if(p: *Printer, arms: Vec<ast.CompileIfArm>, defaults: Vec<ast.Decl>) = {
-    var i: i64 = 0
-    for arm in arms {
-        p_emit(p, if i == 0 { "#if " } else { "#elif " })
-        print_expr(p, arm.cond)
-        p_newline(p)
-        for d in arm.decls {
-            print_decl(p, d)
-            p_newline(p)
-        }
-        i += 1
-    }
-    if len(defaults) > 0 {
-        p_emit(p, "#else")
-        p_newline(p)
-        for d in defaults {
-            print_decl(p, d)
-            p_newline(p)
-        }
-    }
-    p_emit(p, "#endif")
-}
-
-let print_file(p: *Printer, f: ast.File) = {
-    var prev_span_line: i64 = 0
-    var i: i64 = 0
-    for d in f.decls {
-        let sp = decl_span(d)
-        let first_line = first_emission_line(p, sp.line)
-        if i > 0 {
-            p_newline(p)
-            if first_line > prev_span_line + 1 { p_newline(p) }
-        }
-        p_emit_leading_comments(p, sp.line)
-        print_decl(p, d)
-        if p_emit_trailing_comment(p, sp.line) { }
-        prev_span_line = sp.line
-        p.last_line = sp.line
-        i += 1
-    }
-    // Comments that follow the last declaration in the source
-    // file still need a home; emit them after the last decl so
-    // the round-trip preserves them.
-    if i > 0 { p_newline(p) }
-    while p.cmt_idx < len(p.comments) {
-        let c = p.comments[p.cmt_idx]
-        p_emit(p, c.text)
-        p_newline(p)
-        p.cmt_idx += 1
-    }
-}
-
-// Look-ahead: the line of the first thing we will emit for the
-// next decl. Earlier comments come before the decl, so they push
-// the effective start line back. Used by the blank-line gap rule.
-let first_emission_line(p: *Printer, decl_line: i64): i64 = {
-    if p.cmt_idx < len(p.comments) {
-        let c = p.comments[p.cmt_idx]
-        if c.line < decl_line { return c.line }
-    }
-    decl_line
-}
-
-let decl_span(d: ast.Decl): ast.Span = {
-    match d {
-    | DImport(sp, _, _)
-    | DStruct(sp, _, _, _)
-    | DEnum(sp, _, _, _)
-    | DCEnum(sp, _, _, _)
-    | DTypeAlias(sp, _, _, _)
-    | DConst(sp, _, _, _)
-    | DFn(sp, _, _, _, _, _, _)
-    | DExternal(sp, _, _, _, _)
-    | DLink(sp, _, _)
-    | DCompileIf(sp, _, _) -> sp
-    }
-}
-
-// --- Operators ---
-
-// Binding tightness of a binary operator, matching the parser's layer
-// order (higher binds tighter). Used to decide where the printer must
-// insert parentheses so the re-parsed tree keeps its shape.
-// Range operators print tight, like `0..<n`, not `0 ..< n`. The
-// surrounding-space rule for normal binary operators (`a + b`) does
-// not match how range is written anywhere.
-let is_range_op(op: ast.BinaryOp): bool = {
-    match op { | BOpRange | BOpRangeInclusive -> true | _ -> false }
-}
-
-let binop_prec(op: ast.BinaryOp): i64 = {
-    match op {
-    | BOpRange | BOpRangeInclusive -> 1
-    | BOpOr -> 2
-    | BOpAnd -> 3
-    | BOpBitOr -> 4
-    | BOpBitXor -> 5
-    | BOpBitAnd -> 6
-    | BOpEq | BOpNe | BOpLt | BOpGt | BOpLe | BOpGe -> 7
-    | BOpShl | BOpShr -> 8
-    | BOpAdd | BOpSub -> 9
-    | BOpMul | BOpDiv | BOpMod -> 10
-    }
-}
-
-// Tightness of an expression for parenthesization. Operator-bearing
-// forms report their operator precedence; control-flow forms used in
-// value position report the lowest tightness so they are always
-// parenthesized inside a tighter context; everything else (literals,
-// identifiers, calls, field and index access) binds tightest.
-let expr_prec(e: ast.Expr): i64 = {
-    match e {
-    | EBinary(_, op, _, _) -> binop_prec(op)
-    | EUnary(_, _, _)      -> 11
-    | EAssign(_, _, _, _)  -> 0
-    | EIf(_, _, _, _)      -> 0
-    | EMatch(_, _, _)      -> 0
-    | EClosure(_, _, _, _) -> 0
-    | _                    -> 100
-    }
-}
-
-// Print `e` wrapped in parentheses when its tightness is below
-// `min_prec`, so it keeps its grouping inside a tighter context.
-let print_expr_paren(p: *Printer, e: ast.Expr, min_prec: i64) = {
-    if expr_prec(e) < min_prec {
-        p_emit(p, "(")
-        print_expr(p, e)
-        p_emit(p, ")")
-    } else {
-        print_expr(p, e)
-    }
-}
-
-let unary_op_text(op: ast.UnaryOp): string = {
-    match op {
-    | UOpNeg   -> "-"
-    | UOpNot   -> "!"
-    | UOpDeref -> "*"
-    | UOpAddr  -> "&"
-    }
-}
-
-let binary_op_text(op: ast.BinaryOp): string = {
-    match op {
-    | BOpAdd            -> "+"
-    | BOpSub            -> "-"
-    | BOpMul            -> "*"
-    | BOpDiv            -> "/"
-    | BOpMod            -> "%"
-    | BOpEq             -> "=="
-    | BOpNe             -> "!="
-    | BOpLt             -> "<"
-    | BOpGt             -> ">"
-    | BOpLe             -> "<="
-    | BOpGe             -> ">="
-    | BOpAnd            -> "&&"
-    | BOpOr             -> "||"
-    | BOpBitAnd         -> "&"
-    | BOpBitOr          -> "|"
-    | BOpBitXor         -> "^"
-    | BOpShl            -> "<<"
-    | BOpShr            -> ">>"
-    | BOpRange          -> "..<"
-    | BOpRangeInclusive -> "..="
-    }
-}
-
-let assign_op_text(op: ast.AssignOp): string = {
-    match op {
-    | AOpSet    -> "="
-    | AOpAddSet -> "+="
-    | AOpSubSet -> "-="
-    | AOpMulSet -> "*="
-    | AOpDivSet -> "/="
-    | AOpModSet -> "%="
-    }
-}
-
-// --- Patterns ---
-
-// Print the else branch of an EIf. A nested EIf collapses to `elif`
-// rather than `else if`, since Qoz rejects `else if` (the legacy form).
-let print_else_chain(p: *Printer, e: ast.Expr) = {
-    match e {
-    | EIf(_, c, t, f) -> {
-        p_emit(p, " elif ")
-        print_expr(p, *c)
-        p_emit(p, " ")
-        print_expr(p, *t)
-        print_else_chain(p, *f)
-    }
-    | _ -> {
-        if !is_unit_block(e) {
-            p_emit(p, " else ")
-            print_expr(p, e)
-        }
-    }
-    }
-}
-
-// True when `pat` is a plain binding of `name`, so a named-payload
-// field can print in its short form `{ name }` rather than `{ name: name }`.
-let pat_binds_name(pat: ast.Pattern, name: string): bool = {
-    match pat {
-    | PatBind(_, n) -> strings.eq_raw(n, name)
-    | _             -> false
-    }
-}
-
-let print_pattern(p: *Printer, pat: ast.Pattern) = {
-    match pat {
-    | PatWild(_)             -> p_emit(p, "_")
-    | PatBind(_, n)          -> p_emit(p, n)
-    | PatLitInt(_, t)        -> p_emit(p, t)
-    | PatLitString(_, t)     -> p_emit(p, t)
-    | PatLitBool(_, b)       -> p_emit(p, if b { "true" } else { "false" })
-    | PatVariant(_, path, subs, field_names) -> {
-        var i: i64 = 0
-        for seg in path {
-            if i > 0 { p_emit(p, ".") }
-            p_emit(p, seg)
-            i += 1
-        }
-        if len(field_names) > 0 {
-            // Named-payload pattern: `V { a, b: p }`. A field whose
-            // sub-pattern binds the same name prints as the bare field.
-            p_emit(p, " { ")
-            var j: i64 = 0
-            for fn in field_names {
-                if j > 0 { p_emit(p, ", ") }
-                if j < len(subs) && pat_binds_name(subs[j], fn) {
-                    p_emit(p, fn)
-                } else {
-                    p_emit(p, fn)
-                    p_emit(p, ": ")
-                    if j < len(subs) { print_pattern(p, subs[j]) }
-                }
-                j += 1
+            if is_close_delim(ev.text) { depth = depth_after_close(depth) }
+            emit_indent(out, depth)
+            strings.sb_append(out, ev.text)
+            if is_open_delim(ev.text) { depth += 1 }
+        } else {
+            // Same source line: one space between non-adjacent tokens.
+            if ev.col > prev_end_col {
+                strings.sb_append(out, " ")
             }
-            p_emit(p, " }")
-        } elif len(subs) > 0 {
-            p_emit(p, "(")
-            var j: i64 = 0
-            for s in subs {
-                if j > 0 { p_emit(p, ", ") }
-                print_pattern(p, s)
-                j += 1
-            }
-            p_emit(p, ")")
+            if is_close_delim(ev.text) { depth = depth_after_close(depth) }
+            strings.sb_append(out, ev.text)
+            if is_open_delim(ev.text) { depth += 1 }
         }
-    }
-    | PatTuple(_, subs) -> {
-        p_emit(p, "(")
-        var i: i64 = 0
-        for s in subs {
-            if i > 0 { p_emit(p, ", ") }
-            print_pattern(p, s)
-            i += 1
-        }
-        p_emit(p, ")")
-    }
+        prev_line = ev.end_line
+        prev_end_col = ev.end_col
     }
 }
 
-// --- Statements ---
+// --- helpers -------------------------------------------------------
 
-let print_stmt(p: *Printer, s: ast.Stmt) = {
-    match s {
-    | SLet(_, name, te, val) -> {
-        p_emit(p, "let ")
-        p_emit(p, name)
-        if !is_unit_te(te) {
-            p_emit(p, ": ")
-            print_te(p, te)
-        }
-        p_emit(p, " = ")
-        print_expr(p, val)
-    }
-    | SVar(_, name, te, val) -> {
-        p_emit(p, "var ")
-        p_emit(p, name)
-        if !is_unit_te(te) {
-            p_emit(p, ": ")
-            print_te(p, te)
-        }
-        p_emit(p, " = ")
-        print_expr(p, val)
-    }
-    | SExpr(_, e) -> print_expr(p, e)
-    | SLetTuple(_, names, val, is_var) -> {
-        p_emit(p, if is_var { "var (" } else { "let (" })
-        var i: i64 = 0
-        for n in names {
-            if i > 0 { p_emit(p, ", ") }
-            p_emit(p, n)
-            i += 1
-        }
-        p_emit(p, ") = ")
-        print_expr(p, val)
-    }
-    }
+let is_open_delim(s: string): bool = {
+    if len(s) != 1 { return false }
+    let b = strings.byte_at(s, 0)
+    b == 40 || b == 91 || b == 123 // ( [ {
 }
 
-let is_unit_te(te: ast.TypeExpr): bool = {
-    match te {
-    | TEUnit(_) -> true
-    | _         -> false
-    }
+let is_close_delim(s: string): bool = {
+    if len(s) != 1 { return false }
+    let b = strings.byte_at(s, 0)
+    b == 41 || b == 93 || b == 125 // ) ] }
 }
 
-// --- Expressions ---
-
-// Single-line render of an Expr into a side buffer. Used by the
-// width-aware wrap decision. Multi-line constructs (blocks,
-// matches, multi-arm ifs) are still rendered with newlines; the
-// result is then used only when no newline appears.
-let render_expr_oneline(e: ast.Expr): string = {
-    var sub = make_printer([])
-    print_expr(&sub, e)
-    p_finish(&sub)
+let depth_after_close(d: i64): i64 = {
+    if d > 0 { d - 1 } else { 0 }
 }
 
-let no_newlines(s: string): bool = {
-    let n = len(s)
+let emit_indent(out: *strings.Strbuf, depth: i64) = {
+    let n = depth * INDENT_STEP
     var i: i64 = 0
     while i < n {
-        if strings.byte_at(s, i) == 10 { return false }
+        strings.sb_append(out, " ")
         i += 1
     }
-    true
 }
 
-let print_expr(p: *Printer, e: ast.Expr) = {
-    match e {
-    | EInt(_, t)       -> p_emit(p, t)
-    | EFloat(_, t)     -> p_emit(p, t)
-    | EString(_, t)    -> p_emit(p, t)
-    | EChar(_, t)      -> p_emit(p, t)
-    | EBool(_, b)      -> p_emit(p, if b { "true" } else { "false" })
-    | ENil(_)          -> p_emit(p, "nil")
-    | EIdent(_, n)     -> p_emit(p, n)
-    | EPath(_, segs)   -> {
-        var i: i64 = 0
-        for s in segs {
-            if i > 0 { p_emit(p, ".") }
-            p_emit(p, s)
-            i += 1
-        }
-    }
-    | EUnary(_, op, rhs) -> {
-        p_emit(p, unary_op_text(op))
-        // A prefix operator binds tighter than any binary operator, so a
-        // binary operand must be parenthesized: !(a == b), not !a == b.
-        print_expr_paren(p, *rhs, 11)
-    }
-    | EBinary(_, op, l, r) -> {
-        let prec = binop_prec(op)
-        // Left-associative: the left operand keeps its grouping at the
-        // same precedence, the right operand needs parentheses at the
-        // same precedence so a - (b - c) does not reprint as a - b - c.
-        let pad = !is_range_op(op) // range writes tight: `0..<n`, not `0 ..< n`
-        print_expr_paren(p, *l, prec)
-        if pad { p_emit(p, " ") }
-        p_emit(p, binary_op_text(op))
-        if pad { p_emit(p, " ") }
-        print_expr_paren(p, *r, prec + 1)
-    }
-    | EAssign(_, op, l, r) -> {
-        print_expr(p, *l)
-        p_emit(p, " ")
-        p_emit(p, assign_op_text(op))
-        p_emit(p, " ")
-        print_expr(p, *r)
-    }
-    | ECall(_, callee, tas, args) -> {
-        print_expr(p, *callee)
-        if len(tas) > 0 {
-            p_emit(p, "<")
-            var i: i64 = 0
-            for ta in tas {
-                if i > 0 { p_emit(p, ", ") }
-                print_te(p, ta)
-                i += 1
-            }
-            p_emit(p, ">")
-        }
-        p_emit(p, "(")
-        var i: i64 = 0
-        for a in args {
-            if i > 0 { p_emit(p, ", ") }
-            print_expr(p, a)
-            i += 1
-        }
-        p_emit(p, ")")
-    }
-    | EField(_, base, name) -> {
-        print_expr(p, *base)
-        p_emit(p, ".")
-        p_emit(p, name)
-    }
-    | EIndex(_, base, idx) -> {
-        print_expr(p, *base)
-        p_emit(p, "[")
-        print_expr(p, *idx)
-        p_emit(p, "]")
-    }
-    | ECast(_, v, te) -> {
-        print_expr(p, *v)
-        p_emit(p, " as ")
-        print_te(p, te)
-    }
-    | ETry(_, v) -> {
-        print_expr(p, *v)
-        p_emit(p, "?")
-    }
-    | ETuple(_, elems) -> {
-        p_emit(p, "(")
-        var i: i64 = 0
-        for el in elems {
-            if i > 0 { p_emit(p, ", ") }
-            print_expr(p, el)
-            i += 1
-        }
-        p_emit(p, ")")
-    }
-    | ERecord(_, te, fields) -> print_record(p, te, fields)
-    | EClosure(_, params, ret, body) -> {
-        p_emit(p, "|")
-        var i: i64 = 0
-        for pa in params {
-            if i > 0 { p_emit(p, ", ") }
-            p_emit(p, pa.name)
-            if !is_unit_te(pa.ty) {
-                p_emit(p, ": ")
-                print_te(p, pa.ty)
-            }
-            i += 1
-        }
-        p_emit(p, "|")
-        if !is_unit_te(ret) {
-            p_emit(p, ": ")
-            print_te(p, ret)
-        }
-        p_emit(p, " ")
-        print_expr(p, *body)
-    }
-    | EBlock(_, stmts, tail) -> print_block(p, stmts, *tail)
-    | EIf(_, c, t, f) -> {
-        p_emit(p, "if ")
-        print_expr(p, *c)
-        p_emit(p, " ")
-        print_expr(p, *t)
-        print_else_chain(p, *f)
-    }
-    | EMatch(_, scrut, arms) -> print_match(p, *scrut, arms)
-    | EWhile(_, c, body) -> {
-        p_emit(p, "while ")
-        print_expr(p, *c)
-        p_emit(p, " ")
-        print_expr(p, *body)
-    }
-    | EFor(_, b1, b2, it, body) -> {
-        p_emit(p, "for ")
-        p_emit(p, b1)
-        if !strings.eq_raw(b2, "") {
-            p_emit(p, ", ")
-            p_emit(p, b2)
-        }
-        p_emit(p, " in ")
-        print_expr(p, *it)
-        p_emit(p, " ")
-        print_expr(p, *body)
-    }
-    | EReturn(_, v) -> {
-        p_emit(p, "return")
-        if !is_unit_expr(*v) {
-            p_emit(p, " ")
-            print_expr(p, *v)
-        }
-    }
-    | EDefer(_, v) -> {
-        p_emit(p, "defer ")
-        print_expr(p, *v)
-    }
-    | ESizeOf(_, te) -> {
-        p_emit(p, "size_of(")
-        print_te(p, te)
-        p_emit(p, ")")
-    }
-    | EArrayLit(_, elems, _) -> {
-        p_emit(p, "[")
-        var i: i64 = 0
-        for el in elems {
-            if i > 0 { p_emit(p, ", ") }
-            print_expr(p, el)
-            i += 1
-        }
-        p_emit(p, "]")
-    }
-    | EMapLit(_, keys, values, _) -> {
-        if len(keys) == 0 {
-            p_emit(p, "[:]")
-        } else {
-            p_emit(p, "[")
-            var i: i64 = 0
-            while i < len(keys) {
-                if i > 0 { p_emit(p, ", ") }
-                print_expr(p, keys[i])
-                p_emit(p, ": ")
-                print_expr(p, values[i])
-                i += 1
-            }
-            p_emit(p, "]")
-        }
-    }
-    | ENew(_, inner) -> {
-        p_emit(p, "new_clone(")
-        print_expr(p, *inner)
-        p_emit(p, ")")
-    }
-    | ENewType(_, t) -> {
-        p_emit(p, "new(")
-        print_te(p, t)
-        p_emit(p, ")")
-    }
-    | ELoadString(_, path, _) -> {
-        // Reprint the directive form, never the inlined file body.
-        p_emit(p, "#load_string(\"")
-        p_emit(p, path)
-        p_emit(p, "\")")
-    }
-    | EParen(_, inner) -> {
-        p_emit(p, "(")
-        print_expr(p, *inner)
-        p_emit(p, ")")
-    }
-    }
-}
-
-let is_unit_expr(e: ast.Expr): bool = {
-    match e {
-    | ENil(_) -> true
-    | EBlock(_, stmts, tail) -> {
-        if len(stmts) > 0 { return false }
-        is_unit_block_tail(*tail)
-    }
-    | _ -> false
-    }
-}
-
-let is_unit_block_tail(e: ast.Expr): bool = {
-    match e {
-    | EBlock(_, stmts, tail) -> {
-        if len(stmts) > 0 { return false }
-        is_unit_block_tail(*tail)
-    }
-    | _ -> false
-    }
-}
-
-let is_unit_block(e: ast.Expr): bool = {
-    match e {
-    | ENil(_) -> true
-    | _       -> is_unit_expr(e)
-    }
-}
-
-let print_block(p: *Printer, stmts: Vec<ast.Stmt>, tail: ast.Expr) = {
-    if try_print_interp_block(p, stmts, tail) { return }
-    if len(stmts) == 0 && is_unit_expr(tail) {
-        p_emit(p, "{ }")
-        return
-    }
-    p_emit(p, "{")
-    p_newline(p)
-    p_indent_in(p)
-    var prev_end: i64 = 0
-    for s in stmts {
-        let sp = stmt_span(s)
-        let first_line = first_emission_line(p, sp.line)
-        if prev_end > 0 && first_line > prev_end + 1 { p_newline(p) }
-        p_emit_leading_comments(p, sp.line)
-        print_stmt(p, s)
-        if !p_emit_trailing_comment(p, sp.line) { }
-        p_newline(p)
-        prev_end = stmt_end_line(s)
-    }
-    if !is_unit_expr(tail) {
-        let sp = ast.span_of_expr(tail)
-        let first_line = first_emission_line(p, sp.line)
-        if prev_end > 0 && first_line > prev_end + 1 { p_newline(p) }
-        p_emit_leading_comments(p, sp.line)
-        print_expr(p, tail)
-        if !p_emit_trailing_comment(p, sp.line) { }
-        p_newline(p)
-    }
-    p_indent_out(p)
-    p_emit(p, "}")
-}
-
-// Last source line occupied by a statement. Falls back to the
-// stmt's start line when the inner expression has no end-line
-// info (i.e. is single-line).
-let stmt_end_line(s: ast.Stmt): i64 = {
-    match s {
-    | SLet(sp, _, _, val)
-    | SVar(sp, _, _, val)
-    | SLetTuple(sp, _, val, _) -> {
-        let ve = expr_end_line(val)
-        if ve > sp.line { ve } else { sp.line }
-    }
-    | SExpr(_, e) -> {
-        let sp = ast.span_of_expr(e)
-        let ve = expr_end_line(e)
-        if ve > sp.line { ve } else { sp.line }
-    }
-    }
-}
-
-let expr_end_line(e: ast.Expr): i64 = {
-    let sp = ast.span_of_expr(e)
-    if sp.end_line > sp.line { sp.end_line } else { sp.line }
-}
-
-let stmt_span(s: ast.Stmt): ast.Span = {
-    match s {
-    | SLet(sp, _, _, _)
-    | SVar(sp, _, _, _)
-    | SLetTuple(sp, _, _, _) -> sp
-    | SExpr(_, e)         -> ast.span_of_expr(e)
-    }
-}
-
-// Variant of leading-comment emission used inside a block body.
-// Preserves blank lines between source-adjacent stmts by checking
-// the gap against the previous stmt's line, and ensures comments
-// appear on their own indented lines.
-let p_emit_leading_comments_in_block(p: *Printer, next_line: i64, prev_line: i64) = {
-    while p.cmt_idx < len(p.comments) {
-        let c = p.comments[p.cmt_idx]
-        if c.line >= next_line { return }
-        if prev_line > 0 && c.line > prev_line + 1 && p.col == 0 { p_newline(p) }
-        p_emit(p, c.text)
-        p_newline(p)
-        p.cmt_idx += 1
-    }
-}
-
-// Detect the parser's interpolation-block desugar
-// `{ let sb = __qoz_interp_init(); ...push...; __qoz_interp_finish(sb) }`
-// and reconstruct the original `` `...` `` template. Returns true
-// when the block matches the pattern. False leaves the caller to
-// print the block as a regular expression.
-let try_print_interp_block(p: *Printer, stmts: Vec<ast.Stmt>, tail: ast.Expr): bool = {
-    if len(stmts) < 1 { return false }
-    var sb_name = ""
-    match stmts[0] {
-    | SLet(_, n, _, val) -> {
-        if !is_builtin_call(val, "__qoz_interp_init") { return false }
-        sb_name = n
-    }
-    | _ -> return false
-    }
-    if !is_builtin_call_on(tail, "__qoz_interp_finish", sb_name) { return false }
-    var parts: Vec<InterpPart> = []
-    var i: i64 = 1
-    while i < len(stmts) {
-        match stmts[i] {
-        | SExpr(_, e) -> {
-            match extract_push_arg(e, sb_name) {
-            | Some(arg) -> {
-                match arg {
-                | EString(_, raw) -> vec.push(&parts, InterpPart { lit: true, lit_text: strip_string_quotes(raw), expr: arg })
-                | _               -> vec.push(&parts, InterpPart { lit: false, lit_text: "", expr: arg })
-                }
-            }
-            | None -> return false
-            }
-        }
-        | _ -> return false
-        }
-        i += 1
-    }
-    p_emit(p, "`")
-    for part in parts {
-        if part.lit {
-            p_emit(p, part.lit_text)
-        } else {
-            p_emit(p, "{")
-            print_expr(p, part.expr)
-            p_emit(p, "}")
-        }
-    }
-    p_emit(p, "`")
-    true
-}
-
-let is_builtin_call(e: ast.Expr, name: string): bool = {
-    match e {
-    | ECall(_, callee, _, _) -> {
-        match *callee {
-        | EIdent(_, n) -> strings.eq_raw(n, name)
-        | _            -> false
-        }
-    }
-    | _ -> false
-    }
-}
-
-let is_builtin_call_on(e: ast.Expr, name: string, sb: string): bool = {
-    match e {
-    | ECall(_, callee, _, args) -> {
-        match *callee {
-        | EIdent(_, n) -> {
-            if !strings.eq_raw(n, name) { return false }
-            if len(args) < 1 { return false }
-            match args[0] {
-            | EIdent(_, sbn) -> strings.eq_raw(sbn, sb)
-            | _              -> false
-            }
-        }
-        | _ -> false
-        }
-    }
-    | _ -> false
-    }
-}
-
-// Returns the second argument of a `__qoz_interp_push_*(sb, x)` call
-// when the call targets `sb_name`. None otherwise.
-let extract_push_arg(e: ast.Expr, sb_name: string): Option<ast.Expr> = {
-    match e {
-    | ECall(_, callee, _, args) -> {
-        match *callee {
-        | EIdent(_, n) -> {
-            if !strings.has_prefix(n, "__qoz_interp_push") { return None }
-            if len(args) != 2 { return None }
-            match args[0] {
-            | EIdent(_, sbn) -> {
-                if !strings.eq_raw(sbn, sb_name) { return None }
-                Some(args[1])
-            }
-            | _ -> None
-            }
-        }
-        | _ -> None
-        }
-    }
-    | _ -> None
-    }
-}
-
-// `EString` arrives carrying its surrounding `"..."` quotes
-// because the parser captures the raw source slice. Drop them so
-// the interpolation chunk can be emitted between backticks.
-let strip_string_quotes(s: string): string = {
-    let n = len(s)
-    if n >= 2 && strings.byte_at(s, 0) == 34 && strings.byte_at(s, n - 1) == 34 {
-        return strings.slice(s, 1, n - 1)
-    }
-    s
-}
-
-let print_match(p: *Printer, scrut: ast.Expr, arms: Vec<ast.MatchArm>) = {
-    p_emit(p, "match ")
-    print_expr(p, scrut)
-    p_emit(p, " {")
-    p_newline(p)
-    for a in arms {
-        p_emit(p, "| ")
-        print_pattern(p, a.pat)
-        if a.has_guard {
-            p_emit(p, " if ")
-            print_expr(p, a.guard)
-        }
-        p_emit(p, " -> ")
-        print_expr(p, a.body)
-        p_newline(p)
-    }
-    p_emit(p, "}")
-}
-
-let print_record(p: *Printer, te: ast.TypeExpr, fields: Vec<ast.RecordFieldLit>) = {
-    print_te(p, te)
-    p_emit(p, " {")
-    if len(fields) == 0 { p_emit(p, "}"); return }
-    let single_line = record_inline(te, fields)
-    if single_line {
-        p_emit(p, " ")
-        var i: i64 = 0
-        for f in fields {
-            if i > 0 { p_emit(p, ", ") }
-            p_emit(p, f.name)
-            p_emit(p, ": ")
-            print_expr(p, f.value)
-            i += 1
-        }
-        p_emit(p, " }")
-        return
-    }
-    p_newline(p)
-    p_indent_in(p)
-    let align = record_field_align(fields)
-    for f in fields {
-        p_emit(p, f.name)
-        p_emit(p, ":")
-        var pad: i64 = align - len(f.name)
-        while pad > 0 {
-            p_emit(p, " ")
-            pad -= 1
-        }
-        p_emit(p, " ")
-        print_expr(p, f.value)
-        p_emit(p, ",")
-        p_newline(p)
-    }
-    p_indent_out(p)
-    p_emit(p, "}")
-}
-
-let record_inline(te: ast.TypeExpr, fields: Vec<ast.RecordFieldLit>): bool = {
-    var rendered_len: i64 = 0
-    for f in fields {
-        let v_str = render_expr_oneline(f.value)
-        if !no_newlines(v_str) { return false }
-        rendered_len += len(f.name) + 2 + len(v_str) + 2
-    }
-    rendered_len < 60
-}
-
-let record_field_align(fields: Vec<ast.RecordFieldLit>): i64 = {
-    var m: i64 = 0
-    for f in fields {
-        let n = len(f.name)
-        if n > m { m = n }
-    }
-    m
-}
-
-let print_extern(p: *Printer, name: string, sym: string, params: Vec<ast.FnParam>, ret: ast.TypeExpr) = {
-    p_emit(p, "external(\"")
-    p_emit(p, sym)
-    p_emit(p, "\") ")
-    p_emit(p, name)
-    p_emit(p, "(")
+let count_newlines(s: string): i64 = {
+    var n: i64 = 0
     var i: i64 = 0
-    for pa in params {
-        if i > 0 { p_emit(p, ", ") }
-        p_emit(p, pa.name)
-        p_emit(p, ": ")
-        print_te(p, pa.ty)
+    while i < len(s) {
+        if strings.byte_at(s, i) == 10 { n += 1 }
         i += 1
     }
-    p_emit(p, "): ")
-    print_te(p, ret)
+    n
 }
 
-let print_const(p: *Printer, name: string, te: ast.TypeExpr, val: ast.Expr) = {
-    p_emit(p, "let ")
-    p_emit(p, name)
-    if !is_unit_te(te) {
-        p_emit(p, ": ")
-        print_te(p, te)
-    }
-    p_emit(p, " = ")
-    print_expr(p, val)
-}
-
-let print_fn(p: *Printer, name: string, tparams: Vec<string>, params: Vec<ast.FnParam>, ret: ast.TypeExpr, body: ast.Expr, attr: string) = {
-    if !strings.eq_raw(attr, "") {
-        // A function's only attribute is the operator symbol from
-        // @operator("<sym>"); see ast.DFn. Render it back in that form.
-        p_emit(p, `@operator("{attr}")`)
-        p_newline(p)
-    }
-    p_emit(p, "let ")
-    p_emit(p, name)
-    print_type_params(p, tparams)
-    p_emit(p, "(")
+let len_after_last_newline(s: string): i64 = {
+    var last_nl: i64 = 0 - 1
     var i: i64 = 0
-    for pa in params {
-        if i > 0 { p_emit(p, ", ") }
-        p_emit(p, pa.name)
-        p_emit(p, ": ")
-        print_te(p, pa.ty)
+    while i < len(s) {
+        if strings.byte_at(s, i) == 10 { last_nl = i }
         i += 1
     }
-    p_emit(p, ")")
-    if !is_unit_te(ret) {
-        p_emit(p, ": ")
-        print_te(p, ret)
-    }
-    p_emit(p, " = ")
-    print_expr(p, body)
+    if last_nl < 0 { len(s) } else { len(s) - last_nl - 1 }
 }
 
-let print_enum(p: *Printer, name: string, tparams: Vec<string>, variants: Vec<ast.VariantDecl>) = {
-    p_emit(p, "type ")
-    p_emit(p, name)
-    print_type_params(p, tparams)
-    p_emit(p, " =")
-    p_newline(p)
-    p_indent_in(p)
-    var i: i64 = 0
-    for v in variants {
-        p_emit(p, "| ")
-        p_emit(p, v.name)
-        match v.kind {
-        | VPKNone -> { }
-        | VPKPositional -> {
-            p_emit(p, "(")
-            var j: i64 = 0
-            for pe in v.pos {
-                if j > 0 { p_emit(p, ", ") }
-                print_te(p, pe)
-                j += 1
-            }
-            p_emit(p, ")")
-        }
-        | VPKNamed -> {
-            p_emit(p, " { ")
-            var j: i64 = 0
-            for sf in v.named {
-                if j > 0 { p_emit(p, ", ") }
-                p_emit(p, sf.name)
-                p_emit(p, ": ")
-                print_te(p, sf.ty)
-                j += 1
-            }
-            p_emit(p, " }")
-        }
-        }
-        if i + 1 < len(variants) { p_newline(p) }
-        i += 1
-    }
-    p_indent_out(p)
+let ends_with_byte(out: *strings.Strbuf, b: i64): bool = {
+    let n = strings.sb_len(out)
+    if n == 0 { return false }
+    // Strbuf has a raw byte buffer; peek the last byte via the helper
+    // pattern used elsewhere in this module: slice a one-byte tail.
+    let tail = strings.sb_slice_copy(out, n - 1, n)
+    if len(tail) == 0 { return false }
+    strings.byte_at(tail, 0) == b
 }

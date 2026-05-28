@@ -953,6 +953,16 @@ let path_basename(path: string): string = {
     strings.slice(path, i + 1, n)
 }
 
+// Directory component. `a/b/c` returns `a/b`. A path with no
+// separator returns the empty string.
+let path_dirname(path: string): string = {
+    let n = len(path)
+    var i: i64 = n - 1
+    while i >= 0 && strings.byte_at(path, i) != 47 { i -= 1 }
+    if i < 0 { return "" }
+    strings.slice(path, 0, i)
+}
+
 // Map an input path to a `(entry_file, c_output_path)` pair. The
 // entry file is what load_all is seeded with. The C output path is
 // where the emitted program is written. For a directory, the entry
@@ -960,6 +970,25 @@ let path_basename(path: string): string = {
 // the package-file enumeration) and the C output is placed alongside
 // the directory using the directory's basename.
 type EntryPaths = { entries: Vec<string>, primary: string, c_path: string }
+
+// Append every sibling .qoz file in the primary's directory to
+// the entry list, in addition to the primary itself. Used by the
+// LSP-facing `check` and `expected-at` commands so a single-file
+// entry resolves cross-file references inside its package.
+let expand_entry_with_siblings(paths: EntryPaths): EntryPaths = {
+    if len(paths.entries) != 1 { return paths }
+    let primary = paths.primary
+    if !strings.has_suffix(primary, ".qoz") { return paths }
+    let dir = path_dirname(primary)
+    if strings.eq_raw(dir, "") { return paths }
+    let siblings = list_package_files(dir)
+    var expanded: Vec<string> = []
+    vec.push(&expanded, primary)
+    for sib in siblings {
+        if !strings.eq_raw(sib, primary) { vec.push(&expanded, sib) }
+    }
+    EntryPaths { entries: expanded, primary: primary, c_path: paths.c_path }
+}
 
 let resolve_entry_paths(path: string): EntryPaths = {
     if strings.has_suffix(path, ".qoz") {
@@ -1198,15 +1227,16 @@ let cmd_fmt(path: string, from_stdin: bool) = {
             os.exit(1)
         }
     }
+    // Parse first to surface syntactic errors. The token-driven
+    // formatter does not consult the AST, but a malformed source
+    // should not be silently reformatted.
     let tres = tokenize.run_with_comments(src)
     let pres = parse.run(tres.tokens, path)
     if len(pres.errors) > 0 {
         for e in pres.errors { fmt.println(`qoz fmt: {e}`) }
         os.exit(1)
     }
-    var p = format.make_printer(tres.comments)
-    format.print_file(&p, pres.file)
-    let out = format.p_finish(&p)
+    let out = format.format_source(src)
     if from_stdin {
         fmt.print(out)
     } else {
@@ -1302,12 +1332,14 @@ let cmd_run(path: string, qoz_root: string) = {
 // Used by the LSP to drive type-directed completion of bare
 // variant names. Line and col are 1-indexed to match Qoz spans.
 let cmd_expected_at(path: string, qoz_root: string, line: i64, col: i64, from_stdin: bool) = {
-    let paths = resolve_entry_paths(path)
+    // Sibling expansion: see cmd_check.
+    let paths = expand_entry_with_siblings(resolve_entry_paths(path))
     let ctx = make_compile_ctx(qoz_root)
     var overrides: Map<string, string> = [:]
     if from_stdin {
+        // Override the primary's content only. Siblings come from disk.
         let buffer = io.read_all_stdin()
-        for ep in paths.entries { map.set(&overrides, ep, buffer) }
+        map.set(&overrides, paths.primary, buffer)
     }
     let loaded = load_all_entries(paths.entries, paths.primary, qoz_root, ctx, &overrides)
     let file = loaded.file
@@ -1356,12 +1388,18 @@ let enum_short_name(renamed: string, home: string): string = {
 }
 
 let cmd_check(path: string, qoz_root: string, from_stdin: bool) = {
-    let paths = resolve_entry_paths(path)
+    // `qoz check` is the LSP-facing command. A single-file entry is
+    // expanded with every sibling .qoz in the same directory, so
+    // cross-file references inside the package resolve without the
+    // caller having to enumerate them. Build, run, and emit keep
+    // single-file semantics for the explicit entry.
+    let paths = expand_entry_with_siblings(resolve_entry_paths(path))
     let ctx = make_compile_ctx(qoz_root)
     var overrides: Map<string, string> = [:]
     if from_stdin {
+        // Override the primary's content only. Siblings come from disk.
         let buffer = io.read_all_stdin()
-        for ep in paths.entries { map.set(&overrides, ep, buffer) }
+        map.set(&overrides, paths.primary, buffer)
     }
     let loaded = load_all_entries(paths.entries, paths.primary, qoz_root, ctx, &overrides)
     for msg in loaded.errors { fmt.println(msg) }

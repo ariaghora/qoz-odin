@@ -69,6 +69,13 @@ let index<T>(v: *Vec<T>, i: i64): T = {
     v.data[i]
 }
 
+/// Indexed assignment. `v[i] = x` lowers to this call.
+@operator("[]=")
+let set<T>(v: *Vec<T>, i: i64, x: T) = {
+    if i < 0 || i >= v.len { bounds_die("set", i, v.len) }
+    v.data[i] = x
+}
+
 /// `len(v)` returns the number of elements currently stored.
 @operator("len")
 let len<T>(v: *Vec<T>): i64 = v.len

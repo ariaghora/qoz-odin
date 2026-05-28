@@ -1,0 +1,301 @@
+// vendor/curl: libcurl binding and HTTP convenience surface.
+//
+// Static libcurl.a sits next to this file together with the
+// OpenSSL and zlib archives it links into. The header bundle in
+// `include/curl/` is for the shim's compile; user code only
+// consumes the Qoz API.
+//
+// The variadic `curl_easy_setopt` is reached through typed shim
+// functions appended to libcurl.a (`shim.c`). Each option family
+// (string, long, pointer, off_t) has its own setter.
+//
+// Two layers in this package:
+//
+// - The raw binding: `easy_init`, `easy_perform`, `setopt_*`,
+//   `slist_append`, plus `CURLOPT_*` and `CURLE_*` constants. Use
+//   when you need an option that the convenience surface does not
+//   expose.
+//
+// - The HTTP convenience surface: `get(url, headers)`,
+//   `post(url, body, headers)`, `request(method, url, body,
+//   headers, timeout_ms)`. Returns `Result<Response, string>`.
+//
+// HTTP error statuses (4xx/5xx) come back as `Ok(Response)` with
+// the status field set. Only transport-level failures (DNS, TLS,
+// timeout, connect) yield `Err`.
+//
+// Quick start.
+//
+//     import vendor/curl
+//
+//     let main() = {
+//         let headers: Vec<curl.Header> = []
+//         match curl.get("https://httpbin.org/get", headers) {
+//         | Ok(r)  -> fmt.println(`status={r.status} body_len={len(r.body)}`)
+//         | Err(e) -> fmt.println(`network error: {e}`)
+//         }
+//     }
+//
+// Calling an LLM endpoint. The API key reads from the environment
+// at runtime; do not check secrets into source.
+//
+//     import vendor/curl
+//     import os
+//
+//     let main() = {
+//         let key = os.getenv("OPENAI_API_KEY")
+//         var headers: Vec<curl.Header> = []
+//         vec.push(&headers, curl.header("Authorization", `Bearer {key}`))
+//         vec.push(&headers, curl.header("Content-Type", "application/json"))
+//         let body = `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}`
+//         match curl.post("https://api.openai.com/v1/chat/completions", body, headers) {
+//         | Ok(r)  -> fmt.println(r.body)
+//         | Err(e) -> fmt.println(`network error: {e}`)
+//         }
+//     }
+//
+// Reaching for the raw binding. The convenience surface exposes
+// timeouts, headers, method, and body. Anything else (cookies,
+// proxies, alternate TLS verification, custom write callback)
+// goes through the raw `easy_*` functions and `setopt_*` setters.
+
+import strings
+import vec
+
+#link_path("vendor/curl")
+#link_library("curl")
+#link_library("ssl")
+#link_library("crypto")
+#link_library("z")
+
+#if target_os == "darwin" {
+    #link_framework("CoreFoundation")
+    #link_framework("SystemConfiguration")
+    #link_framework("Security")
+}
+
+// Opaque CURL handle. Treated as a raw pointer; users only pass
+// it back into curl functions.
+type Handle = *void
+
+// Opaque header list. Built with `slist_append`, freed with
+// `slist_free_all` once the transfer is done.
+type Slist = *void
+
+// Opaque response buffer owned by the C side. Pass to `setopt_ptr`
+// with `CURLOPT_WRITEDATA`, then read out with `buf_data` /
+// `buf_len`, and free with `buf_free`.
+type Buf = *void
+
+// --- CURLcode (error) constants -----------------------------------
+
+let CURLE_OK: i32                            = 0
+let CURLE_UNSUPPORTED_PROTOCOL: i32          = 1
+let CURLE_FAILED_INIT: i32                   = 2
+let CURLE_URL_MALFORMAT: i32                 = 3
+let CURLE_COULDNT_RESOLVE_HOST: i32          = 6
+let CURLE_COULDNT_CONNECT: i32               = 7
+let CURLE_OPERATION_TIMEDOUT: i32            = 28
+let CURLE_SSL_CONNECT_ERROR: i32             = 35
+let CURLE_PEER_FAILED_VERIFICATION: i32      = 60
+let CURLE_GOT_NOTHING: i32                   = 52
+let CURLE_SEND_ERROR: i32                    = 55
+let CURLE_RECV_ERROR: i32                    = 56
+
+// --- CURLoption constants -----------------------------------------
+// Subset used by the high-level http module. Values match
+// curl/curl.h. Option family is encoded in the value range:
+// 10000+ -> string/pointer, plain int -> long, 30000+ -> off_t.
+
+let CURLOPT_URL: i32                = 10002
+let CURLOPT_POST: i32               = 47
+let CURLOPT_POSTFIELDS: i32         = 10015
+let CURLOPT_POSTFIELDSIZE_LARGE: i32 = 30120
+let CURLOPT_CUSTOMREQUEST: i32      = 10036
+let CURLOPT_HTTPHEADER: i32         = 10023
+let CURLOPT_FOLLOWLOCATION: i32     = 52
+let CURLOPT_MAXREDIRS: i32          = 68
+let CURLOPT_TIMEOUT_MS: i32         = 155
+let CURLOPT_CONNECTTIMEOUT_MS: i32  = 156
+let CURLOPT_WRITEFUNCTION: i32      = 20011
+let CURLOPT_WRITEDATA: i32          = 10001
+let CURLOPT_USERAGENT: i32          = 10018
+let CURLOPT_NOPROGRESS: i32         = 43
+let CURLOPT_NOSIGNAL: i32           = 99
+let CURLOPT_SSL_VERIFYPEER: i32     = 64
+let CURLOPT_SSL_VERIFYHOST: i32     = 81
+let CURLOPT_CAINFO: i32             = 10065
+let CURLOPT_ACCEPT_ENCODING: i32    = 10102
+
+// --- CURLINFO constants -------------------------------------------
+
+let CURLINFO_RESPONSE_CODE: i32     = 2097154
+let CURLINFO_EFFECTIVE_URL: i32     = 1048577
+
+// --- Externals ----------------------------------------------------
+
+@link_name("curl_easy_init")
+external let easy_init(): Handle
+
+@link_name("curl_easy_cleanup")
+external let easy_cleanup(h: Handle)
+
+@link_name("curl_easy_perform")
+external let easy_perform(h: Handle): i32
+
+@link_name("curl_easy_strerror")
+external let easy_strerror(code: i32): cstring
+
+@link_name("curl_slist_append")
+external let slist_append(list: Slist, s: cstring): Slist
+
+@link_name("curl_slist_free_all")
+external let slist_free_all(list: Slist)
+
+@link_name("qoz_curl_setopt_str")
+external let setopt_str(h: Handle, opt: i32, value: cstring): i32
+
+@link_name("qoz_curl_setopt_long")
+external let setopt_long(h: Handle, opt: i32, value: i64): i32
+
+@link_name("qoz_curl_setopt_ptr")
+external let setopt_ptr(h: Handle, opt: i32, value: *void): i32
+
+@link_name("qoz_curl_setopt_off")
+external let setopt_off(h: Handle, opt: i32, value: i64): i32
+
+@link_name("qoz_curl_setopt_writecb_default")
+external let setopt_writecb_default(h: Handle): i32
+
+@link_name("qoz_curl_getinfo_long")
+external let getinfo_long(h: Handle, info: i32, out: *i64): i32
+
+@link_name("qoz_curl_buf_new")
+external let buf_new(): Buf
+
+@link_name("qoz_curl_buf_data")
+external let buf_data(b: Buf): cstring
+
+@link_name("qoz_curl_buf_len")
+external let buf_len(b: Buf): i64
+
+@link_name("qoz_curl_buf_free")
+external let buf_free(b: Buf)
+
+// --- HTTP convenience surface -------------------------------------
+
+/// HTTP response. `body` holds the full response bytes as a Qoz
+/// string. `status` is the HTTP status code (e.g. 200, 404, 500).
+type Response = {
+    status: i32,
+    body:   string,
+}
+
+/// One request header. Both `name` and `value` are sent as-is.
+type Header = {
+    name:  string,
+    value: string,
+}
+
+let header(name: string, value: string): Header = Header { name: name, value: value }
+
+/// GET `url`. `headers` may be empty. Default timeout is 30
+/// seconds; use `request` for a different deadline.
+///
+/// Example:
+///
+///     let headers: Vec<curl.Header> = []
+///     match curl.get("https://api.github.com/repos/anthropics/anthropic-sdk-typescript", headers) {
+///     | Ok(r)  -> fmt.println(r.body)
+///     | Err(e) -> fmt.println(e)
+///     }
+let get(url: string, headers: Vec<Header>): Result<Response, string> = {
+    request("GET", url, "", headers, 30_000)
+}
+
+/// POST `body` to `url` with `headers`. Set `Content-Type` in the
+/// header list to control the request encoding. Default timeout is
+/// 30 seconds.
+///
+/// Example: an Anthropic Messages call.
+///
+///     let key = os.getenv("ANTHROPIC_API_KEY")
+///     var headers: Vec<curl.Header> = []
+///     vec.push(&headers, curl.header("x-api-key", key))
+///     vec.push(&headers, curl.header("anthropic-version", "2023-06-01"))
+///     vec.push(&headers, curl.header("content-type", "application/json"))
+///     let body = `{"model":"claude-opus-4-7","max_tokens":256,"messages":[{"role":"user","content":"hi"}]}`
+///     match curl.post("https://api.anthropic.com/v1/messages", body, headers) {
+///     | Ok(r)  -> fmt.println(r.body)
+///     | Err(e) -> fmt.println(e)
+///     }
+let post(url: string, body: string, headers: Vec<Header>): Result<Response, string> = {
+    request("POST", url, body, headers, 30_000)
+}
+
+/// Generic request. `method` is the uppercase HTTP verb (`"GET"`,
+/// `"POST"`, `"PUT"`, `"DELETE"`, `"PATCH"`, ...). `timeout_ms` is
+/// the total transfer deadline in milliseconds (including the TLS
+/// handshake and the body transfer).
+///
+/// Example: PUT with a 10 second timeout.
+///
+///     var headers: Vec<curl.Header> = []
+///     vec.push(&headers, curl.header("content-type", "application/json"))
+///     let body = `{"value":42}`
+///     match curl.request("PUT", "https://example.test/api/item/7", body, headers, 10_000) {
+///     | Ok(r)  -> fmt.println(`status={r.status}`)
+///     | Err(e) -> fmt.println(e)
+///     }
+let request(method: string, url: string, body: string, headers: Vec<Header>, timeout_ms: i64): Result<Response, string> = {
+    let h = easy_init()
+    if h == (nil as *void) { return Err("curl_easy_init failed") }
+    defer easy_cleanup(h)
+
+    let _ = setopt_str(h, CURLOPT_URL, strings.to_cstring(url))
+    let _ = setopt_long(h, CURLOPT_FOLLOWLOCATION, 1)
+    let _ = setopt_long(h, CURLOPT_MAXREDIRS, 16)
+    let _ = setopt_long(h, CURLOPT_TIMEOUT_MS, timeout_ms)
+    let _ = setopt_long(h, CURLOPT_CONNECTTIMEOUT_MS, 10_000)
+    let _ = setopt_long(h, CURLOPT_NOPROGRESS, 1)
+    let _ = setopt_long(h, CURLOPT_NOSIGNAL, 1)
+    let _ = setopt_str(h, CURLOPT_USERAGENT, "qoz-curl/0.1")
+    let _ = setopt_str(h, CURLOPT_ACCEPT_ENCODING, "")
+
+    if strings.eq_raw(method, "POST") {
+        let _ = setopt_long(h, CURLOPT_POST, 1)
+        let _ = setopt_str(h, CURLOPT_POSTFIELDS, strings.to_cstring(body))
+        let _ = setopt_off(h, CURLOPT_POSTFIELDSIZE_LARGE, len(body))
+    } elif !strings.eq_raw(method, "GET") {
+        let _ = setopt_str(h, CURLOPT_CUSTOMREQUEST, strings.to_cstring(method))
+    }
+
+    var hlist: Slist = nil as *void
+    for hd in headers {
+        let line = strings.cat(strings.cat(hd.name, ": "), hd.value)
+        hlist = slist_append(hlist, strings.to_cstring(line))
+    }
+    if hlist != (nil as *void) {
+        let _ = setopt_ptr(h, CURLOPT_HTTPHEADER, hlist)
+    }
+    defer slist_free_all(hlist)
+
+    let b = buf_new()
+    if b == (nil as *void) { return Err("response buffer allocation failed") }
+    defer buf_free(b)
+
+    let _ = setopt_writecb_default(h)
+    let _ = setopt_ptr(h, CURLOPT_WRITEDATA, b)
+
+    let rc = easy_perform(h)
+    if rc != CURLE_OK {
+        return Err(strings.from_cstring(easy_strerror(rc)))
+    }
+
+    var status: i64 = 0
+    let _ = getinfo_long(h, CURLINFO_RESPONSE_CODE, &status)
+    let body_bytes = buf_data(b)
+    let body_len   = buf_len(b)
+    let body_str   = strings.from_cstring_len(body_bytes, body_len)
+    Ok(Response { status: status as i32, body: body_str })
+}

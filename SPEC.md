@@ -517,7 +517,16 @@ The following names are reserved for container primitives. Each dispatches on th
 
 The receiver is always passed by pointer so the operation can mutate in place. The compiler takes the address at the call site when a value is supplied. Explicit `&` is also accepted and lowers identically.
 
-Indexing uses the `[]` operator, registered on `Vec` and `Map` in the standard library: `xs[i]` reads the `i`-th element, `m[k]` reads the value at `k` (or returns the zero value, as defined by the registered indexing operator), and `m[k] = v` writes through `[]=`.
+Indexing uses the `[]` and `[]=` operators. The compiler dispatches on the receiver's container type to the function registered for that type with `@operator("[]")` or `@operator("[]=")`. The receiver passes by pointer: a value receiver has its address taken at the call site, a pointer receiver passes through.
+
+The standard library registers:
+
+- `@operator("[]")` and `@operator("[]=")` on `Vec`, so `xs[i]` and `xs[i] = v` both work.
+- `@operator("[]=")` on `Map`, so `m[k] = v` writes through the registered setter.
+
+`Map` deliberately does not register `@operator("[]")`. A map lookup may miss, and the surface for fallible lookup is `map.get(&m, k): Option<V>`. A panic-on-miss `[]` read would compete with that interface, so the standard library omits it.
+
+The same receiver form applies to a pointer: a parameter declared `xs: *Vec<T>` supports `xs[i]` and `xs[i] = v` directly, with no manual deref or `.data[i]` access.
 
 `println` is a reserved name and writes a string followed by a newline to stdout. It is provided by `std/fmt` and accessible without an import.
 
@@ -620,13 +629,15 @@ Indexing and indexed assignment follow the same pattern:
 
 ```
 @operator("[]")
-let vec_index<T>(v: *Vec<T>, i: i64): T = v.data[i]
+let index<T>(v: *Vec<T>, i: i64): T = v.data[i]
 
 @operator("[]=")
-let map_set<K, V>(m: *Map<K, V>, key: K, value: V) = map_insert(m, key, value)
+let set<T>(v: *Vec<T>, i: i64, x: T) = { v.data[i] = x }
 ```
 
 After registration, the user writes `a + b`, `a == b`, `-a`, `hash(a)`, `v[i]`, or `m[k] = v` and the compiler lowers each to the appropriate call.
+
+The implementation of an `[]` overload may read the container's internal element buffer through a field access (`v.data[i]` above). That subscript inside the overload body stays as a raw pointer subscript at C lowering; the dispatch only fires when the indexed base is not a field access on a pointer-typed field. This prevents the overload from recursing into itself when accessing the underlying buffer.
 
 ### Recognized Operators
 

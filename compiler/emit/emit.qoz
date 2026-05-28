@@ -46,6 +46,8 @@ type Emitter = {
     generic_fn_decls:  Map<string, ast.Decl>,    // (possibly package-prefixed) name -> generic fn declaration
     packages:          Map<string, bool>,    // known package names (from import resolution)
     consts:            Map<string, bool>,    // package-prefixed const names
+    type_aliases:      Map<string, ast.TypeExpr>, // package-prefixed alias name -> target TypeExpr (non-generic only)
+    const_types:       Map<string, ast.TypeExpr>, // package-prefixed const name -> declared (or inferred) type
     record_insts:      Vec<Instantiation>,
     record_seen:       Map<string, bool>,    // mangled -> seen
     enum_insts:        Vec<Instantiation>,
@@ -100,6 +102,8 @@ let make_emitter(): Emitter = Emitter {
     generic_fn_decls: [:],
     packages:         [:],
     consts:           [:],
+    const_types:      [:],
+    type_aliases:     [:],
     record_insts:     [],
     record_seen:      [:],
     enum_insts:       [],
@@ -129,6 +133,22 @@ let make_emitter(): Emitter = Emitter {
     show_emitted:     [:],
 }
 
+let register_op_dispatch_only(e: *Emitter, d: ast.Decl) = {
+    match d {
+    | DFn(_, name, _, fps, _, _, attr) -> {
+        if strings.eq_raw(attr, "") { return }
+        if len(fps) == 0 { return }
+        let tname = operator_first_param_type_name(fps[0].ty)
+        if strings.eq_raw(tname, "") { return }
+        e.op_dispatch[strings.cat(strings.cat(attr, "::"), tname)] = name
+    }
+    // Non-DFn decls (types, imports, externals, const definitions)
+    // do not carry @operator annotations and contribute nothing to
+    // op_dispatch.
+    | _ -> { }
+    }
+}
+
 let register_generics(e: *Emitter, file: ast.File) = {
     for d in file.decls {
         match d {
@@ -147,8 +167,38 @@ let register_generics(e: *Emitter, file: ast.File) = {
                 e.generic_fn_decls[name] = d
             }
         }
+        | DTypeAlias(_, name, params, target) -> {
+            if len(params) == 0 {
+                e.type_aliases[name] = target
+            }
+        }
+        // DCEnum, DImport, DLink, DConst, DExternal: not generic
+        // declarations and not aliases.
         | _ -> { }
         }
+    }
+}
+
+// Walk through type aliases. If `te` is a TENamed naming a
+// non-generic alias, return the alias's target (recursing through
+// chained aliases). Returns the input unchanged for anything else.
+// Accepts both single-segment paths (`Alias`) and the two-segment
+// loader-qualified form (`pkg.Alias` -> ["pkg", "pkg_Alias"]).
+let resolve_alias_te(e: *Emitter, te: ast.TypeExpr): ast.TypeExpr = {
+    match te {
+    | TENamed(_, path, args) -> {
+        if len(args) != 0 { return te }
+        if len(path) == 0 { return te }
+        let key = path[len(path) - 1]
+        match map.get(&e.type_aliases, key) {
+        | Some(target) -> resolve_alias_te(e, target)
+        // Not an alias: leave unchanged.
+        | None         -> te
+        }
+    }
+    // TEPtr, TETuple, TEFn, TEUnit: alias resolution only meaningful
+    // at the TENamed root.
+    | _ -> te
     }
 }
 
@@ -162,6 +212,7 @@ let register_fn_instantiation(e: *Emitter, callee: ast.Expr, type_args: Vec<ast.
     e.fn_seen[mangled] = true
     vec.push(&e.fn_insts, Instantiation { name: name, args: type_args, mangled: mangled })
     for ta in type_args { walk_typeexpr(e, ta) }
+    queue_fn_inst_proto(e, name, type_args, mangled)
 }
 
 // Extract the variant name when `callee` references a variant of a
@@ -277,6 +328,10 @@ let generic_callee_name(e: *Emitter, callee: ast.Expr): string = {
 }
 
 let collect_type_instantiations(e: *Emitter, file: ast.File) = {
+    // First pass: populate op_dispatch from every @operator
+    // annotation so that the body walks below can consult it
+    // regardless of decl ordering.
+    for d in file.decls { register_op_dispatch_only(e, d) }
     for d in file.decls {
         walk_decl_for_types(e, d)
     }
@@ -473,6 +528,84 @@ let register_container_lit(e: *Emitter, te: ast.TypeExpr) = {
     }
 }
 
+// Best-effort type inference for an expression during the discovery
+// walk. Returns TEUnit when the type cannot be determined from the
+// information populated so far (literal types, fn return types,
+// already-bound locals). Never reports errors. The walk uses this to
+// keep `e.locals` in sync with unannotated `let` bindings, so that
+// later walks within the same body can resolve index dispatch on
+// those locals.
+let walk_infer_te(e: *Emitter, expr: ast.Expr): ast.TypeExpr = {
+    match expr {
+    | EArrayLit(_, _, lit_te) -> lit_te
+    | EMapLit(_, _, _, lit_te) -> lit_te
+    | EParen(_, inner) -> walk_infer_te(e, *inner)
+    | EIdent(sp, n) -> {
+        match map.get(&e.locals, n) {
+        | Some(t) -> t
+        // Unknown identifier at walk time. Caller treats this as
+        // "type not yet known" and skips local tracking.
+        | None    -> TEUnit(sp)
+        }
+    }
+    | EField(sp, base, name) -> {
+        let bte = walk_infer_te(e, *base)
+        if is_unit_typeexpr(bte) { return TEUnit(sp) }
+        field_typeexpr_for_no_die(e, bte, name, sp)
+    }
+    | EIndex(sp, base, _) -> {
+        let bte = walk_infer_te(e, *base)
+        match bte {
+        | TENamed(_, path, args) -> {
+            if len(path) >= 1 && len(args) >= 1 && strings.eq_raw(path[len(path) - 1], "Vec") { return args[0] }
+            // Non-Vec named type indexed: emit phase decides.
+            TEUnit(sp)
+        }
+        | TEPtr(_, inner) -> *inner
+        // TETuple, TEFn, TEUnit: not indexable in a way walk can resolve.
+        | _ -> TEUnit(sp)
+        }
+    }
+    | ECall(sp, callee, _, _) -> {
+        let name = generic_callee_name(e, *callee)
+        if strings.eq_raw(name, "") { return TEUnit(sp) }
+        match map.get(&e.fn_returns, name) {
+        | Some(t) -> t
+        // Generic fns have no recorded return type (it depends on
+        // type args). Emit phase resolves them later.
+        | None    -> TEUnit(sp)
+        }
+    }
+    | ECast(_, _, t) -> t
+    | ERecord(_, t, _) -> t
+    | ENewType(_, t) -> TEPtr(span_of_expr(expr), new_clone(t))
+    | EUnary(sp, op, rhs) -> {
+        match op {
+        | UOpAddr  -> TEPtr(sp, new_clone(walk_infer_te(e, *rhs)))
+        | UOpDeref -> {
+            let inner = walk_infer_te(e, *rhs)
+            match inner {
+            | TEPtr(_, t) -> *t
+            // Walk-time inference cannot resolve deref of an
+            // unknown pointer.
+            | _           -> TEUnit(sp)
+            }
+        }
+        // UOpNeg, UOpNot: numeric/boolean results. Operator
+        // overloads change this but walk does not need that
+        // detail for index dispatch.
+        | _ -> TEUnit(sp)
+        }
+    }
+    // EInt, EFloat, EString, EBool, EChar, ENil, EBlock, EIf,
+    // EMatch, EBinary, EClosure, ETry, ETuple, EDefer, EReturn,
+    // EWhile, EFor, EAssign, ESizeOf, ELoadString, EPath: walk does
+    // not need a synthesized type for these. Emit-phase
+    // infer_value_te handles them when an actual type is required.
+    | _ -> TEUnit(span_of_expr(expr))
+    }
+}
+
 let walk_expr_for_types(e: *Emitter, ex: ast.Expr) = {
     match ex {
     | EBlock(_, stmts, tail) -> {
@@ -481,15 +614,17 @@ let walk_expr_for_types(e: *Emitter, ex: ast.Expr) = {
             | SLet(_, name, ty, val) -> {
                 walk_typeexpr(e, ty)
                 walk_expr_for_types(e, val)
-                if !is_unit_typeexpr(ty) {
-                    e.locals[name] = ty
+                let effective_ty = if is_unit_typeexpr(ty) { walk_infer_te(e, val) } else { ty }
+                if !is_unit_typeexpr(effective_ty) {
+                    e.locals[name] = effective_ty
                 }
             }
             | SVar(_, name, ty, val) -> {
                 walk_typeexpr(e, ty)
                 walk_expr_for_types(e, val)
-                if !is_unit_typeexpr(ty) {
-                    e.locals[name] = ty
+                let effective_ty = if is_unit_typeexpr(ty) { walk_infer_te(e, val) } else { ty }
+                if !is_unit_typeexpr(effective_ty) {
+                    e.locals[name] = effective_ty
                 }
             }
             | SExpr(_, ex2) -> walk_expr_for_types(e, ex2)
@@ -513,7 +648,7 @@ let walk_expr_for_types(e: *Emitter, ex: ast.Expr) = {
     | EAssign(_, _, l, r) -> {
         walk_expr_for_types(e, *l)
         walk_expr_for_types(e, *r)
-        walk_assign_for_map_helpers(e, *l)
+        walk_assign_for_index_helpers(e, *l)
     }
     | ECall(sp, callee, type_args, args) -> {
         walk_expr_for_types(e, *callee)
@@ -543,7 +678,7 @@ let walk_expr_for_types(e: *Emitter, ex: ast.Expr) = {
         }
     }
     | EField(_, base, _) -> walk_expr_for_types(e, *base)
-    | EIndex(_, base, idx) -> { walk_expr_for_types(e, *base); walk_expr_for_types(e, *idx) }
+    | EIndex(_, base, idx) -> { walk_expr_for_types(e, *base); walk_expr_for_types(e, *idx); walk_index_for_op_helpers(e, *base) }
     | ETry(_, val) -> walk_expr_for_types(e, *val)
     | EIf(_, c, t, f) -> { walk_expr_for_types(e, *c); walk_expr_for_types(e, *t); walk_expr_for_types(e, *f) }
     | EMatch(_, scrut, arms) -> {
@@ -886,7 +1021,8 @@ let render_show_fn(e: *Emitter, mangled: string, te: ast.TypeExpr): string = {
 }
 
 let mangle_type(e: *Emitter, t: ast.TypeExpr): string = {
-    match t {
+    let resolved = resolve_alias_te(e, t)
+    match resolved {
     | TEUnit(_)                  -> "void"
     | TEPtr(_, inner)            -> strings.cat(mangle_type(e, *inner), "_ptr")
     | TETuple(_, elems)          -> {
@@ -1137,8 +1273,10 @@ let register_variants(e: *Emitter, file: ast.File) = {
                 e.packages[pkg] = true
             }
         }
-        | DConst(_, name, _, _) -> {
+        | DConst(_, name, ty, value) -> {
             e.consts[name] = true
+            let resolved_ty = if is_unit_typeexpr(ty) { infer_value_te(e, value) } else { ty }
+            e.const_types[name] = resolved_ty
         }
         | _ -> { }
         }
@@ -1265,7 +1403,8 @@ let register_fn_typedef(e: *Emitter, params: Vec<ast.TypeExpr>, ret: ast.TypeExp
 }
 
 let c_type_for(e: *Emitter, t: ast.TypeExpr): string = {
-    match t {
+    let resolved = resolve_alias_te(e, t)
+    match resolved {
     | TEUnit(_)                  -> "void"
     | TEPtr(_, inner)            -> strings.cat(c_type_for(e, *inner), "*")
     | TETuple(_, elems)          -> register_tuple_typedef(e, elems)
@@ -1472,6 +1611,39 @@ let emit_tuple_lit(e: *Emitter, sp: ast.Span, elems: Vec<ast.Expr>) = {
     push(e, " })")
 }
 
+let emit_tuple_lit_hinted(e: *Emitter, sp: ast.Span, elems: Vec<ast.Expr>, hints: Vec<ast.TypeExpr>) = {
+    let tname = register_tuple_typedef(e, hints)
+    push(e, `(({tname}){{ `)
+    var i: i64 = 0
+    for el in elems {
+        if i > 0 { push(e, ", ") }
+        emit_expr_with_te_hint(e, el, hints[i])
+        i += 1
+    }
+    push(e, " })")
+}
+
+// Emit `expr` where the consumer expects `hint`. Currently used to
+// propagate element-type information into tuple literals so integer
+// and float defaults narrow to the declared element type.
+let emit_expr_with_te_hint(e: *Emitter, expr: ast.Expr, hint: ast.TypeExpr) = {
+    match expr {
+    | ETuple(sp, elems) -> {
+        match hint {
+        | TETuple(_, hes) -> {
+            if len(hes) == len(elems) {
+                emit_tuple_lit_hinted(e, sp, elems, hes)
+                return
+            }
+        }
+        | _ -> { }
+        }
+    }
+    | _ -> { }
+    }
+    emit_expr(e, expr)
+}
+
 let emit_array_lit_with_hint(e: *Emitter, sp: ast.Span, elems: Vec<ast.Expr>, hint: ast.TypeExpr) = {
     var elem_hint: ast.TypeExpr = TEUnit(sp)
     match hint {
@@ -1517,7 +1689,7 @@ let emit_array_lit_using(e: *Emitter, sp: ast.Span, elems: Vec<ast.Expr>, hint: 
     push(e, `{vec_c} {tmp} = qoz_{make_mangled}(); `)
     for el in elems {
         push(e, `qoz_{push_mangled}(&{tmp}, `)
-        emit_expr(e, el)
+        emit_expr_with_te_hint(e, el, elem_te)
         push(e, "); ")
     }
     hoist_to_prologue(e, start)
@@ -2278,6 +2450,19 @@ let infer_value_te(e: *Emitter, v: ast.Expr): ast.TypeExpr = {
                 return single_named_te(sp, enum_lookup)
             }
         }
+        // `pkg.NAME` reading a top-level constant. The const's
+        // declared type lives in `e.const_types` under the
+        // package-prefixed key.
+        match *base {
+        | EIdent(_, pkg) -> {
+            if map.contains(&e.packages, pkg) {
+                let qual = strings.cat(strings.cat(pkg, "_"), name)
+                if let Some(ct) = map.get(&e.const_types, qual) { return ct }
+            }
+        }
+        // Non-EIdent base: fall through to the field-of-struct path.
+        | _ -> { }
+        }
         field_typeexpr_for(e, infer_base_typeexpr(e, *base), name, sp)
     }
     | EIndex(sp, base, _) -> {
@@ -2300,9 +2485,9 @@ let infer_value_te(e: *Emitter, v: ast.Expr): ast.TypeExpr = {
         | Some(t) -> t
         | None -> {
             // A bare identifier that is not a local may be a
-            // nullary variant constructor used in scrutinee or arg
-            // position. Return the owning enum's TypeExpr so the
-            // match dispatcher can recognise it.
+            // top-level constant, a nullary variant constructor, or
+            // an unknown name (genuine error).
+            if let Some(ct) = map.get(&e.const_types, name) { return ct }
             match map.get(&e.variant_of, name) {
             | Some(en) -> single_named_te(sp, en)
             | None     -> {
@@ -3129,20 +3314,42 @@ let field_access_op(e: *Emitter, base: ast.Expr): string = {
 // instantiation discovered ahead of body emission. The walk happens at
 // discovery time without locals. Derive the LHS type from the lvalue
 // shape by inspecting structurally.
-let walk_assign_for_map_helpers(e: *Emitter, lhs: ast.Expr) = {
+let walk_assign_for_index_helpers(e: *Emitter, lhs: ast.Expr) = {
     match lhs {
-    | EIndex(_, base, _) -> {
-        let bte = base_type_for_walk(e, *base)
-        match bte {
-        | TENamed(_, path, args) -> {
-            if len(path) >= 1 && strings.eq_raw(path[len(path) - 1], "Map") && len(args) == 2 {
-                register_map_helper(e, "map_set", args)
-            }
-        }
-        | _ -> { }
-        }
-    }
+    | EIndex(_, base, _) -> register_index_op_inst(e, *base, "[]=")
+    // EIdent, EField, EUnary-deref, EParen lvalues are plain C
+    // assignments with no operator overload to register.
     | _ -> { }
+    }
+}
+
+let walk_index_for_op_helpers(e: *Emitter, base: ast.Expr) = {
+    register_index_op_inst(e, base, "[]")
+}
+
+// Pre-register the @operator-dispatched index helper at discovery
+// time so the iterate-fixed-point loop monomorphizes its body before
+// emit. Mirrors index_dispatch_fn's rules so dispatch decisions in
+// the two phases stay aligned.
+let register_index_op_inst(e: *Emitter, base: ast.Expr, op_text: string) = {
+    let bte = base_type_for_walk(e, base)
+    // is_field_base: see index_dispatch_fn for the same predicate.
+    let is_field_base = match base { | EField(_, _, _) -> true | _ -> false }
+    // receiver_is_ptr: see index_dispatch_fn for the same predicate.
+    let receiver_is_ptr = match bte { | TEPtr(_, _) -> true | _ -> false }
+    if is_field_base && receiver_is_ptr { return }
+    let tname = operator_first_param_type_name(bte)
+    if strings.eq_raw(tname, "") { return }
+    match map.get(&e.op_dispatch, strings.cat(strings.cat(op_text, "::"), tname)) {
+    | Some(fn_name) -> {
+        let args = receiver_type_args(bte)
+        if len(args) == 0 { return }
+        register_map_helper(e, fn_name, args)
+    }
+    // No registered operator overload: receiver indexes through the
+    // raw-subscript fallback in emit_index/emit_assign, with nothing
+    // to monomorphize ahead of time.
+    | None -> { }
     }
 }
 
@@ -3223,32 +3430,60 @@ let register_map_helper(e: *Emitter, name: string, args: Vec<ast.TypeExpr>) = {
     if map.contains(&e.fn_seen, mangled) { return }
     map.set(&e.fn_seen, mangled, true)
     vec.push(&e.fn_insts, Instantiation { name: name, args: args, mangled: mangled })
+    queue_fn_inst_proto(e, name, args, mangled)
     match map.get(&e.generic_fn_decls, name) {
     | Some(d) -> walk_fn_body_with_subst(e, d, args)
+    // Caller passed a name absent from generic_fn_decls. Already
+    // filtered above, so reaching this branch is unreachable in
+    // practice. Kept for exhaustiveness.
     | None    -> { }
     }
 }
 
-// m[k] = v on a Map dispatches to qoz_map_set__<K>__<V>.
-// Peel a single pointer layer when it wraps a Vec or Map, so
-// indexing a `*Vec` / `*Map` is treated as indexing the container.
-// A pointer to a scalar is left as-is for raw pointer indexing.
-let unwrap_container_te(te: ast.TypeExpr): ast.TypeExpr = {
-    match te {
-    | TEPtr(_, inner) -> {
-        match *inner {
-        | TENamed(_, path, _) -> {
-            if len(path) >= 1 {
-                let n = path[len(path) - 1]
-                if strings.eq_raw(n, "Vec") || strings.eq_raw(n, "Map") { return *inner }
+// Render a forward declaration for a freshly-registered fn
+// instantiation and queue it in synth_fn_decls so the finalize
+// splice places it at pos_synth_fn_decls (above every body that
+// can call it).
+let queue_fn_inst_proto(e: *Emitter, name: string, args: Vec<ast.TypeExpr>, mangled: string) = {
+    match map.get(&e.generic_fn_decls, name) {
+    | Some(decl) -> {
+        match decl {
+        | DFn(_, _, tparams, params, ret, _, _) -> {
+            var subst_params: Vec<ast.FnParam> = []
+            for pp in params {
+                vec.push(&subst_params, ast.FnParam {
+                    name: pp.name,
+                    ty:   substitute_type(e, pp.ty, tparams, args),
+                })
             }
-            te
+            let subst_ret = substitute_type(e, ret, tparams, args)
+            let proto = format_fn_proto(e, strings.cat("qoz_", mangled), subst_params, subst_ret)
+            vec.push(&e.synth_fn_decls, proto)
         }
-        | _ -> te
+        // Non-DFn cannot be a generic fn instantiation target.
+        | _ -> { }
         }
     }
-    | _ -> te
+    // Caller already filtered for membership in generic_fn_decls.
+    | None -> { }
     }
+}
+
+let format_fn_proto(e: *Emitter, name: string, params: Vec<ast.FnParam>, ret: ast.TypeExpr): string = {
+    let rc = c_type_for(e, ret)
+    let c_name = user_fn_c_name(name)
+    var s = `{rc} {c_name}`
+    if len(params) == 0 { return strings.cat(s, "(void);\n") }
+    s = strings.cat(s, "(")
+    var i: i64 = 0
+    for p in params {
+        if i > 0 { s = strings.cat(s, ", ") }
+        let pc = c_type_for(e, p.ty)
+        let pn = p.name
+        s = strings.cat(s, `{pc} {pn}`)
+        i += 1
+    }
+    strings.cat(s, ");\n")
 }
 
 // Emit a container receiver for a builtin that takes `*Container`.
@@ -3266,26 +3501,26 @@ let emit_container_receiver(e: *Emitter, base: ast.Expr) = {
 let emit_assign(e: *Emitter, lhs: ast.Expr, rhs: ast.Expr) = {
     match lhs {
     | EIndex(_, base, idx) -> {
-        let te = unwrap_container_te(infer_base_typeexpr(e, *base))
-        match te {
-        | TENamed(_, path, args) -> {
-            if len(path) >= 1 && strings.eq_raw(path[len(path) - 1], "Map") && len(args) == 2 {
-                register_map_helper(e, "map_set", args)
-                let k_m = mangle_type(e, args[0])
-                let v_m = mangle_type(e, args[1])
-                push(e, `qoz_map_set__{k_m}__{v_m}(`)
-                emit_container_receiver(e, *base)
-                push(e, ", ")
-                emit_expr(e, *idx)
-                push(e, ", ")
-                emit_expr(e, rhs)
-                push(e, ")")
-                return
-            }
-        }
-        | _ -> { }
+        let base_te = infer_base_typeexpr(e, *base)
+        let fn_name = index_dispatch_fn(e, *base, base_te, "[]=")
+        if !strings.eq_raw(fn_name, "") {
+            let args = receiver_type_args(base_te)
+            register_fn_instantiation(e, EIdent(span_of_expr(*base), fn_name), args)
+            let mangled = mangle_inst(e, fn_name, args)
+            push(e, `qoz_{mangled}(`)
+            emit_container_receiver(e, *base)
+            push(e, ", ")
+            emit_expr(e, *idx)
+            push(e, ", ")
+            let hint = lvalue_hint(e, lhs)
+            emit_value_with_hint(e, rhs, hint)
+            push(e, ")")
+            return
         }
     }
+    // EIdent, EField, EUnary-deref, EParen, and other lvalue shapes
+    // assign in the C-native form below. Only EIndex has a possible
+    // operator overload.
     | _ -> { }
     }
     emit_expr(e, lhs)
@@ -3322,34 +3557,96 @@ let lvalue_hint(e: *Emitter, lhs: ast.Expr): ast.TypeExpr = {
     }
 }
 
-// EIndex dispatches on the base's static type:
-//   Vec<T>             -> base.data[i]
-//   string             -> qoz_string_byte_at(base, i) (returns i64)
-//   *T / array         -> base[i]
+// Container index dispatch.
+//
+// `v[i]` and `v[i] = x` route through `op_dispatch`. A receiver
+// type `Container<...>` (value) or `*Container<...>` (by reference)
+// with `op_dispatch["[]::Container"]` registered lowers to a regular
+// monomorphized call into the stdlib function. The receiver passes
+// by pointer: `&base` when the base is a value lvalue, `base` when
+// the base is already a pointer.
+//
+// Two paths skip dispatch and stay as raw C subscript:
+//
+//   1. The base is `EField(_, _, _)` of `*T` static type. That
+//      field names a raw element buffer (Vec.data, Map.slots) and
+//      indexing it is a pointer subscript. Without this guard,
+//      `v.data[i]` inside vec.index would recurse forever on
+//      Vec<Vec<...>>.
+//
+//   2. The receiver is `string`. Byte access lowers to
+//      `qoz_string_byte_at` (Qoz strings carry length, so plain C
+//      subscript is incorrect).
+//
+// All other unannotated `*T` indexing falls through to raw C
+// subscript, preserving pointer-array access semantics.
+
+// Return the type args carried by a container receiver. For
+// `Vec<i32>` this is `[i32]`; for `*Map<string, i32>` this is
+// `[string, i32]`. Returns the empty vector for anything else.
+let receiver_type_args(base_te: ast.TypeExpr): Vec<ast.TypeExpr> = {
+    let unwrapped = match base_te {
+    | TEPtr(_, inner) -> *inner
+    // Tuples, function types, unit: not container receivers. Pass
+    // through so the caller's outer match yields the empty result.
+    | _               -> base_te
+    }
+    match unwrapped {
+    | TENamed(_, _, args) -> args
+    // Tuples, function types, unit: nothing to monomorphize over.
+    | _                   -> []
+    }
+}
+
+// Return the operator fn name registered for `op_text` on the
+// receiver's container type, or empty when no dispatch applies.
+// Honours the EField-of-pointer raw-buffer bypass.
+let index_dispatch_fn(e: *Emitter, base: ast.Expr, base_te: ast.TypeExpr, op_text: string): string = {
+    // is_field_base: base is `x.field`. Locals, parameters, deref,
+    // calls, and parenthesized expressions are not EField.
+    let is_field_base = match base { | EField(_, _, _) -> true | _ -> false }
+    // receiver_is_ptr: TEPtr only. TENamed value containers, tuples,
+    // function types, and unit are not pointer types.
+    let receiver_is_ptr = match base_te { | TEPtr(_, _) -> true | _ -> false }
+    if is_field_base && receiver_is_ptr { return "" }
+    let tname = operator_first_param_type_name(base_te)
+    if strings.eq_raw(tname, "") { return "" }
+    match map.get(&e.op_dispatch, strings.cat(strings.cat(op_text, "::"), tname)) {
+    | Some(fn_name) -> fn_name
+    // No @operator overload for this receiver type. Caller takes
+    // the raw-subscript or string-byte_at fallback.
+    | None          -> ""
+    }
+}
+
 let emit_index(e: *Emitter, base: ast.Expr, idx: ast.Expr) = {
-    let te = infer_base_typeexpr(e, base)
-    match te {
+    let base_te = infer_base_typeexpr(e, base)
+    let fn_name = index_dispatch_fn(e, base, base_te, "[]")
+    if !strings.eq_raw(fn_name, "") {
+        let args = receiver_type_args(base_te)
+        register_fn_instantiation(e, EIdent(span_of_expr(base), fn_name), args)
+        let mangled = mangle_inst(e, fn_name, args)
+        push(e, `qoz_{mangled}(`)
+        emit_container_receiver(e, base)
+        push(e, ", ")
+        emit_expr(e, idx)
+        push(e, ")")
+        return
+    }
+    match base_te {
     | TENamed(_, path, _) -> {
-        if len(path) >= 1 {
-            let n = path[len(path) - 1]
-            if strings.eq_raw(n, "Vec") {
-                let op = field_access_op(e, base)
-                emit_expr(e, base)
-                push(e, `{op}data[`)
-                emit_expr(e, idx)
-                push(e, "]")
-                return
-            }
-            if strings.eq_raw(n, "string") {
-                push(e, "qoz_string_byte_at(")
-                emit_expr(e, base)
-                push(e, ", ")
-                emit_expr(e, idx)
-                push(e, ")")
-                return
-            }
+        if len(path) >= 1 && strings.eq_raw(path[len(path) - 1], "string") {
+            push(e, "qoz_string_byte_at(")
+            emit_expr(e, base)
+            push(e, ", ")
+            emit_expr(e, idx)
+            push(e, ")")
+            return
         }
     }
+    // TEPtr, TETuple, TEFn, TEUnit: drop through to the raw C
+    // subscript below. Raw element buffers (Vec.data, Map.slots)
+    // and user-declared *T pointer-array fields take this path.
     | _ -> { }
     }
     emit_expr(e, base)
@@ -3446,10 +3743,33 @@ let emit_call(e: *Emitter, callee: ast.Expr, type_args: Vec<ast.TypeExpr>, args:
         if len(type_args) > 0 && map.contains(&e.generic_fn_decls, qualified) {
             let mi = mangle_inst(e, qualified, type_args)
             push(e, `qoz_{mi}(`)
+            var hints: Vec<ast.TypeExpr> = []
+            match map.get(&e.generic_fn_decls, qualified) {
+            | Some(d) -> {
+                match d {
+                | DFn(_, _, tparams, params, _, _, _) -> {
+                    for pp in params {
+                        vec.push(&hints, substitute_type(e, pp.ty, tparams, type_args))
+                    }
+                }
+                // Non-DFn cannot be a generic fn call target. Bare
+                // `qoz_{mi}` call below still emits, just without
+                // hint propagation.
+                | _ -> { }
+                }
+            }
+            // Caller filtered on generic_fn_decls membership above,
+            // so reaching None is unreachable; left for exhaustiveness.
+            | None -> { }
+            }
             var i: i64 = 0
             for a in args {
                 if i > 0 { push(e, ", ") }
-                emit_expr(e, a)
+                if i < len(hints) {
+                    emit_value_with_hint(e, a, hints[i])
+                } else {
+                    emit_expr(e, a)
+                }
                 i += 1
             }
             push(e, ")")
@@ -4393,7 +4713,8 @@ let subst_variants_for(e: *Emitter, params: Vec<string>, variants: Vec<ast.Varia
 // not emitted in this pass. A value enum is embedded inline, so it is a
 // dependency; a boxed enum is a pointer and needs only a forward
 // declaration.
-let aggregate_field_dep(e: *Emitter, te: ast.TypeExpr): Option<string> = {
+let aggregate_field_dep(e: *Emitter, te_in: ast.TypeExpr): Option<string> = {
+    let te = resolve_alias_te(e, te_in)
     match te {
     | TENamed(_, path, args) -> {
         if len(path) < 1 { return None }
@@ -4449,8 +4770,12 @@ let emit_program(f: ast.File): string = {
     strings.sb_init(&e.out)
     register_variants(&e, f)
     register_generics(&e, f)
-    collect_type_instantiations(&e, f)
+    // Value-vs-boxed enum classification must run before
+    // collect_type_instantiations so that protos rendered at
+    // instantiation-registration time use the correct C type for
+    // recursive enums (value boxes render as pointer).
     classify_value_enums(&e, f)
+    collect_type_instantiations(&e, f)
     push(&e, "/* embedded runtime: gc.h */\n")
     push(&e, strip_runtime_includes(#load_string("runtime/gc.h")))
     push(&e, "\n/* embedded runtime: qoz_runtime.h */\n")
@@ -4504,7 +4829,24 @@ let emit_program(f: ast.File): string = {
                 push(&e, ";\n")
             }
         }
+        // DTypeAlias, DCEnum, DImport, DLink, DConst, DFn, DExternal:
+        // not emitted in this forward-declaration block.
         | _ -> { }
+        }
+    }
+    // Non-generic type-alias C typedefs. Emitted after struct/enum
+    // forward declarations so the target name is already known, and
+    // before any extern prototype or function body that names the
+    // alias.
+    for d in f.decls {
+        if let DTypeAlias(_, name, tparams, target) = d {
+            if len(tparams) == 0 {
+                push(&e, "typedef ")
+                push(&e, c_type_for(&e, target))
+                push(&e, " qoz_")
+                push(&e, name)
+                push(&e, ";\n")
+            }
         }
     }
     push(&e, "\n")
@@ -4593,28 +4935,10 @@ let emit_program(f: ast.File): string = {
         | _ -> { }
         }
     }
-    // Generic function instantiation prototypes.
-    for inst in e.fn_insts {
-        match map.get(&e.generic_fn_decls, inst.name) {
-        | Some(decl) -> {
-            match decl {
-            | DFn(_, _, tparams, params, ret, _, _) -> {
-                var subst_params: Vec<ast.FnParam> = []
-                for pp in params {
-                    vec.push(&subst_params, ast.FnParam {
-                        name: pp.name,
-                        ty:   substitute_type(&e, pp.ty, tparams, inst.args),
-                    })
-                }
-                let subst_ret = substitute_type(&e, ret, tparams, inst.args)
-                emit_fn_proto(&e, strings.cat("qoz_", inst.mangled), subst_params, subst_ret)
-            }
-            | _ -> { }
-            }
-        }
-        | None -> { }
-        }
-    }
+    // Generic function instantiation prototypes are queued into
+    // `synth_fn_decls` at registration time and spliced at
+    // `pos_synth_fn_decls` during finalize. Late registrations from
+    // body emission therefore appear above every call site.
     push(&e, "\n")
     // Function bodies (non-generic only). Top-level constants emit
     // as zero-arg functions that return the declared value. The
@@ -5225,7 +5549,8 @@ let emit_record_hash(e: *Emitter, name: string, fields: Vec<ast.StructField>) = 
     push(e, "    return h;\n}\n\n")
 }
 
-let emit_field_hash_expr(e: *Emitter, te: ast.TypeExpr, fname: string) = {
+let emit_field_hash_expr(e: *Emitter, te_in: ast.TypeExpr, fname: string) = {
+    let te = resolve_alias_te(e, te_in)
     let ct = c_type_for(e, te)
     if strings.eq_raw(ct, "qoz_string") {
         push(e, `qoz_string_hash(v.{fname})`)
@@ -5281,7 +5606,8 @@ let emit_field_hash_expr(e: *Emitter, te: ast.TypeExpr, fname: string) = {
     push(e, `v.{fname}`)
 }
 
-let emit_field_eq_expr(e: *Emitter, te: ast.TypeExpr, fname: string) = {
+let emit_field_eq_expr(e: *Emitter, te_in: ast.TypeExpr, fname: string) = {
+    let te = resolve_alias_te(e, te_in)
     let ct = c_type_for(e, te)
     if strings.eq_raw(ct, "qoz_string") {
         push(e, `qoz_string_eq(a.{fname}, b.{fname})`)
@@ -5489,6 +5815,21 @@ let emit_value_with_hint(e: *Emitter, value: ast.Expr, hint: ast.TypeExpr) = {
     | EIdent(_, name) -> emit_ident_with_hint(e, name, hint)
     | EArrayLit(sp, elems, _) -> emit_array_lit_with_hint(e, sp, elems, lit_recorded_hint(value, hint))
     | EMapLit(sp, keys, values, _) -> emit_map_lit_using(e, sp, keys, values, lit_recorded_hint(value, hint))
+    | ETuple(sp, elems) -> {
+        match hint {
+        | TETuple(_, hes) -> {
+            if len(hes) == len(elems) {
+                emit_tuple_lit_hinted(e, sp, elems, hes)
+                return
+            }
+        }
+        // Non-tuple hint or arity mismatch: fall through to the
+        // unhinted tuple literal below.
+        | _ -> { }
+        }
+        emit_tuple_lit(e, sp, elems)
+        return
+    }
     | ENew(sp, inner) -> emit_new_clone(e, sp, *inner)
     | ENewType(sp, t) -> emit_new_type(e, sp, t)
     | ELoadString(_, _, c) -> push(e, `QOZ_STR_LIT({c})`)
@@ -5964,8 +6305,9 @@ let pick_type_with_args(te: ast.TypeExpr, hint: ast.TypeExpr): ast.TypeExpr = {
 let emit_for_loop_one(e: *Emitter, binding: string, binding2: string, iter: ast.Expr, body: ast.Expr) = {
     // Range: lo..<hi or lo..=hi -> classic C for loop with int counter.
     match iter {
-    | EBinary(_, op, lo, hi) -> {
+    | EBinary(sp, op, lo, hi) -> {
         if is_range_op(op) {
+            e.locals[binding] = single_named_te(sp, "i64")
             push(e, `for (int64_t {binding} = `)
             emit_expr(e, *lo)
             let cmp = range_cmp_op(op)

@@ -463,6 +463,25 @@ let run_with_comments(src: string): TokenizeResult = {
     TokenizeResult { tokens: toks, comments: l.comments }
 }
 
+// Raw tokens with NO automatic-semicolon insertion. The formatter
+// walks these so synthetic semicolons (which carry the previous
+// token's position and have no source spelling) do not surface as
+// stray `;` in formatted output.
+let run_raw_with_comments(src: string): TokenizeResult = {
+    var l = make_lexer(src)
+    let kw = build_keywords()
+    var raw: Vec<Token> = []
+    var running = true
+    while running {
+        let t = lex_one(&l, &kw)
+        match t.kind {
+        | TokEOF -> running = false
+        | _      -> vec.push(&raw, t)
+        }
+    }
+    TokenizeResult { tokens: raw, comments: l.comments }
+}
+
 let run(src: string): Vec<Token> = run_with_comments(src).tokens
 
 let run_lexer_pass(l: *Lexer): Vec<Token> = {

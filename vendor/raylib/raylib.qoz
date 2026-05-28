@@ -121,15 +121,9 @@ type Texture = {
     format:  i32,
 }
 
-/// Same memory layout as `Texture`. Re-declared for clarity at
-/// call sites that want the 2D-specific name.
-type Texture2D = {
-    id:      u32,
-    width:   i32,
-    height:  i32,
-    mipmaps: i32,
-    format:  i32,
-}
+/// Alias of `Texture`. raylib's C header defines `Texture2D` as a
+/// typedef of `Texture`, so the two names refer to the same type.
+type Texture2D = Texture
 
 /// CPU-side pixel buffer with width, height, mipmap count, and
 /// pixel format identifier. Use `load_image` to read one from
@@ -152,11 +146,7 @@ type RenderTexture = {
     depth:   Texture,
 }
 
-type RenderTexture2D = {
-    id:      u32,
-    texture: Texture,
-    depth:   Texture,
-}
+type RenderTexture2D = RenderTexture
 
 /// Per-glyph layout info baked into a font atlas. `image` is the
 /// glyph's pixel data. Most user code accesses these via a `Font`
@@ -310,6 +300,29 @@ external let set_window_position(x: i32, y: i32)
 
 @link_name("SetWindowSize")
 external let set_window_size(width: i32, height: i32)
+
+/// Window and context configuration flags. Combine with bitwise
+/// OR and pass to `set_config_flags` before `init_window`. Values
+/// taken from raylib's `ConfigFlags` enum.
+let FLAG_VSYNC_HINT:               u32 = 0x00000040
+let FLAG_FULLSCREEN_MODE:          u32 = 0x00000002
+let FLAG_WINDOW_RESIZABLE:         u32 = 0x00000004
+let FLAG_WINDOW_UNDECORATED:       u32 = 0x00000008
+let FLAG_WINDOW_HIDDEN:            u32 = 0x00000080
+let FLAG_WINDOW_MINIMIZED:         u32 = 0x00000200
+let FLAG_WINDOW_MAXIMIZED:         u32 = 0x00000400
+let FLAG_WINDOW_UNFOCUSED:         u32 = 0x00000800
+let FLAG_WINDOW_TOPMOST:           u32 = 0x00001000
+let FLAG_WINDOW_ALWAYS_RUN:        u32 = 0x00000100
+let FLAG_WINDOW_TRANSPARENT:       u32 = 0x00000010
+let FLAG_WINDOW_HIGHDPI:           u32 = 0x00002000
+let FLAG_WINDOW_MOUSE_PASSTHROUGH: u32 = 0x00004000
+let FLAG_BORDERLESS_WINDOWED_MODE: u32 = 0x00008000
+let FLAG_MSAA_4X_HINT:             u32 = 0x00000020
+let FLAG_INTERLACED_HINT:          u32 = 0x00010000
+
+@link_name("SetConfigFlags")
+external let set_config_flags(flags: u32)
 
 @link_name("GetScreenWidth")
 external let get_screen_width(): i32

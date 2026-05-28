@@ -31,6 +31,27 @@ let to_cstring(s: string): cstring = {
     buf as cstring
 }
 
+/// Copy `n` bytes from a C-owned buffer into a fresh GC-managed
+/// Qoz string. Use this when an FFI call returns a `const char *`
+/// owned by the C side. The destination string keeps no reference
+/// to the source pointer.
+let from_cstring_len(src: cstring, n: i64): string = {
+    let buf = mem.calloc(n + 1)
+    bytes_copy(buf, src as *void, n)
+    string_alias(buf, n)
+}
+
+/// Copy a NUL-terminated C string into a fresh GC-managed Qoz
+/// string. Walks the source until the first zero byte to find the
+/// length. For C APIs that return a `const char *` without a
+/// separate length.
+let from_cstring(src: cstring): string = {
+    let p = src as *u8
+    var n: i64 = 0
+    while p[n] != 0 { n += 1 }
+    from_cstring_len(src, n)
+}
+
 // Compare byte ranges starting at `ad + ao` and `bd + bo`, length `n`,
 // for equality. `ad` and `bd` are *u8 cast to opaque pointers.
 let bytes_eq(ad: *u8, ao: i64, bd: *u8, bo: i64, n: i64): bool = {

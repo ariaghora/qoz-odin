@@ -648,6 +648,14 @@ let resolve_named_short(tc: *TyContext, span: ast.Span, home: string, name: stri
     }
     if let Some(d) = map.get(&tc.aliases, key) {
         check_type_arity(tc, span, name, type_decl_param_count(d), len(args))
+        match d {
+        | DTypeAlias(_, _, tparams, target) -> {
+            return resolve_type_with_subst(tc, target, tparams, resolved_args)
+        }
+        // Only DTypeAlias is stored in tc.aliases; reaching here
+        // would be an internal bug.
+        | _ -> { }
+        }
         return ty.ty_record_homed(home, name, resolved_args)
     }
     if map.contains(&tc.c_enums, key) {
@@ -2852,8 +2860,17 @@ let infer_calls_expr(tc: *TyContext, env: *Env, e: ast.Expr, expected: ty.Ty): a
     | ECast(sp, value, t)     -> ECast(sp, new_clone(infer_calls_expr(tc, env, *value, ty.ty_error_())), t)
     | ETry(sp, v)             -> ETry(sp, new_clone(infer_calls_expr(tc, env, *v, expected)))
     | ETuple(sp, elems)       -> {
+        var elem_hints: Vec<ty.Ty> = []
+        if let TyTuple(hes) = expected {
+            if len(hes) == len(elems) { elem_hints = hes }
+        }
         var ne: Vec<ast.Expr> = []
-        for el in elems { vec.push(&ne, infer_calls_expr(tc, env, el, ty.ty_error_())) }
+        var i: i64 = 0
+        for el in elems {
+            let h = if len(elem_hints) > 0 { elem_hints[i] } else { ty.ty_error_() }
+            vec.push(&ne, infer_calls_expr(tc, env, el, h))
+            i += 1
+        }
         ETuple(sp, ne)
     }
     | ERecord(sp, te, fields) -> {
