@@ -964,6 +964,7 @@ let synth_inner(tc: *TyContext, env: *Env, e: ast.Expr): ty.Ty = {
     | ENew(_, inner) -> ty.ty_ptr_(synth(tc, env, *inner))
     | ENewType(_, t) -> ty.ty_ptr_(resolve_type(tc, t))
     | ELoadString(_, _, _) -> ty.ty_string_()
+    | EParen(_, inner) -> synth(tc, env, *inner)
     }
 }
 
@@ -2505,7 +2506,7 @@ let scrut_span(scrut: ast.Expr): ast.Span = {
     | ENil(sp)
     | EInt(sp, _) | EFloat(sp, _) | EString(sp, _) | EChar(sp, _) | EBool(sp, _)
     | EIdent(sp, _) | EPath(sp, _) | EReturn(sp, _) | EDefer(sp, _) | ESizeOf(sp, _)
-    | EArrayLit(sp, _, _) | EMapLit(sp, _, _, _) | ENew(sp, _) | ENewType(sp, _) | ELoadString(sp, _, _) | ETry(sp, _) | ETuple(sp, _)
+    | EArrayLit(sp, _, _) | EMapLit(sp, _, _, _) | ENew(sp, _) | ENewType(sp, _) | ELoadString(sp, _, _) | EParen(sp, _) | ETry(sp, _) | ETuple(sp, _)
     | EUnary(sp, _, _) | EField(sp, _, _) | EIndex(sp, _, _) | ECast(sp, _, _)
     | ERecord(sp, _, _) | EBlock(sp, _, _) | EWhile(sp, _, _) | EMatch(sp, _, _)
     | EBinary(sp, _, _, _) | EAssign(sp, _, _, _) | ECall(sp, _, _, _)
@@ -3028,6 +3029,7 @@ let infer_calls_expr(tc: *TyContext, env: *Env, e: ast.Expr, expected: ty.Ty): a
     }
     | ENewType(_, _) -> e
     | ELoadString(_, _, _) -> e
+    | EParen(sp, inner) -> EParen(sp, new_clone(infer_calls_expr(tc, env, *inner, expected)))
     }
 }
 

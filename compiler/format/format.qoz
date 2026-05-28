@@ -807,6 +807,11 @@ let print_expr(p: *Printer, e: ast.Expr) = {
         p_emit(p, path)
         p_emit(p, "\")")
     }
+    | EParen(_, inner) -> {
+        p_emit(p, "(")
+        print_expr(p, *inner)
+        p_emit(p, ")")
+    }
     }
 }
 

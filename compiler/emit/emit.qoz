@@ -567,6 +567,7 @@ let walk_expr_for_types(e: *Emitter, ex: ast.Expr) = {
     | ENew(_, inner) -> walk_expr_for_types(e, *inner)
     | ENewType(_, t) -> walk_typeexpr(e, t)
     | ELoadString(_, _, _) -> { }
+    | EParen(_, inner) -> walk_expr_for_types(e, *inner)
     | EClosure(_, _, _, body) -> walk_expr_for_types(e, *body)
     | _ -> { }
     }
@@ -1043,6 +1044,7 @@ let substitute_expr(e: *Emitter, x: ast.Expr, params: Vec<string>, args: Vec<ast
     | ENew(sp, inner) -> ENew(sp, new_clone(substitute_expr(e, *inner, params, args)))
     | ENewType(sp, t) -> ENewType(sp, substitute_type(e, t, params, args))
     | ELoadString(sp, p, c) -> ELoadString(sp, p, c)
+    | EParen(sp, inner) -> EParen(sp, new_clone(substitute_expr(e, *inner, params, args)))
     }
 }
 
@@ -1368,6 +1370,7 @@ let collect_closure_captures(e: *Emitter, ex: ast.Expr, sc: *CaptureScope, out: 
     // new(T) holds only a type, no sub-expression to capture from.
     | ENewType(_, _)                  -> { }
     | ELoadString(_, _, _)            -> { }
+    | EParen(_, inner)                -> collect_closure_captures(e, *inner, sc, out)
     | ERecord(_, _, fields)           -> { for fl in fields { collect_closure_captures(e, fl.value, sc, out) } }
     | EClosure(_, _, _, _) -> { }
     | EBlock(_, stmts, tail) -> {
@@ -1991,6 +1994,7 @@ let emit_expr(e: *Emitter, ex: ast.Expr) = {
     | ENew(sp, inner) -> emit_new_clone(e, sp, *inner)
     | ENewType(sp, t) -> emit_new_type(e, sp, t)
     | ELoadString(_, _, c) -> push(e, `QOZ_STR_LIT({c})`)
+    | EParen(_, inner) -> { push(e, "("); emit_expr(e, *inner); push(e, ")") }
     }
 }
 
@@ -2135,6 +2139,7 @@ let infer_base_typeexpr(e: *Emitter, base: ast.Expr): ast.TypeExpr = {
         }
         }
     }
+    | EParen(_, inner) -> infer_base_typeexpr(e, *inner)
     | _ -> {
         let _ = emit_die(span_of_expr(base), "base expression has no resolvable ast.TypeExpr")
         TEUnit(span_of_expr(base))
@@ -2147,7 +2152,7 @@ let span_of_expr(e: ast.Expr): ast.Span = {
     | ENil(sp)
     | EInt(sp, _) | EFloat(sp, _) | EString(sp, _) | EChar(sp, _) | EBool(sp, _)
     | EIdent(sp, _) | EPath(sp, _) | EReturn(sp, _) | EDefer(sp, _) | ESizeOf(sp, _)
-    | EArrayLit(sp, _, _) | EMapLit(sp, _, _, _) | ENew(sp, _) | ENewType(sp, _) | ELoadString(sp, _, _) | ETry(sp, _) | ETuple(sp, _)
+    | EArrayLit(sp, _, _) | EMapLit(sp, _, _, _) | ENew(sp, _) | ENewType(sp, _) | ELoadString(sp, _, _) | EParen(sp, _) | ETry(sp, _) | ETuple(sp, _)
     | EUnary(sp, _, _) | EField(sp, _, _) | EIndex(sp, _, _) | ECast(sp, _, _)
     | ERecord(sp, _, _) | EBlock(sp, _, _) | EWhile(sp, _, _) | EMatch(sp, _, _)
     | EBinary(sp, _, _, _) | EAssign(sp, _, _, _) | ECall(sp, _, _, _)
@@ -2427,6 +2432,7 @@ let infer_value_te(e: *Emitter, v: ast.Expr): ast.TypeExpr = {
     | ENew(sp, inner) -> TEPtr(sp, new_clone(infer_value_te(e, *inner)))
     | ENewType(sp, t) -> TEPtr(sp, new_clone(t))
     | ELoadString(sp, _, _) -> single_named_te(sp, "string")
+    | EParen(_, inner) -> infer_value_te(e, *inner)
     // Statement-shape expressions have no value type. They occur in
     // value position when an outer block ends with one. The inferred
     // type is unit and the emitter renders them as statements with a
@@ -5486,6 +5492,7 @@ let emit_value_with_hint(e: *Emitter, value: ast.Expr, hint: ast.TypeExpr) = {
     | ENew(sp, inner) -> emit_new_clone(e, sp, *inner)
     | ENewType(sp, t) -> emit_new_type(e, sp, t)
     | ELoadString(_, _, c) -> push(e, `QOZ_STR_LIT({c})`)
+    | EParen(_, inner) -> { push(e, "("); emit_expr(e, *inner); push(e, ")") }
     | EField(_, base, name) -> {
         // `Enum.Variant` in value position with a known type hint
         // (e.g. `let a: Option<i32> = Option.None`) emits the mangled

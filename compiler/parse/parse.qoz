@@ -1156,7 +1156,10 @@ let parse_atom(p: *Parser): ast.Expr = {
         }
         p.in_match_arm = saved_match
         expect_punct(p, ")")
-        return first
+        // Preserve user parens in the AST so the formatter can reprint
+        // them. Tuples (`(a, b)`, `()`) handle themselves above; this
+        // is the single-expr case `(e)`.
+        return EParen(span, new_clone(first))
     }
     if is_punct(t, "[") {
         advance(p)
