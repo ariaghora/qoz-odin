@@ -349,12 +349,15 @@ int64_t qoz_gc_run(void) {
 void qoz_gc_set_stack_bottom(void *anchor) {
     g_stack_bottom = anchor;
 #if defined(_WIN32)
-    /* Windows 8+ exposes the thread stack limits directly. The high
-     * end is the address GetCurrentThreadStackLimits writes to
-     * `high`; subtract one word to land inside. */
-    ULONG_PTR low = 0, high = 0;
-    GetCurrentThreadStackLimits(&low, &high);
-    if (high) g_stack_top_bound = (char *)(void *)high - sizeof(void *);
+    /* Windows reserves the stack as a guarded virtual address
+     * range. GetCurrentThreadStackLimits gives the reserve bounds,
+     * but pages between the current SP and the high end include
+     * guard pages that fault on read. Leave g_stack_top_bound NULL
+     * and let the scan fall back to the anchor, which the shadow
+     * stack already covers exhaustively. The conservative scan is
+     * a supplement for register-resident pointers; the anchor's
+     * coverage is sufficient on Windows for now. */
+    (void)anchor;
 #elif defined(__APPLE__)
     pthread_t self = pthread_self();
     void *addr = pthread_get_stackaddr_np(self);
