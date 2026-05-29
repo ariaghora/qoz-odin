@@ -9,11 +9,10 @@
  * crosses a growth threshold. Shutdown frees everything regardless.
  */
 
-/* glibc gates pthread_getattr_np behind _GNU_SOURCE. Define it
- * before any system header is pulled in. Other libcs ignore it. */
-#if !defined(_GNU_SOURCE)
-#define _GNU_SOURCE 1
-#endif
+/* _GNU_SOURCE is defined at the top of every emitted translation
+ * unit (see compiler/emit/emit.qoz). It must precede any system
+ * header so glibc exposes pthread_getattr_np. Repeating the
+ * define here is unnecessary. */
 
 #include "gc.h"
 

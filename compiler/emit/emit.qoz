@@ -4741,7 +4741,14 @@ let is_main(name: string): bool = strings.eq_raw(name, "main")
 // compile as a single translation unit.
 let strip_runtime_includes(src: string): string = {
     var out = src
+    // The runtime sources are checked into the repo with LF line
+    // endings. A Windows checkout under git's default autocrlf
+    // converts them to CRLF in the working tree, so the source
+    // text reaches `#load_string` with a stray \r before each \n.
+    // Strip both forms.
+    out = strings.replace_all(out, "#include \"gc.h\"\r\n", "")
     out = strings.replace_all(out, "#include \"gc.h\"\n", "")
+    out = strings.replace_all(out, "#include \"qoz_runtime.h\"\r\n", "")
     out = strings.replace_all(out, "#include \"qoz_runtime.h\"\n", "")
     out
 }
@@ -4776,6 +4783,11 @@ let emit_program(f: ast.File): string = {
     // recursive enums (value boxes render as pointer).
     classify_value_enums(&e, f)
     collect_type_instantiations(&e, f)
+    // glibc gates pthread_getattr_np and other extensions behind
+    // _GNU_SOURCE. Define it before any system header is pulled in
+    // by the embedded runtime block below. Other libcs ignore the
+    // macro, so the line is portable.
+    push(&e, "#define _GNU_SOURCE 1\n")
     push(&e, "/* embedded runtime: gc.h */\n")
     push(&e, strip_runtime_includes(#load_string("runtime/gc.h")))
     push(&e, "\n/* embedded runtime: qoz_runtime.h */\n")

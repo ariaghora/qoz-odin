@@ -1,0 +1,13 @@
+# Force LF line endings on every text source the compiler reads or
+# embeds. The runtime headers and C sources are embedded into the
+# emitted C verbatim, so a Windows checkout under git's default
+# autocrlf would inject \r into match strings the compiler scans
+# for. The bootstrap C and stage1 source share the same constraint.
+*.qoz       text eol=lf
+*.c         text eol=lf
+*.h         text eol=lf
+Makefile    text eol=lf
+*.sh        text eol=lf
+
+# Static archives are binary blobs; suppress any normalization.
+*.a         binary
