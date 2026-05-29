@@ -535,12 +535,18 @@ qoz_string qoz_interp_finish(void *bv) {
 }
 
 void qoz_init(int *stack_anchor) {
+    /* Probe boundary on Windows MSVC: log entry so a 0xB00 (exit 11)
+     * crash can be localized to before vs after qoz_init. Goes to
+     * stderr so the main program's stdout pipe is unaffected. Remove
+     * once the MSVC bootstrap is stable. */
+    fputs("DEBUG qoz_init: entered\n", stderr); fflush(stderr);
     /* gc.c owns the heap and auto-collects from qoz_gc_alloc once the
      * live-byte threshold is crossed. The shadow stack registers every
      * pointer-typed parameter and local. A conservative C-stack scan
      * supplements that so register-resident return values are reached
      * during the mark phase. */
     qoz_gc_set_stack_bottom(stack_anchor);
+    fputs("DEBUG qoz_init: returning\n", stderr); fflush(stderr);
 }
 
 void qoz_shutdown(void) {
