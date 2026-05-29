@@ -168,6 +168,17 @@ void qoz_frame_pop(void) {
     if (qoz_frame_top > 0) qoz_frame_top--;
 }
 
+/* Debug: trace the most recent function the program entered, so a
+ * silent crash localises to a specific Qoz function. Returns the
+ * top-of-stack frame name. Called from a printf at the crash site
+ * during MSVC bring-up. */
+void qoz_trace_top(const char *tag) {
+    const char *n = qoz_frame_top > 0 ? qoz_frame_stack[qoz_frame_top - 1] : "<none>";
+    if (!n) n = "<unknown>";
+    fprintf(stderr, "DEBUG [%s] top=%s depth=%lld\n", tag, n, (long long)qoz_frame_top);
+    fflush(stderr);
+}
+
 void qoz_panic(qoz_string msg) {
     fputs("qoz: panic: ", stderr);
     if (msg.len > 0) fwrite(msg.data, 1, (size_t)msg.len, stderr);
@@ -539,12 +550,34 @@ qoz_string qoz_interp_finish(void *bv) {
     return qoz_string_alias(b->buf, b->len);
 }
 
+#ifdef _WIN32
+#include <windows.h>
+extern int64_t qoz_frame_top;
+extern const char *qoz_frame_stack[];
+#define QOZ_FRAME_CAP_DEBUG 64
+static LONG WINAPI qoz_msvc_seh(EXCEPTION_POINTERS *info) {
+    DWORD code = info->ExceptionRecord->ExceptionCode;
+    fprintf(stderr, "FATAL SEH 0x%08lx at 0x%p\n",
+            (unsigned long)code, info->ExceptionRecord->ExceptionAddress);
+    int64_t depth = qoz_frame_top;
+    fprintf(stderr, "qoz frame depth=%lld\n", (long long)depth);
+    int64_t shown = depth;
+    if (shown > QOZ_FRAME_CAP_DEBUG) shown = QOZ_FRAME_CAP_DEBUG;
+    for (int64_t i = shown - 1; i >= 0; i--) {
+        const char *n = qoz_frame_stack[i];
+        if (!n) n = "<unknown>";
+        fprintf(stderr, "  at %s\n", n);
+    }
+    fflush(stderr);
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+#endif
+
 void qoz_init(int *stack_anchor) {
-    /* Probe boundary on Windows MSVC: log entry so a 0xB00 (exit 11)
-     * crash can be localized to before vs after qoz_init. Goes to
-     * stderr so the main program's stdout pipe is unaffected. Remove
-     * once the MSVC bootstrap is stable. */
     fputs("DEBUG qoz_init: entered\n", stderr); fflush(stderr);
+#ifdef _WIN32
+    SetUnhandledExceptionFilter(qoz_msvc_seh);
+#endif
     /* gc.c owns the heap and auto-collects from qoz_gc_alloc once the
      * live-byte threshold is crossed. The shadow stack registers every
      * pointer-typed parameter and local. A conservative C-stack scan

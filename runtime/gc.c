@@ -134,9 +134,9 @@ static void table_grow(void) {
 
 void *qoz_gc_alloc(int64_t size, const qoz_type_desc *desc) {
     static int n = 0;
-    if (++n <= 5) { fprintf(stderr, "DEBUG qoz_gc_alloc #%d size=%lld\n", n, (long long)size); fflush(stderr); }
+    n++;
     if (g_bytes_live >= g_bytes_threshold) {
-        if (n <= 5) { fputs("DEBUG qoz_gc_alloc: triggering qoz_gc_run\n", stderr); fflush(stderr); }
+        fprintf(stderr, "DEBUG qoz_gc_alloc #%d: triggering qoz_gc_run\n", n); fflush(stderr);
         qoz_gc_run();
     }
     void *p = calloc(1, (size_t)size);
