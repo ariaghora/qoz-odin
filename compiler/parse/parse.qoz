@@ -718,14 +718,29 @@ let parse_closure(p: *Parser): ast.Expr = {
 // Build a C-style quoted string literal from raw bytes for embedding
 // in an EString.
 let c_escape_bytes(src: string): string = {
+    // MSVC hard-limits one C string literal to ~64 KB. The bootstrap
+    // inlines whole runtime source files via `#load_string`, which
+    // crosses that threshold. Close the current literal and open a
+    // new one every CHUNK source bytes, at a newline boundary so
+    // the chunk break never lands inside an escape sequence. The C
+    // preprocessor concatenates adjacent string literals, so the
+    // resulting value is unchanged.
+    let CHUNK: i64 = 8192
     var out = "\""
     var i: i64 = 0
+    var since_break: i64 = 0
     let n = len(src)
     while i < n {
         let b = strings.byte_at(src, i)
         if b == 92 { out = strings.cat(out, "\\\\") }
         elif b == 34 { out = strings.cat(out, "\\\"") }
-        elif b == 10 { out = strings.cat(out, "\\n") }
+        elif b == 10 {
+            out = strings.cat(out, "\\n")
+            if since_break >= CHUNK {
+                out = strings.cat(out, "\"\n\"")
+                since_break = 0
+            }
+        }
         elif b == 13 { out = strings.cat(out, "\\r") }
         elif b == 9  { out = strings.cat(out, "\\t") }
         elif b < 32 || b == 127 {
@@ -733,6 +748,7 @@ let c_escape_bytes(src: string): string = {
         } else {
             out = strings.cat(out, strings.slice(src, i, i + 1))
         }
+        since_break += 1
         i += 1
     }
     out = strings.cat(out, "\"")

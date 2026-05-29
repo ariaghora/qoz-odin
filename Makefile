@@ -83,7 +83,7 @@ ifeq ($(COMPILER_FAMILY),msvc)
     # cl.exe has its own flag dialect. Replace CFLAGS and WARN
     # wholesale; the output-naming pattern changes from `-o $@`
     # to `/Fe:$@`. Object files go to CWD via `/Fo:.\`.
-    CFLAGS := /nologo /std:c11 /O2 /W3 /WX /MD
+    CFLAGS := /nologo /std:c11 /O2 /W3 /WX /MD /D_CRT_SECURE_NO_WARNINGS
     WARN   := /wd4100 /wd4101 /wd4102 /wd4189 /wd4505 /wd4127 \
               /wd4244 /wd4267 /wd4090 /wd4146 /wd4477 /wd4133 /wd4090
     OUTOPT = /Fe:$@ /Fo:.\\

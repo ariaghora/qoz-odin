@@ -133,7 +133,7 @@ if true; then
         # through the gcc/clang path.
         case "$(basename "${CC:-clang}")" in
             cl|cl.exe)
-                if ! cl /nologo /std:c11 /O2 /W3 /WX /MD \
+                if ! cl /nologo /std:c11 /O2 /W3 /WX /MD /D_CRT_SECURE_NO_WARNINGS \
                         /wd4100 /wd4101 /wd4102 /wd4189 /wd4505 /wd4127 \
                         /wd4244 /wd4267 /wd4090 /wd4146 /wd4477 /wd4133 \
                         "${t}.c" "/Fe:${bin}.exe" "/Fo:.\\" \

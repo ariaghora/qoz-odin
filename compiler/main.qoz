@@ -1256,6 +1256,9 @@ let msvc_argv(cc: string, c_path: string, bin_path: string, link_flags: Vec<stri
     vec.push(&argv, "/W3")
     vec.push(&argv, "/WX")
     vec.push(&argv, "/MD")
+    // Suppress MSVC CRT deprecation warnings for strerror, fopen,
+    // sscanf, and similar. The generated C uses them deliberately.
+    vec.push(&argv, "/D_CRT_SECURE_NO_WARNINGS")
     // Suppress diagnostics that the gcc/clang `-Wno-*` set covers.
     // 4100 unreferenced formal parameter (-Wno-unused-parameter)
     // 4101 unreferenced local variable (-Wno-unused-variable)
