@@ -20,7 +20,12 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <setjmp.h>
-#include <pthread.h>
+
+#ifdef _WIN32
+#  include <windows.h>
+#else
+#  include <pthread.h>
+#endif
 
 /* state: 0 = empty (probe stops), 1 = live, 2 = tombstone (probe continues). */
 typedef struct {
@@ -337,7 +342,14 @@ int64_t qoz_gc_run(void) {
  * passed at qoz_init. */
 void qoz_gc_set_stack_bottom(void *anchor) {
     g_stack_bottom = anchor;
-#if defined(__APPLE__)
+#if defined(_WIN32)
+    /* Windows 8+ exposes the thread stack limits directly. The high
+     * end is the address GetCurrentThreadStackLimits writes to
+     * `high`; subtract one word to land inside. */
+    ULONG_PTR low = 0, high = 0;
+    GetCurrentThreadStackLimits(&low, &high);
+    if (high) g_stack_top_bound = (char *)(void *)high - sizeof(void *);
+#elif defined(__APPLE__)
     pthread_t self = pthread_self();
     void *addr = pthread_get_stackaddr_np(self);
     /* pthread_get_stackaddr_np returns the address one past the high

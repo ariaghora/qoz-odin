@@ -54,3 +54,32 @@ jobs:
           export CC=clang
           make
           make test
+
+  windows-msvc:
+    name: windows-latest (msvc)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up MSYS2 (for bash, make, rm, diffutils)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            make
+            findutils
+            diffutils
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Build and test
+        shell: msys2 {0}
+        run: |
+          # ilammy/msvc-dev-cmd exports cl.exe and the linker on PATH
+          # for the calling shell. msys2's bash inherits PATH from the
+          # job environment, so cl is reachable here.
+          export CC=cl
+          make
+          make test

@@ -128,12 +128,33 @@ if true; then
             return 1
         fi
         bin=$(mktemp -t qozb.XXXXXX)
-        if ! clang -std=c11 -pedantic -Wall -Werror -Wno-unused-function -Wno-unused-variable -Wno-unused-but-set-variable -Wno-unused-const-variable -Wno-parentheses-equality -Wno-unused-value -Wno-overlength-strings "${t}.c" -o "$bin" >/tmp/qozb_clang.log 2>&1; then
-            FAIL=$((FAIL+1))
-            fails+=("$t (clang failed; see /tmp/qozb_clang.log)")
-            rm -f "$bin" "${t}.c"
-            return 1
-        fi
+        # Build the test binary. MSVC uses a different flag dialect
+        # entirely; dispatch when CC names cl. Everything else goes
+        # through the gcc/clang path.
+        case "$(basename "${CC:-clang}")" in
+            cl|cl.exe)
+                if ! cl /nologo /std:c11 /O2 /W3 /WX /MD \
+                        /wd4100 /wd4101 /wd4102 /wd4189 /wd4505 /wd4127 \
+                        /wd4244 /wd4267 /wd4090 /wd4146 /wd4477 /wd4133 \
+                        "${t}.c" "/Fe:${bin}.exe" "/Fo:.\\" \
+                        >/tmp/qozb_clang.log 2>&1; then
+                    FAIL=$((FAIL+1))
+                    fails+=("$t (cl failed; see /tmp/qozb_clang.log)")
+                    rm -f "$bin" "${bin}.exe" "${t}.c"
+                    return 1
+                fi
+                mv "${bin}.exe" "$bin"
+                rm -f *.obj 2>/dev/null
+                ;;
+            *)
+                if ! clang -std=c11 -pedantic -Wall -Werror -Wno-unused-function -Wno-unused-variable -Wno-unused-but-set-variable -Wno-unused-const-variable -Wno-parentheses-equality -Wno-unused-value -Wno-overlength-strings "${t}.c" -o "$bin" >/tmp/qozb_clang.log 2>&1; then
+                    FAIL=$((FAIL+1))
+                    fails+=("$t (clang failed; see /tmp/qozb_clang.log)")
+                    rm -f "$bin" "${t}.c"
+                    return 1
+                fi
+                ;;
+        esac
         # Tests whose expected exit code is in the signal range
         # (>= 128) deliberately die from a signal (SIGABRT for the
         # panic test, etc.). Bash prints its own "Abort trap: 6" line

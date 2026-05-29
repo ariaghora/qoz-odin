@@ -1172,9 +1172,14 @@ let cc_command(): string = {
 // `gcc` on macOS are both clang aliases, so the binary name alone
 // is unreliable. Probed each time a binary is built, which costs
 // one extra subprocess per `qoz build` invocation.
-type CcFamily = | CcClang | CcGcc | CcOther
+type CcFamily = | CcClang | CcGcc | CcMsvc | CcOther
 
 let cc_family(cc: string): CcFamily = {
+    // MSVC's `cl.exe` prints its banner on stderr from a bare
+    // invocation and rejects `--version`. Probe it by basename
+    // first; the gcc/clang families respond to `--version`.
+    let base = path_basename(cc)
+    if strings.eq_raw(base, "cl") || strings.eq_raw(base, "cl.exe") { return CcMsvc }
     var argv: Vec<string> = []
     vec.push(&argv, cc)
     vec.push(&argv, "--version")
@@ -1194,8 +1199,13 @@ let cc_is_gcc(cc: string): bool = {
     match cc_family(cc) { | CcGcc -> true | _ -> false }
 }
 
+let cc_is_msvc(cc: string): bool = {
+    match cc_family(cc) { | CcMsvc -> true | _ -> false }
+}
+
 let clang_argv(c_path: string, bin_path: string, link_flags: Vec<string>): Vec<string> = {
     let cc = cc_command()
+    if cc_is_msvc(cc) { return msvc_argv(cc, c_path, bin_path, link_flags) }
     var argv: Vec<string> = []
     vec.push(&argv, cc)
     vec.push(&argv, "-std=c11")
@@ -1227,6 +1237,56 @@ let clang_argv(c_path: string, bin_path: string, link_flags: Vec<string>): Vec<s
     vec.push(&argv, c_path)
     vec.push(&argv, "-o")
     vec.push(&argv, bin_path)
+    for f in link_flags { vec.push(&argv, f) }
+    argv
+}
+
+// MSVC `cl.exe` rejects the gcc/clang flag dialect. Different
+// option syntax (`/std:c11` vs `-std=c11`, `/Fe:` vs `-o`,
+// `/WX` vs `-Werror`, `/wd<num>` vs `-Wno-<name>`). Link inputs
+// pass after `/link`. /MD picks the dynamic CRT to match the
+// default Win32 ABI; static CRT (/MT) would conflict with the
+// system DLLs the runtime calls into.
+let msvc_argv(cc: string, c_path: string, bin_path: string, link_flags: Vec<string>): Vec<string> = {
+    var argv: Vec<string> = []
+    vec.push(&argv, cc)
+    vec.push(&argv, "/nologo")
+    vec.push(&argv, "/std:c11")
+    vec.push(&argv, "/O2")
+    vec.push(&argv, "/W3")
+    vec.push(&argv, "/WX")
+    vec.push(&argv, "/MD")
+    // Suppress diagnostics that the gcc/clang `-Wno-*` set covers.
+    // 4100 unreferenced formal parameter (-Wno-unused-parameter)
+    // 4101 unreferenced local variable (-Wno-unused-variable)
+    // 4102 unreferenced label
+    // 4189 local variable initialised but not referenced (-Wno-unused-but-set-variable)
+    // 4505 unreferenced local function has been removed (-Wno-unused-function)
+    // 4127 conditional expression is constant
+    // 4244 conversion possible loss of data (numeric literal narrowing)
+    // 4267 conversion size_t -> i64 narrowing
+    // 4090 different qualifiers (const cast through *void)
+    // 4146 unary minus on unsigned (qoz emits this in negation paths)
+    vec.push(&argv, "/wd4100")
+    vec.push(&argv, "/wd4101")
+    vec.push(&argv, "/wd4102")
+    vec.push(&argv, "/wd4189")
+    vec.push(&argv, "/wd4505")
+    vec.push(&argv, "/wd4127")
+    vec.push(&argv, "/wd4244")
+    vec.push(&argv, "/wd4267")
+    vec.push(&argv, "/wd4090")
+    vec.push(&argv, "/wd4146")
+    vec.push(&argv, c_path)
+    vec.push(&argv, strings.cat("/Fe:", bin_path))
+    // Place object files in a temp directory so they do not litter
+    // the source tree. `/Fo:` followed by a path with trailing
+    // slash directs cl.exe to that directory.
+    vec.push(&argv, "/Fo:.\\")
+    // Linker inputs come after `/link`. The link_flags vector
+    // already carries `.lib` paths in MSVC form when the binding
+    // emits them; gcc-style `-lfoo` is rewritten to `foo.lib`.
+    if len(link_flags) > 0 { vec.push(&argv, "/link") }
     for f in link_flags { vec.push(&argv, f) }
     argv
 }
